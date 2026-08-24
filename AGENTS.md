@@ -90,10 +90,6 @@ Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
   library's own `ObjectMapper` binds. Identity is not a package here: the forward-auth pair
   lives in the published `qits-auth-core`.
 
-`eu.wohlben.qits.webui` sits outside that tree, holding `WebUiRedirect` and only that. It keeps the
-sibling services' spelling rather than a component-flavoured one, so the file is recognisable across
-repos.
-
 **`platform` is a namespace qualifier, not half of a word** — hence `…qits.platform.deployments`
 rather than `…qits.platformdeployments`. The execution module therefore lands at
 `…qits.platform.deployments.deployments`, next to `…qits.platform.deployments.environments`: the
@@ -939,29 +935,27 @@ The intake path is a **cross-repo contract**: qits-ci POSTs
 `/platform-deployments/api/events/build-succeeded` fire-and-forget. A mismatch raises no error
 anywhere. Move one, move both.
 
-**A new machine surface outside `/platform-deployments/api` needs a line in
+**A new machine surface outside `/platform-deployments` needs a line in
 `quarkus.quinoa.ignored-path-prefixes`, in the same commit.** Quinoa's SPA fallback is a catch-all
 registered near-last, so a real route still wins — but a path matching *no* route is rerouted to
-`index.html` and answers `200 text/html`, which a machine client parses as data. Three facts, all
-measured on siblings: setting the key **replaces** Quinoa's derivation rather than extending it (so
-`/api` and `/q` are repeated by hand); the values are matched **after** `ui-root-path` is stripped,
-so they are **relative** (`/platform-deployments/api` written there matches nothing at all — the
-failure that hides); and `@WebSocket` or anything on the Vert.x router takes a literal path and needs
-its own entry.
+`index.html` and answers `200 text/html`, which a machine client parses as data. Setting the key
+**replaces** Quinoa's derivation rather than extending it, and the values are matched **after**
+`ui-root-path` is stripped — which is `/` here, so they are written **absolutely**. One entry,
+`/platform-deployments`, covers `/api` and `/q` by prefix; a route outside that segment needs its
+own. `@WebSocket` or anything on the Vert.x router takes a literal path and needs one too.
 
-## The client's segment, and the one probe still missing
+## The client, and where the segment still lives
 
-`service/src/main/webui` is the **qits-spa-deployments** submodule. Its `angular.json` sets
-`baseHref: /platform-deployments/` and its calls go to `/platform-deployments/api`, so it agrees with
-this component today.
+`service/src/main/webui` is the **qits-spa-deployments** submodule. This service has a host of its
+own, so the client is served at `/` and its `angular.json` sets `baseHref: /` — there is no segment
+in the client at all. Its calls still go to `/platform-deployments/api`, which the edge path-routes
+on every vhost.
 
-The segment is spelled in four places that move together: `quarkus.quinoa.ui-root-path`,
-`quarkus.rest.path`, `quarkus.http.non-application-root-path`, and that fourth one in another repo.
-**No build here checks the fourth**, so it can drift without turning anything red.
-
-`PdPackagedSurfaceIT` still does not probe the base href. That was correct while the client
-disagreed — the right assertion would have failed a build for something no change here could fix —
-and it is an ordinary open debt now that it agrees.
+The segment is spelled in four places that move together, all of them in this repository:
+`quarkus.quinoa.ignored-path-prefixes`, `quarkus.rest.path`,
+`quarkus.http.non-application-root-path`, and `routes:` in `.config/qits/deployments.yml`.
+`PdPackagedSurfaceIT` probes the served base href, the scoped deep link, and `/platform-deployments/`
+answering 404 rather than a second copy of the client.
 
 ## The event side: two doors, one seam
 

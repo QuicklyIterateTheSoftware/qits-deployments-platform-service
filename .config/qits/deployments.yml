@@ -58,10 +58,23 @@ deployment_target: platform
 # a row is not durable across a re-bootstrap — this line is.
 health_path: /platform-deployments/q/health/ready
 
-# The edge reads this declaration from DeploymentActive rather than routing every application via
-# qits-gateway. `navigation` belongs to the first route and positions its webview option.
+# The edge reads this declaration from DeploymentActive. `routes:` is the WIRE prefix — the API and
+# the health endpoints — path-routed on every vhost. The client is not under it: it is served at the
+# root of this service's own host, which the edge derives from the application name.
 routes: /platform-deployments
-navigation: Deployments:2
+
+# WHERE THE EDGE APPEARS THIS APPLICATION IN THE SIDEBAR. One entry per slot: `platform` is the
+# project-scoped group, and this is its fourth row. The label and the position are the whole
+# statement — the host is derived from the application name (`qits-platform-deployments` minus its
+# `qits-platform-` prefix is `deployments`), so there is no `host:` line to keep in step.
+#
+# This replaces `navigation: Deployments:2`, the flat list every application shared. The old key
+# still parses — a spec is read at the built sha, so it can never become unknown — and maps to
+# `system.Deployments`, which is the wrong group for a page a project scopes.
+#
+# THE PARSER SHIPPED FIRST. A spec is fetched at the BUILT sha and an unknown key fails a
+# deployment, so this key could only land after the deployer that reads it was released.
+navigation-entries: platform.Deployments:4
 
 resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream
 
