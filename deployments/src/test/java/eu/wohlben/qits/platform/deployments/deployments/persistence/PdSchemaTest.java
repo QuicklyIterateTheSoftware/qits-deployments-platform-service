@@ -181,6 +181,46 @@ public class PdSchemaTest {
     }
   }
 
+  @Test
+  public void theRoutingSnapshotHoldsAHostAndThePlacementsAndBothStayOptional() throws Exception {
+    // V4's columns, and the null that matters: a row written without either is an application
+    // reached under its path prefix alone, which is most of them and was all of them. The legacy
+    // pair stays, nullable and read-only, so a row queued before V4 can still say what it meant.
+    try (Connection connection = migrated();
+        Statement sql = connection.createStatement()) {
+      deployment(sql, "d-plain", "qits-workspaces", "'env-1'", SHA_A, "ACTIVE");
+      assertEquals(
+          List.of("|"),
+          rows(
+              sql,
+              "select coalesce(browser_host, '') || '|' || coalesce(navigation_entries, '')"
+                  + " from pd_deployment where id = 'd-plain'"),
+          "a deployment that asks for neither is written with neither");
+
+      sql.execute(
+          "update pd_deployment set browser_host = 'ci', navigation_entries ="
+              + " 'services.details.CI:2,system.CI:1' where id = 'd-plain'");
+      assertEquals(
+          List.of("ci|services.details.CI:2,system.CI:1"),
+          rows(
+              sql,
+              "select browser_host || '|' || navigation_entries from pd_deployment"
+                  + " where id = 'd-plain'"),
+          "the entries are stored in the spec's own spelling, one column, comma-separated");
+
+      sql.execute(
+          "update pd_deployment set navigation_label = 'CI', navigation_position = 2"
+              + " where id = 'd-plain'");
+      assertEquals(
+          List.of("CI|2"),
+          rows(
+              sql,
+              "select navigation_label || '|' || navigation_position from pd_deployment"
+                  + " where id = 'd-plain'"),
+          "V3's pair is still readable, which is what a pre-V4 row is announced from");
+    }
+  }
+
   /** A freshly created, freshly migrated database — one per test, so no test inherits rows. */
   private static Connection migrated() throws Exception {
     String database = "pd_deployments_" + UUID.randomUUID().toString().replace("-", "");

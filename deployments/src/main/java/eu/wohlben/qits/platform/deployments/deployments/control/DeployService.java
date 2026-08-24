@@ -18,6 +18,7 @@ import eu.wohlben.qits.platform.deployments.events.DeploymentEndpoint;
 import eu.wohlben.qits.platform.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.platform.deployments.events.DeploymentQueued;
 import eu.wohlben.qits.platform.deployments.events.DeploymentStarted;
+import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.StartupEvent;
@@ -113,6 +114,9 @@ public class DeployService implements BuildAnnouncements {
 
   /** Every platform repository carries it, and no path segment does. */
   private static final String NAME_PREFIX = "qits-";
+
+  /** The longer prefix a platform-tier repository carries; stripped before {@link #NAME_PREFIX}. */
+  private static final String PLATFORM_NAME_PREFIX = "qits-platform-";
 
   /** What an in-flight row says when nothing is running under its name — see {@link #sweepInFlight()}. */
   private static final String INTERRUPTED = "[interrupted by a qits-platform-deployments restart]";
@@ -404,7 +408,11 @@ public class DeployService implements BuildAnnouncements {
    * opens, and {@link #announceAdopted} must not need one.
    *
    * <p>{@code upstreamPort} is the snapshot's sentinel: null is a row queued before V3 added the
-   * columns, not a row without a port. See {@link #adoptedEndpoints}.
+   * columns, not a row without a port. See {@link #adoptedSnapshot}.
+   *
+   * <p>The last two are V3's retired pair, carried for one reason: a row queued before V4 has a
+   * label and no entries, and the sweep announces it as {@code system.<label>} rather than as
+   * nothing. Nothing writes them.
    */
   private record InFlight(
       String deploymentId,
@@ -417,6 +425,8 @@ public class DeployService implements BuildAnnouncements {
       UUID causationId,
       String routes,
       Integer upstreamPort,
+      String browserHost,
+      String navigationEntries,
       String navigationLabel,
       Integer navigationPosition) {}
 
@@ -450,6 +460,8 @@ public class DeployService implements BuildAnnouncements {
                     row.causationId,
                     row.routes,
                     row.upstreamPort,
+                    row.browserHost,
+                    row.navigationEntries,
                     row.navigationLabel,
                     row.navigationPosition))
         .toList();
@@ -542,8 +554,8 @@ public class DeployService implements BuildAnnouncements {
           row.deploymentId(), row.environmentId());
       return;
     }
-    List<DeploymentEndpoint> endpoints = adoptedEndpoints(row, environmentName);
-    if (endpoints == null) {
+    Snapshot snapshot = adoptedSnapshot(row, environmentName);
+    if (snapshot == null) {
       return; // said why at the point it decided
     }
     announce(
@@ -559,9 +571,19 @@ public class DeployService implements BuildAnnouncements {
                     row.runId(),
                     row.containerName(),
                     finishedAt,
-                    endpoints),
+                    snapshot.browserHost(),
+                    snapshot.navigation(),
+                    snapshot.endpoints()),
                 row.causationId()));
   }
+
+  /**
+   * Everything {@code DeploymentActive} says about where an application is reached: the routes, the
+   * host they are also served at, and where it asks to appear. One value because the three are one
+   * statement — a consumer replaces them together or not at all.
+   */
+  private record Snapshot(
+      List<DeploymentEndpoint> endpoints, String browserHost, List<NavigationEntry> navigation) {}
 
   /**
    * {@link Plan#endpoints()} for a row this process did not deploy: the same three rules — the host
@@ -569,20 +591,31 @@ public class DeployService implements BuildAnnouncements {
    * snapshot the row carries instead of over a live {@code Target}.
    *
    * <p><b>A null return is "announce nothing"</b>, and it has exactly one cause: a row queued before
-   * V3 added the columns, which cannot say what it routed. See {@link #legacyEndpoints} for what is
+   * V3 added the columns, which cannot say what it routed. See {@link #legacySnapshot} for what is
    * done about those and why it is bounded. An empty LIST is the other answer entirely — an
    * application that declares no public routes — and it is announced.
+   *
+   * <p><b>A row queued between V3 and V4 carries a navigation LABEL and no entries</b>, and it is
+   * announced as {@code system.<label>} with no host — the placement a flat menu's option always
+   * had, and the statement that row was written to make. Nothing is derived for it: a host it never
+   * asked for would put an application on a vhost the release it was queued by never promised.
    */
-  private List<DeploymentEndpoint> adoptedEndpoints(InFlight row, String environmentName) {
+  private Snapshot adoptedSnapshot(InFlight row, String environmentName) {
     if (row.upstreamPort() == null) {
-      return legacyEndpoints(row, environmentName);
+      return legacySnapshot(row, environmentName);
     }
-    return resolveEndpoints(
-        splitRoutes(row.routes()),
-        PdNetworks.alias(environmentName, row.applicationName()),
-        row.upstreamPort(),
-        row.navigationLabel(),
-        row.navigationPosition());
+    List<NavigationEntry> navigation = DeploymentSpecParser.parseEntries(row.navigationEntries());
+    if (navigation.isEmpty() && row.navigationLabel() != null) {
+      navigation =
+          List.of(new NavigationEntry("system", row.navigationLabel(), row.navigationPosition()));
+    }
+    return new Snapshot(
+        resolveEndpoints(
+            splitRoutes(row.routes()),
+            PdNetworks.alias(environmentName, row.applicationName()),
+            row.upstreamPort()),
+        row.browserHost(),
+        navigation);
   }
 
   /**
@@ -602,7 +635,7 @@ public class DeployService implements BuildAnnouncements {
    * describe would be worse than leaving them — and the recovery is the application's next
    * deployment, which will carry the columns and never come back here.
    */
-  private List<DeploymentEndpoint> legacyEndpoints(InFlight row, String environmentName) {
+  private Snapshot legacySnapshot(InFlight row, String environmentName) {
     for (int attempt = 1; attempt <= ADOPTION_SPEC_ATTEMPTS; attempt++) {
       try {
         // Id-addressed on purpose: a row carries the application NAME and no storage id, and this
@@ -614,12 +647,13 @@ public class DeployService implements BuildAnnouncements {
             "Adopted deployment %s predates the routing columns; its snapshot was read from the"
                 + " spec of %s@%s",
             row.deploymentId(), row.applicationName(), row.commitSha());
-        return resolveEndpoints(
-            spec.routes(),
-            PdNetworks.alias(environmentName, row.applicationName()),
-            spec.upstreamPort(),
-            spec.navigationLabel(),
-            spec.navigationPosition());
+        return new Snapshot(
+            resolveEndpoints(
+                spec.routes(),
+                PdNetworks.alias(environmentName, row.applicationName()),
+                spec.upstreamPort()),
+            browserHost(row.applicationName(), spec),
+            spec.navigationEntries());
       } catch (RuntimeException unreadable) {
         LOG.warnf(
             "Could not read the deployment spec of %s@%s while adopting %s (attempt %d of %d): %s",
@@ -642,24 +676,40 @@ public class DeployService implements BuildAnnouncements {
     return null;
   }
 
-  /** One endpoint per route, the host resolved once, navigation on the primary route alone. */
+  /** One endpoint per route, the host resolved once. */
   private static List<DeploymentEndpoint> resolveEndpoints(
-      List<String> routes,
-      String upstreamHost,
-      int upstreamPort,
-      String navigationLabel,
-      Integer navigationPosition) {
+      List<String> routes, String upstreamHost, int upstreamPort) {
     List<DeploymentEndpoint> endpoints = new ArrayList<>();
-    for (int i = 0; i < routes.size(); i++) {
-      endpoints.add(
-          new DeploymentEndpoint(
-              routes.get(i),
-              upstreamHost,
-              upstreamPort,
-              i == 0 ? navigationLabel : null,
-              i == 0 ? navigationPosition : null));
+    for (String route : routes) {
+      endpoints.add(new DeploymentEndpoint(route, upstreamHost, upstreamPort));
     }
     return List.copyOf(endpoints);
+  }
+
+  /**
+   * The DNS label an application is served at, resolved <b>here</b> because this is the first place
+   * that holds both the spec and the application's name — the {@code ResourceProvisioning.resolve}
+   * arrangement, applied to the other value the parser cannot derive.
+   *
+   * <p>Null is the answer for every application that asked for no host of its own, and that is the
+   * common case: a file carrying the retired {@code navigation} key alone keeps being reached under
+   * its path prefix, exactly as it was before hosts existed. A file that named {@code host} or
+   * {@code navigation-entries} gets one — its own label where it stated one, and otherwise the
+   * name without its platform prefix ({@code qits-ci} → {@code ci}, {@code qits-platform-events} →
+   * {@code events}).
+   */
+  static String browserHost(String applicationName, DeploymentSpec spec) {
+    if (!spec.browserHostDeclared()) {
+      return null;
+    }
+    if (spec.host() != null) {
+      return spec.host();
+    }
+    String name = applicationName == null ? "" : applicationName;
+    if (name.startsWith(PLATFORM_NAME_PREFIX)) {
+      return name.substring(PLATFORM_NAME_PREFIX.length());
+    }
+    return name.startsWith(NAME_PREFIX) ? name.substring(NAME_PREFIX.length()) : name;
   }
 
   /**
@@ -773,8 +823,8 @@ public class DeployService implements BuildAnnouncements {
       DeploymentDriver.PublishMode publishMode,
       List<String> routes,
       int upstreamPort,
-      String navigationLabel,
-      Integer navigationPosition) {}
+      String browserHost,
+      List<NavigationEntry> navigation) {}
 
   /**
    * One build-succeeded event, start to finish, on the worker thread: read what the repository
@@ -984,8 +1034,8 @@ public class DeployService implements BuildAnnouncements {
               spec.publishMode(),
               spec.routes(),
               spec.upstreamPort(),
-              spec.navigationLabel(),
-              spec.navigationPosition()));
+              browserHost(applicationName, spec),
+              spec.navigationEntries()));
     }
     return List.copyOf(targets);
   }
@@ -1076,8 +1126,8 @@ public class DeployService implements BuildAnnouncements {
             spec.publishMode(),
             spec.routes(),
             spec.upstreamPort(),
-            spec.navigationLabel(),
-            spec.navigationPosition()));
+            browserHost(applicationName, spec),
+            spec.navigationEntries()));
   }
 
   /**
@@ -1271,8 +1321,8 @@ public class DeployService implements BuildAnnouncements {
     // keeps that announcement off the network — see announceAdopted.
     deployment.routes = String.join(",", target.routes());
     deployment.upstreamPort = target.upstreamPort();
-    deployment.navigationLabel = target.navigationLabel();
-    deployment.navigationPosition = target.navigationPosition();
+    deployment.browserHost = target.browserHost();
+    deployment.navigationEntries = DeploymentSpecParser.joinEntries(target.navigation());
     deployments.persist(deployment);
     return new Queued(deployment.id, target, deployment.createdAt);
   }
@@ -1354,17 +1404,22 @@ public class DeployService implements BuildAnnouncements {
     /**
      * The event's complete route projection. The host is resolved only after the target is known,
      * from the same wire alias the runtime registered; a consumer must never recreate that naming
-     * convention. Navigation is application-level configuration carried by the primary route.
+     * convention.
      */
     List<DeploymentEndpoint> endpoints() {
       // The same builder the startup sweep's adoption uses over the row's stored snapshot, so the
       // two ways this component can announce a deployment cannot describe one differently.
-      return resolveEndpoints(
-          target.routes(),
-          wireAlias(),
-          target.upstreamPort(),
-          target.navigationLabel(),
-          target.navigationPosition());
+      return resolveEndpoints(target.routes(), wireAlias(), target.upstreamPort());
+    }
+
+    /** The DNS label this deployment is also served at, or null — resolved at registration. */
+    String browserHost() {
+      return target.browserHost();
+    }
+
+    /** Where this application asks to appear. Application-level, so it is the target's own. */
+    List<NavigationEntry> navigation() {
+      return target.navigation();
     }
   }
 
@@ -1799,6 +1854,8 @@ public class DeployService implements BuildAnnouncements {
                     plan.runId(),
                     containerName,
                     finishedAt,
+                    plan.browserHost(),
+                    plan.navigation(),
                     plan.endpoints()),
                 plan.cause()));
   }

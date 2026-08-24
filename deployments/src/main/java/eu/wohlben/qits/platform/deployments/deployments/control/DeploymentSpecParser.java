@@ -3,14 +3,16 @@ package eu.wohlben.qits.platform.deployments.deployments.control;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Eleven scalar keys, no nesting, no YAML
+ * The strict reader of {@code .config/qits/deployments.yml}. Thirteen scalar keys, no nesting, no YAML
  * lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -24,13 +26,37 @@ import java.util.Set;
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
- * navigation: Artifacts:3              # optional label:positive-position, for the first route
+ * host: registry                       # optional DNS label this application is also served at
+ * navigation-entries: system.Artifacts:3   # optional slot.Label:position list — see below
+ * navigation: Artifacts:3              # the one-entry predecessor of the key above, kept forever
  * deploy_branches: environment/prod    # RETIRED, accepted and ignored — see below
  * </pre>
  *
+ * <p><b>{@code navigation-entries} is where an application asks to appear, and it is a list.</b>
+ * One application shows up under several headings — a repository's Docs, CI and Workspaces are the
+ * same three entries under all six categories — so a single label could never have said it. An
+ * entry is {@code <slot>.<Label>:<position>}, read from the RIGHT: the last colon separates the
+ * position, the last dot of what remains separates the label, and everything before it is the slot.
+ * That order is what lets a label contain a colon ({@code services.details.CI:v2:1}) while the slot
+ * vocabulary stays closed. A label may not contain a dot or a comma, which is what makes both
+ * separators safe, and one application may claim each slot once.
+ *
+ * <p><b>{@code host} is one DNS label, and the platform derives it when the file says nothing.</b>
+ * The default is the application name without its {@code qits-platform-} or {@code qits-} prefix
+ * ({@code qits-ci} → {@code ci}), resolved where the name is known — {@code DeployService}, never
+ * here. A file states the key only where the public name already differs from that derivation
+ * (qits-artifacts is served at {@code registry}). A host is announced only for an application that
+ * asked for one: {@code host:} explicitly, or {@code navigation-entries} at all. Both keys need a
+ * {@code routes} entry, because a name that leads nowhere is not a topology.
+ *
+ * <p><b>{@code navigation} is the retired singular, and it is accepted forever.</b> It maps to one
+ * {@code system.<Label>:<position>} entry and NO host — a file that has not been rewritten yet must
+ * keep behaving exactly as it did. Naming both keys is an error: they are two answers to one
+ * question. See the paragraph on unknown keys below for why the word can never be taken back.
+ *
  * <p><b>{@code publish_mode} is the second key an orchestrator reads rather than this
- * component.</b> {@code host} is today's behaviour and the default: the task binds the port on the
- * node itself. {@code ingress} gives the port to swarm's routing mesh, which keeps holding it
+ * component.</b> {@code publish_mode: host} is today's behaviour and the default: the task binds the
+ * port on the node itself. {@code ingress} gives the port to swarm's routing mesh, which keeps holding it
  * while a replacement starts — the whole reason a front door can pull its own successor's image.
  * It reaches the orchestrator as {@code mode=} on the publish, and it means nothing at all to an
  * application that publishes no port. It does <b>not</b> touch {@code update_order}: the two are
@@ -106,7 +132,32 @@ public final class DeploymentSpecParser {
   private static final String ROUTES = "routes";
   private static final String UPSTREAM_PORT = "upstream_port";
   private static final String NAVIGATION = "navigation";
+  private static final String NAVIGATION_ENTRIES = "navigation-entries";
+  private static final String HOST = "host";
   static final int DEFAULT_UPSTREAM_PORT = 8080;
+
+  /** The slot every navigation entry names. Closed, ordered, and quoted back at a typo. */
+  private static final Set<String> SLOTS =
+      new LinkedHashSet<>(
+          List.of(
+              "services.details",
+              "daemons.details",
+              "libs.details",
+              "frontends.details",
+              "cli.details",
+              "images.details",
+              "project.detail",
+              "platform",
+              "system"));
+
+  /** The slot the retired singular {@code navigation} key maps into. */
+  private static final String LEGACY_SLOT = "system";
+
+  /** One DNS label: no dots, no leading or trailing hyphen, 63 characters at the most. */
+  private static final String HOST_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+
+  /** What a label may never contain: the two separators of the entry list, and a line break. */
+  private static final int LABEL_MAX_CHARS = 64;
 
   /** The only resource type there is. It is spelled in the file so a second one can arrive. */
   private static final String POSTGRESQL = "postgresql";
@@ -131,8 +182,8 @@ public final class DeploymentSpecParser {
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
     List<String> routes = List.of();
     int upstreamPort = DEFAULT_UPSTREAM_PORT;
-    String navigationLabel = null;
-    Integer navigationPosition = null;
+    String host = null;
+    List<NavigationEntry> navigationEntries = List.of();
     Set<String> seen = new HashSet<>();
 
     String[] lines = (yaml == null ? "" : yaml).split("\\R", -1);
@@ -166,11 +217,10 @@ public final class DeploymentSpecParser {
         case PUBLISH_MODE -> publishMode = publishMode(value, source, lineNumber);
         case ROUTES -> routes = routes(value, source, lineNumber);
         case UPSTREAM_PORT -> upstreamPort = upstreamPort(value, source, lineNumber);
-        case NAVIGATION -> {
-          Navigation navigation = navigation(value, source, lineNumber);
-          navigationLabel = navigation.label();
-          navigationPosition = navigation.position();
-        }
+        case HOST -> host = host(value, source, lineNumber);
+        case NAVIGATION_ENTRIES ->
+            navigationEntries = navigationEntries(value, source, lineNumber);
+        case NAVIGATION -> navigationEntries = List.of(navigation(value, source, lineNumber));
         default ->
             throw error(
                 source,
@@ -197,6 +247,10 @@ public final class DeploymentSpecParser {
                     + ROUTES
                     + ", "
                     + UPSTREAM_PORT
+                    + ", "
+                    + HOST
+                    + ", "
+                    + NAVIGATION_ENTRIES
                     + " and "
                     + NAVIGATION);
       }
@@ -221,14 +275,34 @@ public final class DeploymentSpecParser {
               + ": true` is not something a platform service can be — it already runs on every"
               + " environment's networks, and the bundle is environment-scoped");
     }
-    if (navigationLabel != null && routes.isEmpty()) {
+    if (seen.contains(NAVIGATION) && seen.contains(NAVIGATION_ENTRIES)) {
       throw new SpecException(
           source
               + ": `"
               + NAVIGATION
+              + "` and `"
+              + NAVIGATION_ENTRIES
+              + "` are two answers to one question. `"
+              + NAVIGATION_ENTRIES
+              + "` is the one that can say more than one placement; keep it alone.");
+    }
+    if (!navigationEntries.isEmpty() && routes.isEmpty()) {
+      throw new SpecException(
+          source
+              + ": `"
+              + (seen.contains(NAVIGATION) ? NAVIGATION : NAVIGATION_ENTRIES)
               + "` needs at least one `"
               + ROUTES
               + "` entry — navigation has to lead to a published route");
+    }
+    if (host != null && routes.isEmpty()) {
+      throw new SpecException(
+          source
+              + ": `"
+              + HOST
+              + "` needs at least one `"
+              + ROUTES
+              + "` entry — a host with nothing behind it serves nobody");
     }
     return new DeploymentSpec(
         target,
@@ -241,8 +315,12 @@ public final class DeploymentSpecParser {
         publishMode,
         routes,
         upstreamPort,
-        navigationLabel,
-        navigationPosition);
+        host,
+        // The retired singular asks for no host of its own: a file nobody has rewritten yet has to
+        // keep behaving exactly as it did, and a host derived from it would put every application
+        // on a vhost the release that ships this parser never promised.
+        seen.contains(HOST) || seen.contains(NAVIGATION_ENTRIES),
+        navigationEntries);
   }
 
   /** Public path prefixes, one per comma-separated entry. Navigation belongs to the first route. */
@@ -280,8 +358,12 @@ public final class DeploymentSpecParser {
     }
   }
 
-  /** The final colon is the separator so a visible label may itself contain a colon. */
-  private static Navigation navigation(String value, String source, int line) {
+  /**
+   * The retired singular, mapped onto the list that replaced it: one entry in the {@code system}
+   * slot, which is where a flat menu's options always were. The final colon is the separator, so a
+   * visible label may itself contain one.
+   */
+  private static NavigationEntry navigation(String value, String source, int line) {
     int separator = value.lastIndexOf(':');
     String label = separator < 1 ? "" : value.substring(0, separator).strip();
     String positionText = separator < 0 ? "" : value.substring(separator + 1).strip();
@@ -296,7 +378,7 @@ public final class DeploymentSpecParser {
       if (position < 1) {
         throw new NumberFormatException();
       }
-      return new Navigation(label, position);
+      return new NavigationEntry(LEGACY_SLOT, label, position);
     } catch (NumberFormatException e) {
       throw error(
           source,
@@ -305,7 +387,139 @@ public final class DeploymentSpecParser {
     }
   }
 
-  private record Navigation(String label, int position) {}
+  /**
+   * Where an application asks to appear: {@code <slot>.<Label>:<position>}, comma-separated,
+   * <b>read from the right</b> — the last colon separates the position, the last dot of what
+   * remains separates the label. That order is the grammar's whole trick: a label may carry a colon
+   * ({@code services.details.CI:v2:1}) because the position was already taken off the end, and the
+   * slot stays a closed word because the label was already taken off the front of nothing.
+   *
+   * <p>A blank entry, an unknown slot and a second entry for one slot are all errors. The slot is
+   * quoted back with the whole vocabulary, because a typo here is an application that silently
+   * appears nowhere.
+   */
+  private static List<NavigationEntry> navigationEntries(String value, String source, int line) {
+    List<NavigationEntry> declared = new ArrayList<>();
+    Set<String> slots = new HashSet<>();
+    for (String candidate : value.split(",", -1)) {
+      String entry = candidate.strip();
+      if (entry.isBlank()) {
+        throw error(source, line, "`" + NAVIGATION_ENTRIES + "` has a blank entry");
+      }
+      int colon = entry.lastIndexOf(':');
+      int position;
+      try {
+        position = Integer.parseInt(entry.substring(colon + 1).strip());
+        if (colon < 1 || position < 1) {
+          throw new NumberFormatException();
+        }
+      } catch (RuntimeException e) {
+        throw error(
+            source,
+            line,
+            "`"
+                + NAVIGATION_ENTRIES
+                + "` entries are `<slot>.<Label>:<position>` and the position is a positive"
+                + " integer, got: "
+                + entry);
+      }
+      String placement = entry.substring(0, colon).strip();
+      int dot = placement.lastIndexOf('.');
+      if (dot < 0) {
+        // No dot at all: the entry named no slot, so the vocabulary is what it is missing.
+        throw unknownSlot(entry, entry, source, line);
+      }
+      String label = placement.substring(dot + 1).strip();
+      String slot = placement.substring(0, dot).strip();
+      if (label.isBlank()
+          || label.length() > LABEL_MAX_CHARS
+          || label.indexOf('\n') >= 0
+          || label.indexOf('\r') >= 0) {
+        throw error(
+            source,
+            line,
+            "`"
+                + NAVIGATION_ENTRIES
+                + "` needs a non-blank label of at most "
+                + LABEL_MAX_CHARS
+                + " characters after the slot, got: "
+                + entry);
+      }
+      if (!SLOTS.contains(slot)) {
+        throw unknownSlot(slot, entry, source, line);
+      }
+      if (!slots.add(slot)) {
+        throw error(
+            source,
+            line,
+            "`" + NAVIGATION_ENTRIES + "` claims the slot `" + slot + "` twice");
+      }
+      declared.add(new NavigationEntry(slot, label, position));
+    }
+    return List.copyOf(declared);
+  }
+
+  /** The vocabulary, quoted back at whatever was written instead of one of its words. */
+  private static SpecException unknownSlot(String got, String entry, String source, int line) {
+    return error(
+        source,
+        line,
+        "`"
+            + NAVIGATION_ENTRIES
+            + "` knows the slots "
+            + String.join(", ", SLOTS)
+            + ", and an entry is `<slot>.<Label>:<position>`; got: "
+            + (got.isBlank() ? entry : got));
+  }
+
+  /**
+   * The one DNS label this application is served at. A label and never a name: the edge builds the
+   * authority around it, so the same value describes the application on every environment and every
+   * domain the platform has.
+   */
+  private static String host(String value, String source, int line) {
+    if (!value.matches(HOST_LABEL)) {
+      throw error(
+          source,
+          line,
+          "`"
+              + HOST
+              + "` is one DNS label — lowercase letters, digits and inner dashes, at most 63"
+              + " characters — got: "
+              + value);
+    }
+    return value;
+  }
+
+  /**
+   * The entries in the spelling a row stores them in, which is the file's own. One spelling for the
+   * file, the column and psql means the snapshot a self-update announces from its successor's boot
+   * cannot describe the deployment differently from the file it was read from.
+   */
+  public static String joinEntries(List<NavigationEntry> entries) {
+    if (entries == null || entries.isEmpty()) {
+      return null;
+    }
+    List<String> spelled = new ArrayList<>();
+    for (NavigationEntry entry : entries) {
+      spelled.add(entry.slot() + "." + entry.label() + ":" + entry.position());
+    }
+    return String.join(",", spelled);
+  }
+
+  /**
+   * The stored spelling back into the list it was joined from, by the same rule the file is read
+   * with. Blank is no entries — the answer most applications give.
+   *
+   * @throws SpecException on a value this parser did not write, which is a corrupted row rather
+   *     than a repository's mistake
+   */
+  public static List<NavigationEntry> parseEntries(String stored) {
+    if (stored == null || stored.isBlank()) {
+      return List.of();
+    }
+    return navigationEntries(stored, "the stored navigation entries", 1);
+  }
 
   /**
    * Where a published host port is held. Two values and no third, and the file spells them the way

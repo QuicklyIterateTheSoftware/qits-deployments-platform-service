@@ -177,21 +177,40 @@ class DeployEventsTest {
             "run-1",
             "dev-qits-refinement",
             FINISHED,
+            "refinement",
             List.of(
-                new DeploymentEndpoint(
-                    "/refinement", "dev-qits-refinement", 8080, "Refinement", 3),
-                new DeploymentEndpoint(
-                    "/refinement/api", "dev-qits-refinement", 8080, null, null)));
+                new NavigationEntry("services.details", "Refinement", 3),
+                new NavigationEntry("platform", "Refinement", 1)),
+            List.of(
+                new DeploymentEndpoint("/refinement", "dev-qits-refinement", 8080),
+                new DeploymentEndpoint("/refinement/api", "dev-qits-refinement", 8080)));
 
     String payload = CanonicalJson.payload(active);
     assertTrue(payload.contains("\"path\":\"/refinement\""), payload);
     assertTrue(payload.contains("\"upstreamHost\":\"dev-qits-refinement\""), payload);
     assertTrue(payload.contains("\"upstreamPort\":8080"), payload);
-    assertTrue(payload.contains("\"navigationLabel\":\"Refinement\""), payload);
-    assertFalse(payload.contains("\"navigationLabel\":null"), payload);
+    // The host is one LABEL and the navigation is the application's, not a route's.
+    assertTrue(payload.contains("\"browserHost\":\"refinement\""), payload);
+    assertTrue(
+        payload.contains("{\"label\":\"Refinement\",\"position\":3,\"slot\":\"services.details\"}"),
+        payload);
+    assertFalse(payload.contains("navigationLabel"), payload);
 
     DeploymentActive decoded = CanonicalJson.payloadTo(payload, DeploymentActive.class);
     assertEquals(active.endpoints(), decoded.endpoints());
+    assertEquals(active.navigation(), decoded.navigation());
+    assertEquals("refinement", decoded.browserHost());
+  }
+
+  @Test
+  void anApplicationWithNoHostOfItsOwnOmitsItAndSaysSoAboutItsNavigation() {
+    // The common answer, and both halves matter: an omitted host is an application reached under
+    // its path prefix, and an explicit empty list is "this deployment creates no menu option" —
+    // which a consumer replaces its own state with rather than reading as an older publisher.
+    String payload = CanonicalJson.payload(anActive());
+
+    assertFalse(payload.contains("browserHost"), payload);
+    assertTrue(payload.contains("\"navigation\":[]"), payload);
   }
 
   @Test

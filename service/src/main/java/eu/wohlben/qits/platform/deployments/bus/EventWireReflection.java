@@ -7,6 +7,7 @@ import eu.wohlben.qits.platform.deployments.events.DeploymentEndpoint;
 import eu.wohlben.qits.platform.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.platform.deployments.events.DeploymentQueued;
 import eu.wohlben.qits.platform.deployments.events.DeploymentStarted;
+import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 /**
@@ -39,8 +40,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  *
  * <ul>
  *   <li>{@link DeploymentQueued}, {@link DeploymentStarted}, {@link DeploymentActive}, {@link
- *       DeploymentEndpoint} and {@link DeploymentFailed} — what {@code DeployEventAnnouncer}
- *       serializes. Unregistered, the binary publishes an empty payload rather than failing.
+ *       DeploymentEndpoint}, {@link NavigationEntry} and {@link DeploymentFailed} — what {@code
+ *       DeployEventAnnouncer} serializes. Unregistered, the binary publishes an empty payload rather than failing.
  *   <li>{@link EventEnvelope} — the wrapper every publish is sent as.
  *   <li>The {@code CanonicalJson$QitsEventMixin}, by string name because it is a nested type inside
  *       the library. <b>This is the quiet one</b>, and qits-ci paid for it: the mix-in is what keeps
@@ -58,6 +59,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       DeploymentStarted.class,
       DeploymentActive.class,
       DeploymentEndpoint.class,
+      NavigationEntry.class,
       DeploymentFailed.class
     },
     classNames = {

@@ -1,6 +1,7 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import java.util.List;
 
 /**
@@ -34,7 +35,7 @@ public interface SpecSource {
   DeploymentSpec read(RepositoryRef repository, String sha);
 
   /**
-   * What a repository declares about how it is deployed. Eight keys, all optional, and the shape a
+   * What a repository declares about how it is deployed. Every key optional, and the shape a
    * repository with no file at all gets is {@link #DEFAULTS}.
    *
    * <p>{@code healthPath} is the exception rather than the rule: a service that says nothing gets
@@ -61,6 +62,16 @@ public interface SpecSource {
    * that must survive its own replacement wants the routing mesh holding its port, and everything
    * else keeps the per-node bind it has today. See {@link DeploymentDriver.PublishMode}.
    *
+   * <p>{@code host} is the DNS label this application is also served at, and null means "derive
+   * it": the parser does not know the application's name, exactly as it does not for a resource's
+   * database. {@code browserHostDeclared} is the question that decides whether there is anything to
+   * derive — a file that named {@code host} or {@code navigation-entries} asks for a host of its
+   * own, and a file carrying only the retired {@code navigation} key asks for none.
+   *
+   * <p>{@code navigationEntries} is where the application asks to appear. Application-level and a
+   * LIST, because one application sits under several headings; empty is an application that creates
+   * no navigation option, which is most of them.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -75,8 +86,9 @@ public interface SpecSource {
       DeploymentDriver.PublishMode publishMode,
       List<String> routes,
       int upstreamPort,
-      String navigationLabel,
-      Integer navigationPosition) {
+      String host,
+      boolean browserHostDeclared,
+      List<NavigationEntry> navigationEntries) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
@@ -85,6 +97,8 @@ public interface SpecSource {
       updateOrder = updateOrder == null ? DeploymentDriver.UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? DeploymentDriver.PublishMode.HOST : publishMode;
       routes = routes == null ? List.of() : List.copyOf(routes);
+      navigationEntries =
+          navigationEntries == null ? List.of() : List.copyOf(navigationEntries);
     }
 
     /**
@@ -123,7 +137,8 @@ public interface SpecSource {
           List.of(),
           8080,
           null,
-          null);
+          false,
+          List.of());
     }
 
     /**

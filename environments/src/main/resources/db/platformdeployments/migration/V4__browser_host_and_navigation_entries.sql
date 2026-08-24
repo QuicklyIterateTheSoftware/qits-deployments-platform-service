@@ -1,0 +1,25 @@
+-- The host an application is served at, and where it asks to appear in the navigation.
+--
+-- WHY BOTH ARE ON THE DEPLOYMENT ROW is V3's argument, unchanged: DeploymentActive is what the edge
+-- projects from, and the one deployment that cannot announce from `execute` is a SELF-UPDATE —
+-- handed to the orchestrator, the process dies mid-deployment, and the announcement is made by the
+-- successor's startup sweep, which has the row and nothing else. A snapshot that travelled with the
+-- deployment needs no peer to be up.
+--
+-- browser_host is ONE DNS LABEL (`ci`, `registry`), never an authority: the edge builds
+-- <label>.<environment>.<domain> around it, so one row describes the application on every
+-- environment and every domain the platform has. Null is a real answer and the common one — an
+-- application reached under its path prefix alone, which is what every application was.
+--
+-- navigation_entries is the spec's own comma-separated spelling (`services.details.CI:2,platform
+-- .Deployments:4`), the form a person reads in .config/qits/deployments.yml and in psql, parsed back
+-- by the rule the spec parser applies. A LIST because navigation is application-level now: one
+-- application sits under several headings, and the per-route label below could say only one.
+--
+-- V3's navigation_label and navigation_position STAY, nullable, and are read-only from here on.
+-- Nothing writes them again. A row that carries one and no navigation_entries was queued by a build
+-- that predates this file, and the startup sweep announces it as `system.<label>:<position>` with no
+-- host — which is exactly what that row meant when it was written. No backfill: the rows are
+-- in flight for minutes, and the answer for the ones that are not is their next deployment.
+alter table pd_deployment add column browser_host varchar(63);
+alter table pd_deployment add column navigation_entries text;
