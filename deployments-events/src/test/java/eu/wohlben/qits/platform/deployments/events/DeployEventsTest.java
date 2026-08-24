@@ -178,6 +178,7 @@ class DeployEventsTest {
             "dev-qits-refinement",
             FINISHED,
             "refinement",
+            "/refinement/q/swagger-ui",
             List.of(
                 new NavigationEntry("services.details", "Refinement", 3),
                 new NavigationEntry("platform", "Refinement", 1)),
@@ -191,15 +192,56 @@ class DeployEventsTest {
     assertTrue(payload.contains("\"upstreamPort\":8080"), payload);
     // The host is one LABEL and the navigation is the application's, not a route's.
     assertTrue(payload.contains("\"browserHost\":\"refinement\""), payload);
+    // An entry with no subpath spells exactly what it always did — the field is omitted, so every
+    // consumer that predates it reads the entry it always read.
     assertTrue(
         payload.contains("{\"label\":\"Refinement\",\"position\":3,\"slot\":\"services.details\"}"),
         payload);
     assertFalse(payload.contains("navigationLabel"), payload);
+    // The api-docs path is a PATH, never an origin — the edge composes the authority around it.
+    assertTrue(payload.contains("\"apiDocsPath\":\"/refinement/q/swagger-ui\""), payload);
 
     DeploymentActive decoded = CanonicalJson.payloadTo(payload, DeploymentActive.class);
     assertEquals(active.endpoints(), decoded.endpoints());
     assertEquals(active.navigation(), decoded.navigation());
     assertEquals("refinement", decoded.browserHost());
+    assertEquals("/refinement/q/swagger-ui", decoded.apiDocsPath());
+  }
+
+  @Test
+  void aNavigationEntryCarriesItsSubpathAndAnOlderFrameReadsBackWithout() {
+    DeploymentActive active =
+        new DeploymentActive(
+            "d-1",
+            "qits-refinement",
+            "env-1",
+            "dev",
+            SHA,
+            "run-1",
+            "dev-qits-refinement",
+            FINISHED,
+            "refinement",
+            null,
+            List.of(new NavigationEntry("services.details", "Api Docs", 6, "api-docs")),
+            List.of(new DeploymentEndpoint("/refinement", "dev-qits-refinement", 8080)));
+
+    String payload = CanonicalJson.payload(active);
+    assertTrue(payload.contains("\"subpath\":\"api-docs\""), payload);
+    assertFalse(payload.contains("apiDocsPath"), payload);
+
+    DeploymentActive decoded = CanonicalJson.payloadTo(payload, DeploymentActive.class);
+    assertEquals("api-docs", decoded.navigation().get(0).subpath());
+
+    // A frame written before either field existed reads back as the null both records normalize:
+    // the shape every already-recorded event on the log has.
+    DeploymentActive old =
+        CanonicalJson.payloadTo(
+            payload
+                .replace("\"subpath\":\"api-docs\",", "")
+                .replace(",\"subpath\":\"api-docs\"", ""),
+            DeploymentActive.class);
+    assertEquals(null, old.navigation().get(0).subpath());
+    assertEquals(null, old.apiDocsPath());
   }
 
   @Test

@@ -12,7 +12,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Thirteen scalar keys, no nesting, no YAML
+ * The strict reader of {@code .config/qits/deployments.yml}. Fourteen scalar keys, no nesting, no YAML
  * lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -27,19 +27,35 @@ import java.util.Set;
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
  * upstream_port: 8080                  # default; the service port behind every route
  * host: registry                       # optional DNS label this application is also served at
- * navigation-entries: system.Artifacts:3   # optional slot.Label:position list — see below
+ * navigation-entries: system.Artifacts:3   # optional slot.Label:position[=subpath] list — see below
  * navigation: Artifacts:3              # the one-entry predecessor of the key above, kept forever
+ * api-docs: /artifacts/q/swagger-ui    # optional; where the browsable API document lives
  * deploy_branches: environment/prod    # RETIRED, accepted and ignored — see below
  * </pre>
  *
  * <p><b>{@code navigation-entries} is where an application asks to appear, and it is a list.</b>
  * One application shows up under several headings — a repository's Docs, CI and Workspaces are the
  * same three entries under all six categories — so a single label could never have said it. An
- * entry is {@code <slot>.<Label>:<position>}, read from the RIGHT: the last colon separates the
- * position, the last dot of what remains separates the label, and everything before it is the slot.
- * That order is what lets a label contain a colon ({@code services.details.CI:v2:1}) while the slot
- * vocabulary stays closed. A label may not contain a dot or a comma, which is what makes both
- * separators safe, and one application may claim each slot once.
+ * entry is {@code <slot>.<Label>:<position>[=<subpath>]}, read from the RIGHT: the last colon
+ * separates the tail, the tail's first {@code =} separates the position from the optional subpath,
+ * the last dot of what remains separates the label, and everything before it is the slot. That
+ * order is what lets a label contain a colon or an equals sign ({@code services.details.CI:v2:1})
+ * while the slot vocabulary stays closed. A label may not contain a dot or a comma, which is what
+ * makes both separators safe, and one application may claim each slot once.
+ *
+ * <p><b>The subpath is the view the entry opens, and it is a client-side route segment.</b> The
+ * shell composes every entry's address as origin + scope + subpath ({@code
+ * /<project>/services/<repo>/api-docs}), so the subpath is relative, lowercase and slash-separated
+ * — never a colon, dot or comma, which is what keeps every separator above safe by construction.
+ * No published-route validation touches it: it names a view of the declaring application's SPA, not
+ * an edge route.
+ *
+ * <p><b>{@code api-docs} is where this application's browsable API document lives</b> — the
+ * swagger-ui a Quarkus service serves under its non-application root — and it must sit under one of
+ * the published {@code routes}, because a document nobody can reach describes nothing. It is
+ * application-level metadata rather than a navigation entry: the shell's Api Docs viewer looks the
+ * path up by application name and frames it. Absent is a real answer — a service that documents no
+ * HTTP surface.
  *
  * <p><b>{@code host} is one DNS label, and the platform derives it when the file says nothing.</b>
  * The default is the application name without its {@code qits-platform-} or {@code qits-} prefix
@@ -134,6 +150,7 @@ public final class DeploymentSpecParser {
   private static final String NAVIGATION = "navigation";
   private static final String NAVIGATION_ENTRIES = "navigation-entries";
   private static final String HOST = "host";
+  private static final String API_DOCS = "api-docs";
   static final int DEFAULT_UPSTREAM_PORT = 8080;
 
   /** The slot every navigation entry names. Closed, ordered, and quoted back at a typo. */
@@ -158,6 +175,22 @@ public final class DeploymentSpecParser {
 
   /** What a label may never contain: the two separators of the entry list, and a line break. */
   private static final int LABEL_MAX_CHARS = 64;
+
+  /**
+   * A navigation entry's subpath: relative, lowercase, slash-separated segments. The charset
+   * excludes the colon, dot and comma by construction, which is what keeps the entry list's
+   * separators and the right-to-left parse safe around it.
+   */
+  private static final String SUBPATH =
+      "[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*";
+
+  private static final int SUBPATH_MAX_CHARS = 128;
+
+  /** The api-docs path: an absolute lowercase path, never the bare root. */
+  private static final String API_DOCS_PATH =
+      "/(?:[a-z0-9]+(?:-[a-z0-9]+)*)(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*";
+
+  private static final int API_DOCS_MAX_CHARS = 255;
 
   /** The only resource type there is. It is spelled in the file so a second one can arrive. */
   private static final String POSTGRESQL = "postgresql";
@@ -184,6 +217,7 @@ public final class DeploymentSpecParser {
     int upstreamPort = DEFAULT_UPSTREAM_PORT;
     String host = null;
     List<NavigationEntry> navigationEntries = List.of();
+    String apiDocs = null;
     Set<String> seen = new HashSet<>();
 
     String[] lines = (yaml == null ? "" : yaml).split("\\R", -1);
@@ -221,6 +255,7 @@ public final class DeploymentSpecParser {
         case NAVIGATION_ENTRIES ->
             navigationEntries = navigationEntries(value, source, lineNumber);
         case NAVIGATION -> navigationEntries = List.of(navigation(value, source, lineNumber));
+        case API_DOCS -> apiDocs = apiDocs(value, source, lineNumber);
         default ->
             throw error(
                 source,
@@ -251,8 +286,10 @@ public final class DeploymentSpecParser {
                     + HOST
                     + ", "
                     + NAVIGATION_ENTRIES
+                    + ", "
+                    + NAVIGATION
                     + " and "
-                    + NAVIGATION);
+                    + API_DOCS);
       }
     }
 
@@ -304,6 +341,18 @@ public final class DeploymentSpecParser {
               + ROUTES
               + "` entry — a host with nothing behind it serves nobody");
     }
+    if (apiDocs != null && !underARoute(apiDocs, routes)) {
+      throw new SpecException(
+          source
+              + ": `"
+              + API_DOCS
+              + "` must sit under one of the published `"
+              + ROUTES
+              + "` entries — a document nobody can reach describes nothing. Got `"
+              + apiDocs
+              + "` beside "
+              + (routes.isEmpty() ? "no routes at all" : String.join(",", routes)));
+    }
     return new DeploymentSpec(
         target,
         availableOnEnv,
@@ -320,7 +369,18 @@ public final class DeploymentSpecParser {
         // keep behaving exactly as it did, and a host derived from it would put every application
         // on a vhost the release that ships this parser never promised.
         seen.contains(HOST) || seen.contains(NAVIGATION_ENTRIES),
-        navigationEntries);
+        navigationEntries,
+        apiDocs);
+  }
+
+  /** Under a published route: the route itself, or a path below it. */
+  private static boolean underARoute(String path, List<String> routes) {
+    for (String route : routes) {
+      if (path.equals(route) || path.startsWith(route.endsWith("/") ? route : route + "/")) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Public path prefixes, one per comma-separated entry. Navigation belongs to the first route. */
@@ -388,11 +448,14 @@ public final class DeploymentSpecParser {
   }
 
   /**
-   * Where an application asks to appear: {@code <slot>.<Label>:<position>}, comma-separated,
-   * <b>read from the right</b> — the last colon separates the position, the last dot of what
-   * remains separates the label. That order is the grammar's whole trick: a label may carry a colon
-   * ({@code services.details.CI:v2:1}) because the position was already taken off the end, and the
-   * slot stays a closed word because the label was already taken off the front of nothing.
+   * Where an application asks to appear: {@code <slot>.<Label>:<position>[=<subpath>]},
+   * comma-separated, <b>read from the right</b> — the last colon separates the tail, the tail's
+   * first {@code =} separates the position from the optional subpath, the last dot of what remains
+   * separates the label. That order is the grammar's whole trick: a label may carry a colon or an
+   * equals sign ({@code services.details.CI:v2:1}) because the tail was already taken off the end,
+   * and the slot stays a closed word because the label was already taken off the front of nothing.
+   * The subpath's own charset has no colon, dot or comma, which is what keeps every separator here
+   * safe around it.
    *
    * <p>A blank entry, an unknown slot and a second entry for one slot are all errors. The slot is
    * quoted back with the whole vocabulary, because a typo here is an application that silently
@@ -407,9 +470,13 @@ public final class DeploymentSpecParser {
         throw error(source, line, "`" + NAVIGATION_ENTRIES + "` has a blank entry");
       }
       int colon = entry.lastIndexOf(':');
+      String tail = colon < 0 ? "" : entry.substring(colon + 1);
+      int equals = tail.indexOf('=');
+      String positionText = (equals < 0 ? tail : tail.substring(0, equals)).strip();
+      String subpath = equals < 0 ? null : tail.substring(equals + 1).strip();
       int position;
       try {
-        position = Integer.parseInt(entry.substring(colon + 1).strip());
+        position = Integer.parseInt(positionText);
         if (colon < 1 || position < 1) {
           throw new NumberFormatException();
         }
@@ -419,8 +486,21 @@ public final class DeploymentSpecParser {
             line,
             "`"
                 + NAVIGATION_ENTRIES
-                + "` entries are `<slot>.<Label>:<position>` and the position is a positive"
-                + " integer, got: "
+                + "` entries are `<slot>.<Label>:<position>[=<subpath>]` and the position is a"
+                + " positive integer, got: "
+                + entry);
+      }
+      if (subpath != null
+          && (subpath.length() > SUBPATH_MAX_CHARS || !subpath.matches(SUBPATH))) {
+        throw error(
+            source,
+            line,
+            "`"
+                + NAVIGATION_ENTRIES
+                + "` subpaths are relative lowercase paths — segments of letters, digits and inner"
+                + " dashes joined by `/`, no leading or trailing slash, at most "
+                + SUBPATH_MAX_CHARS
+                + " characters — got: "
                 + entry);
       }
       String placement = entry.substring(0, colon).strip();
@@ -454,7 +534,7 @@ public final class DeploymentSpecParser {
             line,
             "`" + NAVIGATION_ENTRIES + "` claims the slot `" + slot + "` twice");
       }
-      declared.add(new NavigationEntry(slot, label, position));
+      declared.add(new NavigationEntry(slot, label, position, subpath));
     }
     return List.copyOf(declared);
   }
@@ -468,8 +548,29 @@ public final class DeploymentSpecParser {
             + NAVIGATION_ENTRIES
             + "` knows the slots "
             + String.join(", ", SLOTS)
-            + ", and an entry is `<slot>.<Label>:<position>`; got: "
+            + ", and an entry is `<slot>.<Label>:<position>[=<subpath>]`; got: "
             + (got.isBlank() ? entry : got));
+  }
+
+  /**
+   * Where the browsable API document lives: an absolute lowercase path, never the bare root. That
+   * it also sits under one of the published routes is a cross-key question, answered after the
+   * whole file is read.
+   */
+  private static String apiDocs(String value, String source, int line) {
+    if (value.length() > API_DOCS_MAX_CHARS || !value.matches(API_DOCS_PATH)) {
+      throw error(
+          source,
+          line,
+          "`"
+              + API_DOCS
+              + "` is an absolute lowercase path of at most "
+              + API_DOCS_MAX_CHARS
+              + " characters — segments of letters, digits and inner dashes, never `/` alone —"
+              + " got: "
+              + value);
+    }
+    return value;
   }
 
   /**
@@ -502,7 +603,13 @@ public final class DeploymentSpecParser {
     }
     List<String> spelled = new ArrayList<>();
     for (NavigationEntry entry : entries) {
-      spelled.add(entry.slot() + "." + entry.label() + ":" + entry.position());
+      spelled.add(
+          entry.slot()
+              + "."
+              + entry.label()
+              + ":"
+              + entry.position()
+              + (entry.subpath() == null ? "" : "=" + entry.subpath()));
     }
     return String.join(",", spelled);
   }

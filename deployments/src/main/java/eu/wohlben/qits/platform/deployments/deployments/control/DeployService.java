@@ -427,6 +427,7 @@ public class DeployService implements BuildAnnouncements {
       Integer upstreamPort,
       String browserHost,
       String navigationEntries,
+      String apiDocs,
       String navigationLabel,
       Integer navigationPosition) {}
 
@@ -462,6 +463,7 @@ public class DeployService implements BuildAnnouncements {
                     row.upstreamPort,
                     row.browserHost,
                     row.navigationEntries,
+                    row.apiDocs,
                     row.navigationLabel,
                     row.navigationPosition))
         .toList();
@@ -572,6 +574,7 @@ public class DeployService implements BuildAnnouncements {
                     row.containerName(),
                     finishedAt,
                     snapshot.browserHost(),
+                    snapshot.apiDocsPath(),
                     snapshot.navigation(),
                     snapshot.endpoints()),
                 row.causationId()));
@@ -583,7 +586,10 @@ public class DeployService implements BuildAnnouncements {
    * statement — a consumer replaces them together or not at all.
    */
   private record Snapshot(
-      List<DeploymentEndpoint> endpoints, String browserHost, List<NavigationEntry> navigation) {}
+      List<DeploymentEndpoint> endpoints,
+      String browserHost,
+      String apiDocsPath,
+      List<NavigationEntry> navigation) {}
 
   /**
    * {@link Plan#endpoints()} for a row this process did not deploy: the same three rules — the host
@@ -615,6 +621,7 @@ public class DeployService implements BuildAnnouncements {
             PdNetworks.alias(environmentName, row.applicationName()),
             row.upstreamPort()),
         row.browserHost(),
+        row.apiDocs(),
         navigation);
   }
 
@@ -653,6 +660,7 @@ public class DeployService implements BuildAnnouncements {
                 PdNetworks.alias(environmentName, row.applicationName()),
                 spec.upstreamPort()),
             browserHost(row.applicationName(), spec),
+            spec.apiDocs(),
             spec.navigationEntries());
       } catch (RuntimeException unreadable) {
         LOG.warnf(
@@ -824,7 +832,8 @@ public class DeployService implements BuildAnnouncements {
       List<String> routes,
       int upstreamPort,
       String browserHost,
-      List<NavigationEntry> navigation) {}
+      List<NavigationEntry> navigation,
+      String apiDocs) {}
 
   /**
    * One build-succeeded event, start to finish, on the worker thread: read what the repository
@@ -1035,7 +1044,8 @@ public class DeployService implements BuildAnnouncements {
               spec.routes(),
               spec.upstreamPort(),
               browserHost(applicationName, spec),
-              spec.navigationEntries()));
+              spec.navigationEntries(),
+              spec.apiDocs()));
     }
     return List.copyOf(targets);
   }
@@ -1127,7 +1137,8 @@ public class DeployService implements BuildAnnouncements {
             spec.routes(),
             spec.upstreamPort(),
             browserHost(applicationName, spec),
-            spec.navigationEntries()));
+            spec.navigationEntries(),
+            spec.apiDocs()));
   }
 
   /**
@@ -1233,6 +1244,7 @@ public class DeployService implements BuildAnnouncements {
                   List.of(),
                   DeploymentSpecParser.DEFAULT_UPSTREAM_PORT,
                   null,
+                  null,
                   null));
     }
     List<Target> targets = new ArrayList<>();
@@ -1253,6 +1265,7 @@ public class DeployService implements BuildAnnouncements {
                 null,
                 List.of(),
                 DeploymentSpecParser.DEFAULT_UPSTREAM_PORT,
+                null,
                 null,
                 null));
       }
@@ -1323,6 +1336,7 @@ public class DeployService implements BuildAnnouncements {
     deployment.upstreamPort = target.upstreamPort();
     deployment.browserHost = target.browserHost();
     deployment.navigationEntries = DeploymentSpecParser.joinEntries(target.navigation());
+    deployment.apiDocs = target.apiDocs();
     deployments.persist(deployment);
     return new Queued(deployment.id, target, deployment.createdAt);
   }
@@ -1420,6 +1434,11 @@ public class DeployService implements BuildAnnouncements {
     /** Where this application asks to appear. Application-level, so it is the target's own. */
     List<NavigationEntry> navigation() {
       return target.navigation();
+    }
+
+    /** Where the application's browsable API document lives, or null — the spec's own value. */
+    String apiDocsPath() {
+      return target.apiDocs();
     }
   }
 
@@ -1855,6 +1874,7 @@ public class DeployService implements BuildAnnouncements {
                     containerName,
                     finishedAt,
                     plan.browserHost(),
+                    plan.apiDocsPath(),
                     plan.navigation(),
                     plan.endpoints()),
                 plan.cause()));

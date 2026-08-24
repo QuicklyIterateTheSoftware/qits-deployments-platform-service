@@ -1,0 +1,11 @@
+-- Where this application's browsable API document lives, under one of its published routes
+-- (`/ci/q/swagger-ui`). A spec value on the deployment row for V3's reason, unchanged: the startup
+-- sweep's adoption announces a SELF-UPDATE from the row alone, with no live process that read the
+-- file, and the snapshot it announces has to carry everything the edge projects.
+--
+-- A PATH, never an origin: the edge composes the authority around it exactly as it does for the
+-- routes, so one row describes the document on every environment and every domain the platform has.
+-- Null is a real answer and the common one — a service that documents no HTTP surface. No backfill:
+-- the value arrives with each application's next deployment, which is when its spec first carries
+-- the key.
+alter table pd_deployment add column api_docs varchar(255);

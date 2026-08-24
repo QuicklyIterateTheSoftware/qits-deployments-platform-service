@@ -141,6 +141,15 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   public String navigationEntries;
 
   /**
+   * Where this application's browsable API document lives, under one of its published routes
+   * ({@code /ci/q/swagger-ui}). Null is a real answer — a service that documents no HTTP surface —
+   * and, like {@link #routes}, it is a spec value the row holds so the startup sweep's adoption can
+   * announce a snapshot with no live process that read the file.
+   */
+  @Column(name = "api_docs", length = 255)
+  public String apiDocs;
+
+  /**
    * LEGACY, READ-ONLY: the navigation label the primary route carried before navigation became
    * application-level. Nothing writes it any more. A row that has it and no {@link
    * #navigationEntries} was queued before V4, and the startup sweep announces it as {@code

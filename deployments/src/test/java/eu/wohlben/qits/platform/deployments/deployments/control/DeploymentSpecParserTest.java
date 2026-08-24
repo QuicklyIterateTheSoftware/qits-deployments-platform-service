@@ -178,6 +178,77 @@ class DeploymentSpecParserTest {
   }
 
   @Test
+  void anEntryMayNameTheViewItOpensWithASubpath() {
+    // The tail after the last colon splits at its first `=`: position on the left, subpath on the
+    // right. The subpath is a client-side route segment the shell appends after the scope — it is
+    // not an edge route, so no published-route rule touches it beyond the entry's own.
+    assertEquals(
+        List.of(new NavigationEntry("services.details", "Api Docs", 6, "api-docs")),
+        parse("routes: /projects\nnavigation-entries: services.details.Api Docs:6=api-docs\n")
+            .navigationEntries());
+    // A label's right to carry a colon survives, because the tail was already taken off the end.
+    assertEquals(
+        List.of(new NavigationEntry("services.details", "CI:v2", 1, "runs/latest")),
+        parse("routes: /ci\nnavigation-entries: services.details.CI:v2:1=runs/latest\n")
+            .navigationEntries());
+  }
+
+  @Test
+  void aSubpathOutsideItsCharsetIsAnError() {
+    // The charset has no colon, dot or comma by construction — that is what keeps the entry list's
+    // separators and the right-to-left parse safe around it — and no slash at either end, because
+    // the shell composes the joint.
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: system.CI:1=\n").contains("subpath"));
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: system.CI:1=/api\n").contains("subpath"));
+    assertTrue(
+        messageOf("routes: /ci\nnavigation-entries: system.CI:1=api-docs/\n").contains("subpath"));
+    assertTrue(
+        messageOf("routes: /ci\nnavigation-entries: system.CI:1=Api Docs\n").contains("subpath"));
+    assertTrue(
+        messageOf("routes: /ci\nnavigation-entries: system.CI:1=" + "a".repeat(129) + "\n")
+            .contains("128"));
+  }
+
+  @Test
+  void theStoredSpellingRoundTripsExactly() {
+    // adoptedSnapshot re-announces a self-update from the stored column alone, so the join and the
+    // parse are one serialization format: what the file said is what the row says, byte for byte.
+    for (String spelled :
+        List.of(
+            "services.details.CI:2,platform.Deployments:4",
+            "services.details.Api Docs:6=api-docs",
+            "services.details.CI:v2:1=runs/latest,system.CI:1")) {
+      assertEquals(
+          spelled,
+          DeploymentSpecParser.joinEntries(DeploymentSpecParser.parseEntries(spelled)));
+    }
+  }
+
+  @Test
+  void apiDocsMustSitUnderAPublishedRoute() {
+    // A document nobody can reach describes nothing: the edge only proxies what `routes` declares.
+    assertEquals(
+        "/ci/q/swagger-ui", parse("routes: /ci\napi-docs: /ci/q/swagger-ui\n").apiDocs());
+    assertEquals("/ci", parse("routes: /ci\napi-docs: /ci\n").apiDocs(), "the route itself is in");
+    assertTrue(messageOf("routes: /ci\napi-docs: /docs/q/swagger-ui\n").contains("api-docs"));
+    assertTrue(
+        messageOf("routes: /cd\napi-docs: /cdn\n").contains("api-docs"),
+        "a sibling prefix is not under the route");
+    assertTrue(messageOf("api-docs: /ci/q/swagger-ui\n").contains("api-docs"));
+    assertNull(DeploymentSpec.DEFAULTS.apiDocs());
+  }
+
+  @Test
+  void anApiDocsValueOutsideItsCharsetIsAnError() {
+    assertTrue(messageOf("routes: /ci\napi-docs: ci/q/swagger-ui\n").contains("api-docs"));
+    assertTrue(messageOf("routes: /ci\napi-docs: /\n").contains("api-docs"));
+    assertTrue(messageOf("routes: /ci\napi-docs: /ci/Q/Swagger\n").contains("api-docs"));
+    assertTrue(messageOf("routes: /ci\napi-docs:\n").contains("api-docs"));
+    assertTrue(
+        messageOf("routes: /ci\napi-docs: /ci/" + "a".repeat(255) + "\n").contains("api-docs"));
+  }
+
+  @Test
   void aHostIsOneDnsLabelBecauseTheEdgeBuildsTheAuthorityAroundIt() {
     assertEquals("registry", parse("routes: /artifacts\nhost: registry\n").host());
     assertTrue(messageOf("routes: /ci\nhost: CI\n").contains("host"));

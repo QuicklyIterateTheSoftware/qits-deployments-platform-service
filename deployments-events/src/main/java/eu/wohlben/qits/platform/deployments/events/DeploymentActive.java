@@ -31,6 +31,11 @@ import java.util.UUID;
  * same three entries under six categories — and a per-route label could say none of that. Empty is
  * an application that creates no navigation option at all, which is most of them.
  *
+ * <p><b>{@code apiDocsPath} is where this application's browsable API document lives</b>, under one
+ * of its published routes ({@code /ci/q/swagger-ui}), and null is a real answer: a service that
+ * documents no HTTP surface. Like the routes it is a path and never an origin — the edge composes
+ * the authority around it.
+ *
  * <p>{@code occurredAt} is {@code finishedAt}, the value the cutover bookkeeping wrote on the row.
  * The predecessor it decommissioned announces nothing: a deployment being replaced is this event
  * seen from the other side, and a consumer that wants "what is live" reads the newest event per
@@ -47,6 +52,7 @@ public record DeploymentActive(
     String containerName,
     Instant finishedAt,
     String browserHost,
+    String apiDocsPath,
     List<NavigationEntry> navigation,
     List<DeploymentEndpoint> endpoints)
     implements QitsEvent {
@@ -102,13 +108,14 @@ public record DeploymentActive(
         containerName,
         finishedAt,
         null,
+        null,
         List.of(),
         endpoints);
   }
 
   /**
-   * The whole statement: the routes, the host they are also served at, and where the application
-   * asks to appear in the navigation.
+   * The whole statement: the routes, the host they are also served at, where the application asks
+   * to appear in the navigation, and where its API document lives.
    */
   public DeploymentActive(
       String deploymentId,
@@ -120,6 +127,7 @@ public record DeploymentActive(
       String containerName,
       Instant finishedAt,
       String browserHost,
+      String apiDocsPath,
       List<NavigationEntry> navigation,
       List<DeploymentEndpoint> endpoints) {
     this(
@@ -133,6 +141,7 @@ public record DeploymentActive(
         containerName,
         finishedAt,
         browserHost,
+        apiDocsPath,
         navigation,
         endpoints);
   }
