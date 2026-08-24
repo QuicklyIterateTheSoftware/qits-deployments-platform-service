@@ -72,6 +72,10 @@ public interface SpecSource {
    * LIST, because one application sits under several headings; empty is an application that creates
    * no navigation option, which is most of them.
    *
+   * <p>{@code apiDocs} is where the application's browsable API document lives, under one of its
+   * published routes ({@code /ci/q/swagger-ui}). Null is a real answer — a service that documents
+   * no HTTP surface — and the parser has already refused a path that sits under no route.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -88,7 +92,8 @@ public interface SpecSource {
       int upstreamPort,
       String host,
       boolean browserHostDeclared,
-      List<NavigationEntry> navigationEntries) {
+      List<NavigationEntry> navigationEntries,
+      String apiDocs) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
@@ -138,7 +143,8 @@ public interface SpecSource {
           8080,
           null,
           false,
-          List.of());
+          List.of(),
+          null);
     }
 
     /**

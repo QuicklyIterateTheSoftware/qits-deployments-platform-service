@@ -252,7 +252,8 @@ public class PdSweepAdoptionPublishTest {
         upstreamPort,
         null,
         false,
-        navigationEntries);
+        navigationEntries,
+        null);
   }
 
   private static String image(String sha) {

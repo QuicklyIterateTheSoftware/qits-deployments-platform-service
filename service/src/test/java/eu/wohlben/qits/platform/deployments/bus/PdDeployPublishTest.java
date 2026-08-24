@@ -236,7 +236,8 @@ public class PdDeployPublishTest {
             8080,
             null,
             false,
-            List.of(new NavigationEntry("system", "No host", 1))));
+            List.of(new NavigationEntry("system", "No host", 1)),
+            null));
 
     postBuildSucceeded("run-pub-nohost", "repo-pub-nohost", "environment/pub-nohost", null);
     awaitSettled(environmentId, 1);
@@ -262,7 +263,8 @@ public class PdDeployPublishTest {
         upstreamPort,
         host,
         true,
-        navigationEntries);
+        navigationEntries,
+        null);
   }
 
   @Test
