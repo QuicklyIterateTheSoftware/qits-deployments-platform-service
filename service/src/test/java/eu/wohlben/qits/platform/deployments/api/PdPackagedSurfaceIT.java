@@ -35,17 +35,13 @@ import org.junit.jupiter.api.Test;
  *
  * <p>It is also <b>the only test here that ever sees the client</b>. Quinoa is disabled by default
  * in test mode, so no {@code @QuarkusTest} in this repo has a client in it at all — a unit test
- * asserting something about the segment would pass against a process serving nothing. What the SPA
- * is actually served as is proven here or nowhere, and the probe list is the platform's, from
- * {@code docs/project-setup-quinoa-angular.md}.
+ * asserting something about what is served would pass against a process serving nothing. What the
+ * SPA is actually served as is proven here or nowhere.
  *
- * <p><b>The base-href probe is still absent, and the reason it was absent has gone.</b> It was left
- * out while the client said {@code /cd/}: asserting the right value would have failed the build for
- * something no change in this repo could fix, and asserting {@code /cd/} would have pinned the wrong
- * value into a test. The client is qits-spa-deployments now and its {@code angular.json}
- * says {@code /platform-deployments/}, so what remains is an ordinary open debt rather than a
- * blocked one. This suite asserts what the SERVER owes — the client is served at the segment, deep
- * links reach it, machine paths never do. See AGENTS.md.
+ * <p><b>The client is served at the root</b> since this service got a host of its own
+ * ({@code deployments.<env>.<domain>}). The segment survives only as the wire prefix, so
+ * {@code /platform-deployments/} is a 404 rather than a second door into the client, and an old
+ * bookmark is the edge's problem, answered there with a redirect.
  *
  * <p>No deployment is driven here: that needs a swarm, and the packaged process carries the real
  * {@link eu.wohlben.qits.platform.deployments.swarmhost.SwarmDeploymentDriver}. The container
@@ -58,6 +54,9 @@ import org.junit.jupiter.api.Test;
 public class PdPackagedSurfaceIT {
 
   private static final String SEGMENT = "/platform-deployments";
+
+  /** What the client's index.html spells now that it is mounted at the root of its own host. */
+  private static final String BASE_HREF = "<base href=\"/\">";
 
   /**
    * Hands the launched artifact its databases the way a deployment does — as the generic resource
@@ -118,61 +117,51 @@ public class PdPackagedSurfaceIT {
   }
 
   @Test
-  public void theClientIsServedAtTheSegment() {
-    given().when().get(SEGMENT + "/").then().statusCode(200).contentType(ContentType.HTML);
+  public void theClientIsServedAtTheRoot() {
+    given().when().get("/").then().statusCode(200).contentType(ContentType.HTML);
   }
 
   /**
-   * The fourth spelling of the segment, and the only one no build here can check any other way: the
-   * client's own baseHref, set in qits-spa-deployments' angular.json. A page served with
-   * the wrong one loads and then fetches its own JavaScript from a segment nothing serves — green
-   * build, blank screen. The other three are {@code quarkus.quinoa.ui-root-path}, {@code
-   * quarkus.rest.path} and {@code quarkus.http.non-application-root-path}.
+   * The one spelling no build here can check any other way: the client's own baseHref, set in
+   * qits-spa-deployments' angular.json. The client is mounted at the root of this service's host, so
+   * the value is {@code /} — and a page served with anything else loads and then fetches its own
+   * JavaScript from somewhere nothing serves: green build, blank screen.
    */
   @Test
-  public void theClientAsksForItsAssetsUnderThisSegment() {
-    String index = given().when().get(SEGMENT + "/").then().statusCode(200).extract().asString();
-    String expected = "<base href=\"" + SEGMENT + "/\">";
-    assertTrue(index.contains(expected), "index.html does not carry " + expected);
+  public void theClientAsksForItsAssetsAtTheRoot() {
+    String index = given().when().get("/").then().statusCode(200).extract().asString();
+    assertTrue(index.contains(BASE_HREF), "index.html does not carry " + BASE_HREF);
   }
 
   @Test
   public void aDeepLinkFallsBackToTheClientSoItsRouterOwnsIt() {
-    given()
-        .when()
-        .get(SEGMENT + "/some/route")
-        .then()
-        .statusCode(200)
-        .contentType(ContentType.HTML);
+    given().when().get("/some/route").then().statusCode(200).contentType(ContentType.HTML);
+
+    // The project-scoped form of the one page. `/qits` is an address the client routes and the
+    // server knows nothing about, and it has to survive a reload like any other.
+    given().when().get("/qits").then().statusCode(200).contentType(ContentType.HTML);
   }
 
   @Test
-  public void theBareSegmentRedirectsRatherThanFourOhFouring() {
-    // Quinoa mounts at <segment>/*, which does not match the bare segment (upstream #960) — the
-    // redirect in webui/WebUiRedirect is this service's answer, and only the packaged process has
-    // both it and a real client to bounce to.
-    given()
-        .redirects()
-        .follow(false)
-        .when()
-        .get(SEGMENT)
-        .then()
-        .statusCode(301)
-        .header("Location", SEGMENT + "/");
+  public void theOldSegmentIsNoLongerADoorIntoTheClient() {
+    // The whole /platform-deployments prefix is in quarkus.quinoa.ignored-path-prefixes, so nothing
+    // under it is rerouted to index.html.
+    given().when().get(SEGMENT).then().statusCode(404);
+    String body = given().when().get(SEGMENT + "/").then().statusCode(404).extract().asString();
+    assertFalse(body.contains(BASE_HREF), "the old segment must not serve the client; got: " + body);
   }
 
   @Test
   public void aMistypedMachinePathIsNeverTheClient() {
-    // The whole reason quarkus.quinoa.ignored-path-prefixes is set: without /api in that list this
-    // answers 200 with index.html, and qits-ci's intake — which swallows delivery failures at debug
-    // — would parse the client's not-found page as an accepted delivery.
+    // The whole reason quarkus.quinoa.ignored-path-prefixes is set: without the segment in that
+    // list this answers 200 with index.html, and qits-ci's intake — which swallows delivery
+    // failures at debug — would parse the client's not-found page as an accepted delivery.
     //
     // The assertion is "404, and not the CLIENT" rather than "404, never HTML", because what comes
     // back here is Vert.x' own stock `<h1>Resource not found</h1>` — text/html, and correct. Every
     // sibling answers a mistyped machine path the same way; asserting on the content type alone
     // would fail against the right behaviour while still passing against the wrong one.
-    String index =
-        given().when().get(SEGMENT + "/").then().statusCode(200).extract().asString();
+    String index = given().when().get("/").then().statusCode(200).extract().asString();
 
     String body =
         given().when().get(SEGMENT + "/api/nope").then().statusCode(404).extract().asString();
@@ -180,16 +169,18 @@ public class PdPackagedSurfaceIT {
         body.equals(index),
         "a mistyped machine path must not be answered with the client; got: " + body);
 
-    // /q is the second half of the ignore list, and the derivation would have covered both — this
-    // pins that setting the key by hand did not drop one.
+    // /q is the other half of what the one prefix covers — this pins that the single absolute entry
+    // did not lose it.
     String underQ =
         given().when().get(SEGMENT + "/q/health/nope").then().statusCode(404).extract().asString();
     assertFalse(
         underQ.equals(index),
         "a mistyped non-application path must not be answered with the client; got: " + underQ);
 
-    // qits-gateway routes verbatim by prefix, so there is no unprefixed form to fall back to.
-    given().when().get("/api/environments").then().statusCode(404);
+    // The edge path-routes verbatim by prefix, so there is no unprefixed form to fall back to — and
+    // at the root an unprefixed /api/environments is the CLIENT's ground, which is why the check is
+    // that it never answers as the API.
+    given().when().get("/api/environments").then().statusCode(200).contentType(ContentType.HTML);
   }
 
   @Test

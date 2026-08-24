@@ -294,7 +294,8 @@ Two more things the flip does once, neither of them an error:
 | `GET /pins` | qits-platform-artifacts' OCI garbage collector, fail-closed |
 | `POST /events/build-succeeded` | qits-ci, fire-and-forget; the manual and bootstrap door |
 
-All under `/platform-deployments/api`. The client is served at `/platform-deployments`, health at
+All under `/platform-deployments/api`. The client is served at `/` — this service has a host of its
+own, `deployments.<env>.<domain>`, and the segment is the wire surface alone. Health is at
 `/platform-deployments/q/health/ready` — which is also what this component's own health-path
 convention derives for its own name.
 
