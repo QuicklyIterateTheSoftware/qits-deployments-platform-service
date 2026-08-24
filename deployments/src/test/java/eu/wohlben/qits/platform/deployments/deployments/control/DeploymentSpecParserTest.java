@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -76,21 +77,62 @@ class DeploymentSpecParserTest {
             """
             routes: /refinement,/refinement/api
             upstream_port: 8181
-            navigation: Refinement:12
+            host: refinement
+            navigation-entries: services.details.Refinement:12, platform.Refinement:1
             """);
 
     assertEquals(List.of("/refinement", "/refinement/api"), spec.routes());
     assertEquals(8181, spec.upstreamPort());
-    assertEquals("Refinement", spec.navigationLabel());
-    assertEquals(12, spec.navigationPosition());
+    assertEquals("refinement", spec.host());
+    assertTrue(spec.browserHostDeclared());
+    assertEquals(
+        List.of(
+            new NavigationEntry("services.details", "Refinement", 12),
+            new NavigationEntry("platform", "Refinement", 1)),
+        spec.navigationEntries());
+  }
+
+  @Test
+  void anEntryIsReadFromTheRightSoALabelMayCarryAColon() {
+    // The whole grammar in one line: the last colon takes the position off the end, the last dot of
+    // what remains takes the label off, and everything before it is the slot. That order is what
+    // lets a label contain a colon while the slot vocabulary stays closed.
+    assertEquals(
+        List.of(new NavigationEntry("services.details", "CI:v2", 1)),
+        parse("routes: /ci\nnavigation-entries: services.details.CI:v2:1\n").navigationEntries());
+  }
+
+  @Test
+  void aHostIsDerivedElsewhereButAskedForHere() {
+    // The parser cannot derive the default — it never knows which application it reads for — so it
+    // answers the question that decides whether there is anything to derive.
+    assertNull(parse("routes: /ci\nnavigation-entries: system.CI:1\n").host());
+    assertTrue(parse("routes: /ci\nnavigation-entries: system.CI:1\n").browserHostDeclared());
+    assertTrue(parse("routes: /ci\nhost: ci\n").browserHostDeclared());
+    // And the retired singular asks for none: a file nobody has rewritten keeps its path prefix.
+    assertFalse(parse("routes: /ci\nnavigation: CI:1\n").browserHostDeclared());
+  }
+
+  @Test
+  void theRetiredNavigationKeyMapsOntoOneSystemEntry() {
+    // A spec is read at the BUILT sha, so every unrewritten file and every rollback pin still
+    // presents this key. It maps onto the list that replaced it rather than being tolerated twice.
+    assertEquals(
+        List.of(new NavigationEntry("system", "Refinement", 12)),
+        parse("routes: /refinement\nnavigation: Refinement:12\n").navigationEntries());
+    // Two answers to one question is an error, and the message names the key to keep.
+    assertTrue(
+        messageOf("routes: /ci\nnavigation: CI:1\nnavigation-entries: system.CI:1\n")
+            .contains("navigation-entries"));
   }
 
   @Test
   void noRouteDeclarationIsTheCompatibleEmptySnapshot() {
     assertEquals(List.of(), DeploymentSpec.DEFAULTS.routes());
     assertEquals(8080, DeploymentSpec.DEFAULTS.upstreamPort());
-    assertNull(DeploymentSpec.DEFAULTS.navigationLabel());
-    assertNull(DeploymentSpec.DEFAULTS.navigationPosition());
+    assertNull(DeploymentSpec.DEFAULTS.host());
+    assertFalse(DeploymentSpec.DEFAULTS.browserHostDeclared());
+    assertEquals(List.of(), DeploymentSpec.DEFAULTS.navigationEntries());
   }
 
   @Test
@@ -98,8 +140,51 @@ class DeploymentSpecParserTest {
     assertTrue(messageOf("routes: refinement\n").contains("routes"));
     assertTrue(messageOf("routes: /refinement,/refinement\n").contains("twice"));
     assertTrue(messageOf("routes: /refinement\nupstream_port: 0\n").contains("upstream_port"));
+    // Navigation has to lead to a published route, whichever key asks for it.
     assertTrue(messageOf("navigation: Refinement:3\n").contains("navigation"));
     assertTrue(messageOf("routes: /refinement\nnavigation: Refinement:0\n").contains("navigation"));
+    assertTrue(
+        messageOf("navigation-entries: system.Refinement:3\n").contains("navigation-entries"));
+    assertTrue(messageOf("host: refinement\n").contains("host"));
+  }
+
+  @Test
+  void aSlotOutsideTheVocabularyNamesTheWholeVocabulary() {
+    // The strictness that matters here: a typo answered with a default is an application that
+    // silently appears nowhere, and nothing in the file says why.
+    String message = messageOf("routes: /ci\nnavigation-entries: services.CI:1\n");
+    assertTrue(message.contains("services.details"), message);
+    assertTrue(message.contains("project.detail"), message);
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: CI:1\n").contains("slots"));
+  }
+
+  @Test
+  void oneApplicationClaimsEachSlotOnce() {
+    assertTrue(
+        messageOf("routes: /ci\nnavigation-entries: system.CI:1, system.Runs:2\n")
+            .contains("twice"));
+  }
+
+  @Test
+  void anEntryNeedsANonBlankLabelAndAPositivePosition() {
+    assertTrue(messageOf("routes: /ci\nnavigation-entries:\n").contains("blank"));
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: system.CI:1,\n").contains("blank"));
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: system.:1\n").contains("label"));
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: system.CI:0\n").contains("position"));
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: system.CI\n").contains("position"));
+    assertTrue(
+        messageOf("routes: /ci\nnavigation-entries: system." + "C".repeat(65) + ":1\n")
+            .contains("64"));
+  }
+
+  @Test
+  void aHostIsOneDnsLabelBecauseTheEdgeBuildsTheAuthorityAroundIt() {
+    assertEquals("registry", parse("routes: /artifacts\nhost: registry\n").host());
+    assertTrue(messageOf("routes: /ci\nhost: CI\n").contains("host"));
+    assertTrue(messageOf("routes: /ci\nhost: -ci\n").contains("host"));
+    assertTrue(messageOf("routes: /ci\nhost: ci-\n").contains("host"));
+    assertTrue(messageOf("routes: /ci\nhost: ci.dev\n").contains("host"));
+    assertTrue(messageOf("routes: /ci\nhost: " + "c".repeat(64) + "\n").contains("host"));
   }
 
   @Test
@@ -363,6 +448,7 @@ class DeploymentSpecParserTest {
     assertTrue(message.contains("resources"), message);
     assertTrue(message.contains("update_order"), message);
     assertTrue(message.contains("publish_mode"), message);
+    assertTrue(message.contains("navigation-entries"), message);
   }
 
   @Test

@@ -124,11 +124,32 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   @Column(name = "upstream_port")
   public Integer upstreamPort;
 
-  /** The navigation label the PRIMARY route carries, or null when it creates no menu option. */
+  /**
+   * The one DNS label this deployment is also served at ({@code ci}, {@code registry}), or null for
+   * an application reached under its path prefix alone — which is most of them. Never an authority:
+   * the edge builds {@code <label>.<environment>.<domain>} around it.
+   */
+  @Column(name = "browser_host", length = 63)
+  public String browserHost;
+
+  /**
+   * Where the application asks to appear, in the spec's own comma-separated spelling ({@code
+   * services.details.CI:2,platform.Deployments:4}). Null or empty is an application that creates no
+   * navigation option.
+   */
+  @Column(name = "navigation_entries", columnDefinition = "text")
+  public String navigationEntries;
+
+  /**
+   * LEGACY, READ-ONLY: the navigation label the primary route carried before navigation became
+   * application-level. Nothing writes it any more. A row that has it and no {@link
+   * #navigationEntries} was queued before V4, and the startup sweep announces it as {@code
+   * system.<label>} — see {@code DeployService.adoptedSnapshot}.
+   */
   @Column(name = "navigation_label", length = 64)
   public String navigationLabel;
 
-  /** Where that label sits in the platform's navigation; null whenever the label is. */
+  /** LEGACY, READ-ONLY: where that label sat. Read with {@link #navigationLabel} and never alone. */
   @Column(name = "navigation_position")
   public Integer navigationPosition;
 

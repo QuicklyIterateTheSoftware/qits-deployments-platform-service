@@ -17,6 +17,7 @@ import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProv
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import io.quarkus.hibernate.orm.PersistenceUnit;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -161,23 +162,17 @@ public class PdDeployPublishTest {
   }
 
   @Test
-  public void theActiveEventPublishesTheResolvedRoutesAndPrimaryNavigation() {
+  public void theActiveEventPublishesTheResolvedRoutesHostAndNavigation() {
     String environmentId = createEnvironment("pub-routes");
     specs.script(
         "repo-pub-routes",
-        new DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT,
-            false,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
+        spec(
             List.of("/refinement", "/refinement/api"),
             8181,
-            "Refinement",
-            9));
+            "refinement",
+            List.of(
+                new NavigationEntry("services.details", "Refinement", 9),
+                new NavigationEntry("platform", "Refinement", 1))));
 
     postBuildSucceeded("run-pub-routes", "repo-pub-routes", "environment/pub-routes", null);
     awaitSettled(environmentId, 1);
@@ -188,9 +183,86 @@ public class PdDeployPublishTest {
     assertTrue(payload.contains("\"path\":\"/refinement\""), payload);
     assertTrue(payload.contains("\"upstreamHost\":\"pub-routes-repo-pub-routes\""), payload);
     assertTrue(payload.contains("\"upstreamPort\":8181"), payload);
-    assertTrue(payload.contains("\"navigationLabel\":\"Refinement\""), payload);
-    assertTrue(payload.contains("\"navigationPosition\":9"), payload);
     assertTrue(payload.contains("\"path\":\"/refinement/api\""), payload);
+    // The host is the application's, not a route's, and so is every placement.
+    assertTrue(payload.contains("\"browserHost\":\"refinement\""), payload);
+    assertTrue(
+        payload.contains("{\"label\":\"Refinement\",\"position\":9,\"slot\":\"services.details\"}"),
+        payload);
+    assertTrue(
+        payload.contains("{\"label\":\"Refinement\",\"position\":1,\"slot\":\"platform\"}"),
+        payload);
+  }
+
+  @Test
+  public void aHostTheFileDoesNotStateIsDerivedFromTheApplicationName() {
+    // The derivation the parser cannot do, because it never knows which application it read for:
+    // the name without its platform prefix. It happens at registration, where the name is in hand.
+    String environmentId = createEnvironment("pub-derived");
+    specs.script(
+        "qits-platform-pub-derived",
+        spec(
+            List.of("/pub-derived"),
+            8080,
+            null,
+            List.of(new NavigationEntry("platform", "Derived", 4))));
+
+    postBuildSucceeded(
+        "run-pub-derived", "qits-platform-pub-derived", "environment/pub-derived", null);
+    awaitSettled(environmentId, 1);
+
+    assertTrue(
+        only("DeploymentActive").payload.contains("\"browserHost\":\"pub-derived\""),
+        only("DeploymentActive").payload);
+  }
+
+  @Test
+  public void anApplicationThatAsksForNoHostIsAnnouncedWithout() {
+    // Every file that still carries the retired `navigation` key is this case, and it must keep
+    // being reached under its path prefix alone until it is rewritten.
+    String environmentId = createEnvironment("pub-nohost");
+    specs.script(
+        "repo-pub-nohost",
+        new DeploymentSpec(
+            PdDeploymentTarget.ENVIRONMENT,
+            false,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of("/nohost"),
+            8080,
+            null,
+            false,
+            List.of(new NavigationEntry("system", "No host", 1))));
+
+    postBuildSucceeded("run-pub-nohost", "repo-pub-nohost", "environment/pub-nohost", null);
+    awaitSettled(environmentId, 1);
+
+    String payload = only("DeploymentActive").payload;
+    assertFalse(payload.contains("browserHost"), payload);
+    assertTrue(payload.contains("\"label\":\"No host\""), payload);
+  }
+
+  /** A spec that declares a public surface: routes, the host it asks for, and its placements. */
+  private static DeploymentSpec spec(
+      List<String> routes, int upstreamPort, String host, List<NavigationEntry> navigationEntries) {
+    return new DeploymentSpec(
+        PdDeploymentTarget.ENVIRONMENT,
+        false,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        routes,
+        upstreamPort,
+        host,
+        true,
+        navigationEntries);
   }
 
   @Test

@@ -20,6 +20,17 @@ import java.util.UUID;
  * wire alias rather than asking consumers to reimplement a deployer convention. An empty list is a
  * service that declares no public routes; consumers replace, never merge, the prior snapshot.
  *
+ * <p><b>{@code browserHost} is the one DNS label this application is served at</b> — {@code ci} in
+ * {@code ci.dev.wohlben.eu} — and null is a real answer: an application that asks for no host of
+ * its own is reached under its path prefix, as every application was. The edge builds the authority
+ * around the label; the label alone is what travels, so one deployment describes itself on every
+ * environment and domain the platform has.
+ *
+ * <p><b>{@code navigation} is application-level and replaces the label an endpoint used to carry.</b>
+ * One application can sit under several headings — a repository's Docs, CI and Workspaces are the
+ * same three entries under six categories — and a per-route label could say none of that. Empty is
+ * an application that creates no navigation option at all, which is most of them.
+ *
  * <p>{@code occurredAt} is {@code finishedAt}, the value the cutover bookkeeping wrote on the row.
  * The predecessor it decommissioned announces nothing: a deployment being replaced is this event
  * seen from the other side, and a consumer that wants "what is live" reads the newest event per
@@ -35,6 +46,8 @@ public record DeploymentActive(
     String runId,
     String containerName,
     Instant finishedAt,
+    String browserHost,
+    List<NavigationEntry> navigation,
     List<DeploymentEndpoint> endpoints)
     implements QitsEvent {
 
@@ -42,6 +55,7 @@ public record DeploymentActive(
     if (eventId == null) {
       eventId = UUID.randomUUID();
     }
+    navigation = navigation == null ? List.of() : List.copyOf(navigation);
     endpoints = endpoints == null ? List.of() : List.copyOf(endpoints);
   }
 
@@ -56,7 +70,6 @@ public record DeploymentActive(
       String containerName,
       Instant finishedAt) {
     this(
-        null,
         deploymentId,
         applicationName,
         environmentId,
@@ -80,6 +93,36 @@ public record DeploymentActive(
       Instant finishedAt,
       List<DeploymentEndpoint> endpoints) {
     this(
+        deploymentId,
+        applicationName,
+        environmentId,
+        environmentName,
+        commitSha,
+        runId,
+        containerName,
+        finishedAt,
+        null,
+        List.of(),
+        endpoints);
+  }
+
+  /**
+   * The whole statement: the routes, the host they are also served at, and where the application
+   * asks to appear in the navigation.
+   */
+  public DeploymentActive(
+      String deploymentId,
+      String applicationName,
+      String environmentId,
+      String environmentName,
+      String commitSha,
+      String runId,
+      String containerName,
+      Instant finishedAt,
+      String browserHost,
+      List<NavigationEntry> navigation,
+      List<DeploymentEndpoint> endpoints) {
+    this(
         null,
         deploymentId,
         applicationName,
@@ -89,6 +132,8 @@ public record DeploymentActive(
         runId,
         containerName,
         finishedAt,
+        browserHost,
+        navigation,
         endpoints);
   }
 
