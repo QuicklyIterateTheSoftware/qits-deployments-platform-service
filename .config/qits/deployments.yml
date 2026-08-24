@@ -92,3 +92,8 @@ resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream
 # fails a deployment, so a deployer that predates the parser reads this file and refuses the build
 # that would have taught it the word. Release the parser first, then this line.
 update_order: stop-first
+
+# Where the browsable API document lives: swagger-ui under this service's non-application
+# root, which sits under the primary route above. The shell's Api Docs viewer reads it off
+# /main-navigation and frames it for this repository.
+api-docs: /platform-deployments/q/swagger-ui
