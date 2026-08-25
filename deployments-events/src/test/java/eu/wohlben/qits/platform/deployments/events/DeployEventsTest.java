@@ -85,7 +85,7 @@ class DeployEventsTest {
     JsonNode json = CanonicalJson.parse(CanonicalJson.envelope(envelope));
 
     assertEquals(
-        List.of("description", "name", "occurredAt", "parentId", "payload"),
+        List.of("description", "environment", "name", "occurredAt", "parentId", "payload"),
         json.properties().stream().map(Map.Entry::getKey).toList());
     assertEquals("DeploymentQueued", json.get("name").asText());
     assertEquals("2026-08-12T09:00:00Z", json.get("occurredAt").asText());

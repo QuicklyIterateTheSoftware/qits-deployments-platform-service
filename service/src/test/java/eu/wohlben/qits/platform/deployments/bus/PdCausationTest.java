@@ -176,7 +176,7 @@ public class PdCausationTest {
         ("{\"branch\":\"%s\",\"commitSha\":\"%s\",\"finishedAt\":\"%s\",\"repoId\":\"%s\","
                 + "\"runId\":\"run-cause\"}")
             .formatted(branch, sha, occurredAt, repoId);
-    return new EventFrame(id, "BuildSuccessful", occurredAt, payload, null, null);
+    return new EventFrame(id, "BuildSuccessful", occurredAt, payload, null, null, null);
   }
 
   /** Null-safe on purpose: the assertion should read the column, not a NoSuchElement. */
