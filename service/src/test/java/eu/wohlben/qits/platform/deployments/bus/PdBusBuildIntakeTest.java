@@ -210,7 +210,7 @@ public class PdBusBuildIntakeTest {
     createEnvironment("bus-poison", "environment/bus-poison");
     EventFrame poison =
         new EventFrame(
-            UUID.randomUUID().toString(), "BuildSuccessful", Instant.now(), "not json", null, null);
+            UUID.randomUUID().toString(), "BuildSuccessful", Instant.now(), "not json", null, null, null);
 
     assertFalse(subscriber.selects(poison), "an unreadable payload selects nothing");
     subscriber.onFrame(poison);
@@ -231,7 +231,7 @@ public class PdBusBuildIntakeTest {
             Instant.now(),
             "{\"runId\":\"run-1\",\"branch\":\"environment/bus-partial\"}",
             null,
-            null);
+            null, null);
 
     subscriber.onFrame(partial);
     awaitWorkerIdle();
@@ -282,7 +282,7 @@ public class PdBusBuildIntakeTest {
 
   private static EventFrame frame(Instant occurredAt, String payload) {
     return new EventFrame(
-        UUID.randomUUID().toString(), "BuildSuccessful", occurredAt, payload, null, null);
+        UUID.randomUUID().toString(), "BuildSuccessful", occurredAt, payload, null, null, null);
   }
 
   private String createEnvironment(String name, String branch) {

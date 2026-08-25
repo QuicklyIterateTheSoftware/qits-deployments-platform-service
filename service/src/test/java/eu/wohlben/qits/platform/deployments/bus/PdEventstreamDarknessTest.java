@@ -72,7 +72,7 @@ public class PdEventstreamDarknessTest {
             Instant.now(),
             "{\"branch\":\"main\",\"commitSha\":\"" + "c".repeat(40) + "\",\"repoId\":\"repo-dark\"}",
             null,
-            null);
+            null, null);
 
     assertEquals(
         DurableFunnel.Result.SKIPPED,
