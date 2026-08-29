@@ -1348,31 +1348,97 @@ against.
 - **`PdPackagedSurfaceIT` is also the only test that ever sees the client.** Quinoa is disabled in
   test mode, so no `@QuarkusTest` here has a client at all — a unit test asserting anything about the
   segment would pass against a process serving nothing.
-- **`TokenValidationBootstrapIT` is the second packaged IT and this repo's only userflow.** It
-  *extends* `PdPackagedSurfaceIT.PackagedUnderTarget` — one answer to "what does a launched
-  qits-platform-deployments need in order to boot", one parking trick — and adds only the two seams
-  it moves: `qits.auth.machine.required=true`, which is what turns the shipped
-  `quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}` on, and
-  `quarkus.oidc.auth-server-url` pointed at `MockIdp`. That is the half of the shipped OIDC block no
-  other test reaches: `MachineGuardEnforcedTest` opens the same gate but **inlines the verification
-  key and clears `auth-server-url`**, precisely so it needs no idp — so the boot-time JWKS fetch,
+- **`TokenValidationBootstrapIT` is the second packaged IT and the first class of the userflow
+  catalogue.** It opens the gate — `qits.auth.machine.required=true`, which is what turns the shipped
+  `quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}` on — and points
+  `quarkus.oidc.auth-server-url` at `MockIdp`. That is the half of the shipped OIDC block no other
+  test reaches: `MachineGuardEnforcedTest` opens the same gate but **inlines the verification key and
+  clears `auth-server-url`**, precisely so it needs no idp — so the boot-time JWKS fetch,
   `discovery-enabled=false` with `jwks-path=jwks` joined onto the URL, and `connection-delay` are
-  exercised here or nowhere. Both stories drive `GET /platform-deployments/api/pins`, the one
+  exercised here or nowhere. Both its stories drive `GET /platform-deployments/api/pins`, the one
   guarded read whose caller is a machine (`qits-platform:system`, qits-platform-artifacts' image
   collector) and which reads nothing but deployment rows.
-- **It is written as `@UserStory` methods**, so `mvn verify -DskipITs=false` also emits
-  `service/target/userstories/` — the story log plus a mermaid sequence diagram — which
-  `.config/qits/ci-event-userflows.yml` publishes per commit as the docs bundle
-  `@userflows/qits-deployments`. The stories are **browserless** (an `Interactions` parameter and no
-  `Flow`), so qits-userflows' transitive Playwright never launches anything. The class orderer the
-  framework wants is registered as `junit.quarkus.orderer.secondary-orderer` in
-  `service/src/test/resources/application.properties`: quarkus-junit ships its own
-  `junit-platform.properties` and surefire hard-fails on a local one that overrides it.
+
+### The userflow catalogue
+
+Twelve `@UserStory` methods in five classes, so `mvn verify -DskipITs=false` also emits
+`service/target/userstories/` — a story log plus a mermaid **network** diagram each — which
+`.config/qits/ci-event-userflows.yml` publishes per commit as the docs bundle
+`@userflows/qits-deployments`. They are **browserless** (an `Interactions` parameter and no `Flow`),
+so qits-userflows' transitive Playwright never launches anything.
+
+| class | category | what it is about |
+| --- | --- | --- |
+| `api.TokenValidationBootstrapIT` | `authentication` | the boot-time JWKS fetch and the three doors of the pin ledger |
+| `stories.configuration.DeploymentConfigurationIT` | `configuration` | the extras read with the deployer's own credential, and the refusal when it cannot be read |
+| `stories.deployment.BuildDeploymentIT` | `deployments` | a green build end to end — create, replace in place, and an image nobody published |
+| `stories.operations.PlatformOverviewIT` | `operations` | what an operator reads, and the keep-set qits-platform-artifacts reads |
+| `stories.refusals.AccessRefusalIT` | `refusals` | the two role sets, and the fact that they do not overlap |
+
+Six things about how they are built, each easy to undo by accident:
+
+- **ONE `@TestProfile` for all five** — `stories.support.StoryProfile`, which extends
+  `PdPackagedSurfaceIT.PackagedUnderTarget` (one answer to "what does a launched
+  qits-platform-deployments need in order to boot", one parking trick, `databaseUrl` reused rather
+  than copied) and adds its own two databases plus every seam a story moves. A `@TestProfile` is what
+  failsafe launches a process for, so a second profile would be a second deployer with a second
+  startup whose traffic landed in whichever diagram happened to be open. **A new story class names
+  this profile or it is a new process.**
+- **The diagram is observed, not narrated.** `Interactions` records notes only. The near side is
+  `NetworkTaps.restAssured` — the framework SHIPS the filter this repo kept a hand-written copy of
+  until 2026.829, and the copy (`api/StoryNetworkFilter`) is deleted. The far sides are cumulative
+  `NetworkCapture.source`s: `MockIdp`'s recording, `stories.support.StoryPeers`' access log and
+  `stories.support.StorySwarm`'s call log. `NetworkCapture.actor(...)` before a call is what names an
+  edge's initiator, because a bearer cannot say whether the caller is qits-ci or an impostor.
+- **The orchestrator hop is EVIDENCE, not a claim.** `PdProcess` spawns the docker CLI, so
+  `StorySwarm` writes a recording POSIX-sh executable and the profile points
+  `qits.platform.deployments.container-runtime` at it. It keeps enough state — services, their
+  environment, and *when an update was issued*, stamped in Go's own `time.Time.String()` spelling —
+  that `awaitConverged`'s `StartedAt` matching runs for real against it. Labels are **summaries**
+  (`service create story-tier-story-web -> 0`), never argvs: a `service create` carries a generated
+  deployment uuid and a Go `--format` full of braces, and either would move the `networkHash` or
+  break the mermaid. A story that wants a FLAG asserts on `StorySwarm.argvOf(...)` instead.
+- **`StoryPeers` is one stub impersonating three peers, attributed by path** — `/git/…` is
+  qits-githost, `/configuration/…` is qits-configuration, `/idp/token` is qits-platform-idp. It is
+  stateless: every answer is a pure function of the application name in the path, which is why
+  `story-misconfigured` is refused in every run and in every order.
+- **Order is load-bearing, and it is the class orderer's.** A cumulative source is attributed by a
+  cursor, so pre-story traffic lands in whichever story drains first — the JWKS fetch belongs to
+  `TokenValidationBootstrapIT`, and `PlatformOverviewIT` reads rows `BuildDeploymentIT` deployed.
+  `@UserflowRunsAfter` states it; ties break by FQCN, which is why the packages are named so that
+  alphabetical is the intended order (`…deployments.api` before
+  `…deployments.stories.{configuration,deployment,operations,refusals}`). The orderer is registered as
+  `junit.quarkus.orderer.secondary-orderer` in `service/src/test/resources/application.properties`:
+  quarkus-junit ships its own `junit-platform.properties` and surefire hard-fails on a local one that
+  overrides it.
+- **Fixtures are invisible to the tap by construction.** `stories.support.StoryPlatform` creates the
+  tier and polls for a settled deployment through a plain `HttpClient` — a client no RestAssured
+  filter is attached to — so a diagram shows the walk somebody takes and not the fixture somebody
+  built. It is called from `@BeforeEach`, because `RestAssured.port` is `-1` in `@BeforeAll`.
+
+**Two coverage gaps, stated rather than hidden:**
+
+- **The observation ticker is OFF in the story profile** (`observe-interval-seconds=0`).
+  `DeploymentObserver` asks the orchestrator `service ps <name>` — **byte-identical** to the call a
+  deployment's own convergence check makes — so a recording cannot tell a timer pass from a
+  story-driven one, and an arrow that appears depending on how long a story took is a `networkHash`
+  that never settles. Filtering only works when lines differ by content. So no story covers the
+  observer's `FAILED`/`GONE` → `ACTIVE` recovery, its two-strike demotion or its decommissioning of a
+  recovered row's predecessor; `PdDeploymentObservationTest` holds those against the fake driver and
+  they stay a `@QuarkusTest`'s claim.
+- **No story provisions a resource.** `ResourceProvisioning` speaks DDL to a postgres reached at
+  `PdNetworks.alias(<tier>, "qits-oci-postgresql")` — derived, never configured — so a story would
+  need a host by that name. The story specs declare no `resources:`, and the provisioning matrix
+  stays `PgResourceProvisionerTest`'s (which runs against a real postgres for its own good reasons).
+  The same goes for the self-update's `HANDED_OFF` arm and the startup sweep's adoption: both need a
+  process that is replaced mid-deployment, which a story cannot stage.
+
 - **`skipITs` stays `true` in the root pom and the userflow pipeline opts in by name**
-  (`-DskipITs=false "-Dit.test=TokenValidationBootstrapIT"`). That run passes `-Dquarkus.quinoa=false`
-  — the step container's clone does not recurse, so `service/src/main/webui` arrives empty — and half
-  of `PdPackagedSurfaceIT` is about the client, so a blanket opt-in would make it red on a test that
-  is right.
+  (`-DskipITs=false "-Dit.test=TokenValidationBootstrapIT,DeploymentConfigurationIT,BuildDeploymentIT,PlatformOverviewIT,AccessRefusalIT"`).
+  That run passes `-Dquarkus.quinoa=false` — the step container's clone does not recurse, so
+  `service/src/main/webui` arrives empty — and half of `PdPackagedSurfaceIT` is about the client, so
+  a blanket opt-in would make it red on a test that is right. **A new story class joins that comma
+  list in the commit that adds it**, or it never runs in CI.
 - **Both poms that name zonky architectures carry the `-alpine` binaries as a fourth arch**
   (`deployments/`, `service/`). The CI step containers are Alpine (musl) and `verify` there is the
   whole reactor; a missing arch resolves fine and then fails mid-suite with no binary for the

@@ -7,7 +7,7 @@
     <parent>
         <groupId>eu.wohlben.qits</groupId>
         <artifactId>qits-platform-deployments</artifactId>
-        <version>2026.829.140449</version>
+        <version>2026.829.235552</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -191,19 +191,22 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- The user-story framework: TokenValidationBootstrapIT is written as a @UserStory, so
-                 the gate-on packaged-boot proof doubles as documentation — steps, interactions and
-                 a sequence diagram emitted under target/userstories/. The story is browserless (no
-                 Flow parameter), so the transitive Playwright never launches anything. -->
+            <!-- The user-story framework: the whole stories/ catalogue is written as @UserStory
+                 methods, so the gate-on packaged-boot proofs double as documentation — steps, notes
+                 and an observed network diagram emitted under target/userstories/. The stories are
+                 browserless (no Flow parameter), so the transitive Playwright never launches
+                 anything, and NetworkTaps supplies the RestAssured tap this repo used to copy. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-userflows</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- The recording service mocks. That IT points quarkus.oidc at idp.MockIdp — a
-                 MockService plus key material: it serves the JWKS for a generated keypair, mints
+            <!-- The recording service mocks. The story profile points quarkus.oidc at idp.MockIdp —
+                 a MockService plus key material: it serves the JWKS for a generated keypair, mints
                  tokens, and records what it answered, which is what makes the startup fetch
-                 assertable from the IDP's end rather than only from this service's. -->
+                 assertable from the IDP's end rather than only from this service's. The two peers a
+                 DEPLOYMENT reads (the git host and qits-configuration) are stories/support/StoryPeers
+                 instead, because one of them answers YAML and MockService's stubs are JSON. -->
             <groupId>${project.groupId}</groupId>
             <artifactId>qits-service-mock</artifactId>
             <scope>test</scope>
