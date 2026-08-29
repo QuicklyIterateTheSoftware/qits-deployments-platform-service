@@ -5,7 +5,7 @@
     <parent>
         <groupId>eu.wohlben.qits</groupId>
         <artifactId>qits-platform-deployments</artifactId>
-        <version>2026.825.80455</version>
+        <version>2026.829.115535</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -114,6 +114,16 @@
         <dependency>
             <groupId>io.zonky.test.postgres</groupId>
             <artifactId>embedded-postgres-binaries-linux-arm64v8</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- The FOURTH arch, and it is the one no developer machine is: the CI step containers
+                 are Alpine (musl), and .config/qits/ci-event-userflows.yml runs `mvn verify` over
+                 the WHOLE reactor there — so PdSchemaTest's postgres has to have a binary for that
+                 platform too. Named here as well as in service/pom.xml because zonky resolves per
+                 module classpath, and a missing arch fails mid-suite rather than at resolution. -->
+            <groupId>io.zonky.test.postgres</groupId>
+            <artifactId>embedded-postgres-binaries-linux-amd64-alpine</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

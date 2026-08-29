@@ -43,7 +43,7 @@
          value. It is deliberately NOT a `-SNAPSHOT`: the image build resolves this reactor from
          source, so a snapshot coordinate would only invite a resolver to look for one in a
          repository that will never hold it. -->
-    <version>2026.825.80455</version>
+    <version>2026.829.115535</version>
     <packaging>pom</packaging>
     <name>qits-platform-deployments</name>
 
@@ -69,6 +69,14 @@
         <!-- The platform's database patience, published beside the two above: PatientPgDriver (the
              datasource's driver line) and DbRetry (the worker's brackets). -->
         <qits.db-core.version>2026.817.175344</qits.db-core.version>
+        <!-- The user-story framework (test scope): TokenValidationBootstrapIT is a userflow, so a
+             `mvn verify -DskipITs=false` also regenerates service/target/userstories/ — the story's
+             documentation, sequence diagram included. -->
+        <qits.userflows.version>2026.828.153026</qits.userflows.version>
+        <!-- The recording service mocks that IT boots against (the generic MockService plus
+             idp.MockIdp), published by qits-integrations-quarkus beside qits-auth-core,
+             qits-arch-rules and qits-db-core above. -->
+        <qits.service-mock.version>2026.827.71232</qits.service-mock.version>
         <qits.maven.repository.url>http://registry.dev.localhost:8080/artifacts/maven/maven</qits.maven.repository.url>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -214,6 +222,20 @@
                 <groupId>${project.groupId}</groupId>
                 <artifactId>qits-db-core</artifactId>
                 <version>${qits.db-core.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The userflow framework. Test scope, in `service/` only: the story runs against
+                     the PACKAGED artifact, and that is the one module that produces one. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-userflows</artifactId>
+                <version>${qits.userflows.version}</version>
+            </dependency>
+            <dependency>
+                <!-- The recording mocks the story's far side is. Test scope, `service/` only, for
+                     the same reason. -->
+                <groupId>${project.groupId}</groupId>
+                <artifactId>qits-service-mock</artifactId>
+                <version>${qits.service-mock.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

@@ -1348,6 +1348,35 @@ against.
 - **`PdPackagedSurfaceIT` is also the only test that ever sees the client.** Quinoa is disabled in
   test mode, so no `@QuarkusTest` here has a client at all — a unit test asserting anything about the
   segment would pass against a process serving nothing.
+- **`TokenValidationBootstrapIT` is the second packaged IT and this repo's only userflow.** It
+  *extends* `PdPackagedSurfaceIT.PackagedUnderTarget` — one answer to "what does a launched
+  qits-platform-deployments need in order to boot", one parking trick — and adds only the two seams
+  it moves: `qits.auth.machine.required=true`, which is what turns the shipped
+  `quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}` on, and
+  `quarkus.oidc.auth-server-url` pointed at `MockIdp`. That is the half of the shipped OIDC block no
+  other test reaches: `MachineGuardEnforcedTest` opens the same gate but **inlines the verification
+  key and clears `auth-server-url`**, precisely so it needs no idp — so the boot-time JWKS fetch,
+  `discovery-enabled=false` with `jwks-path=jwks` joined onto the URL, and `connection-delay` are
+  exercised here or nowhere. Both stories drive `GET /platform-deployments/api/pins`, the one
+  guarded read whose caller is a machine (`qits-platform:system`, qits-platform-artifacts' image
+  collector) and which reads nothing but deployment rows.
+- **It is written as `@UserStory` methods**, so `mvn verify -DskipITs=false` also emits
+  `service/target/userstories/` — the story log plus a mermaid sequence diagram — which
+  `.config/qits/ci-event-userflows.yml` publishes per commit as the docs bundle
+  `@userflows/qits-deployments`. The stories are **browserless** (an `Interactions` parameter and no
+  `Flow`), so qits-userflows' transitive Playwright never launches anything. The class orderer the
+  framework wants is registered as `junit.quarkus.orderer.secondary-orderer` in
+  `service/src/test/resources/application.properties`: quarkus-junit ships its own
+  `junit-platform.properties` and surefire hard-fails on a local one that overrides it.
+- **`skipITs` stays `true` in the root pom and the userflow pipeline opts in by name**
+  (`-DskipITs=false "-Dit.test=TokenValidationBootstrapIT"`). That run passes `-Dquarkus.quinoa=false`
+  — the step container's clone does not recurse, so `service/src/main/webui` arrives empty — and half
+  of `PdPackagedSurfaceIT` is about the client, so a blanket opt-in would make it red on a test that
+  is right.
+- **Both poms that name zonky architectures carry the `-alpine` binaries as a fourth arch**
+  (`deployments/`, `service/`). The CI step containers are Alpine (musl) and `verify` there is the
+  whole reactor; a missing arch resolves fine and then fails mid-suite with no binary for the
+  platform it is on.
 
 ## The image and the pipeline
 
