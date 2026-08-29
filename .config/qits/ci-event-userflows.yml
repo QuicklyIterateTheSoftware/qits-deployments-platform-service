@@ -1,7 +1,7 @@
 # The per-commit userflow run: `mvn verify` at the pushed commit — which regenerates
-# service/target/userstories/ through TokenValidationBootstrapIT — and the reports published as one
-# docs bundle, site @userflows/qits-deployments, version = the bare commit sha, branch riding as
-# artifacts metadata for discovery.
+# service/target/userstories/ through the five story classes named below — and the reports published
+# as one docs bundle, site @userflows/qits-deployments, version = the bare commit sha, branch riding
+# as artifacts metadata for discovery.
 #
 # NON-GATING BY DESIGN, which is why it is a separate file from ci-post-receive.yml: this run going
 # red must not cost the branch its image while "quality gate before merging" is still a decision to
@@ -33,17 +33,36 @@
 #
 # THE TWO IT FLAGS ARE THE OTHER HALF, and they are why this repository does NOT opt its service
 # module back into ITs the way qits-githost does. `skipITs` is true in the root pom and stays true;
-# this module has two integration tests and only one of them belongs to this run:
+# this module has six integration tests and five of them belong to this run:
 #
-#   TokenValidationBootstrapIT  the userflow — the whole point of this file
-#   PdPackagedSurfaceIT         half about the CLIENT (the base href at the root, the deep links,
-#                               the fallback that must not swallow a machine path), which the line
-#                               above deliberately does not build. A blanket `-DskipITs=false`
-#                               would make this quinoa-less run red on a test that is right.
+#   TokenValidationBootstrapIT      the gate-on boot, and the story that OWNS the startup traffic
+#   DeploymentConfigurationIT       where a container's configuration comes from, and the refusal
+#   BuildDeploymentIT               a green build end to end: create, replace, and no image at all
+#   PlatformOverviewIT              what an operator reads, and what the image collector reads
+#   AccessRefusalIT                 the two role sets, and the fact that they do not overlap
 #
-# Naming the class keeps the opt-in to this pipeline and to these stories, and keeps the property's
-# own meaning ("run everything") intact for the `native` profile in service/pom.xml that sets it:
-# `-DskipITs=false "-Dit.test=TokenValidationBootstrapIT"`.
+#   PdPackagedSurfaceIT             NOT in the list: half about the CLIENT (the base href at the
+#                               root, the deep links, the fallback that must not swallow a machine
+#                               path), which the quinoa line above deliberately does not build. A
+#                               blanket `-DskipITs=false` would make this run red on a test that is
+#                               right.
+#
+# THE ORDER IS LOAD-BEARING and it is the CLASS ORDERER's, not this list's. A cumulative recording is
+# attributed by a cursor, so traffic from before the first story — the startup JWKS fetch — lands in
+# whichever story drains first, and PlatformOverviewIT reads rows BuildDeploymentIT deployed. The
+# framework's UserflowClassOrderer (registered as junit.quarkus.orderer.secondary-orderer in
+# service/src/test/resources/application.properties) sorts on @UserflowRunsAfter and breaks ties by
+# FQCN, which is why the story packages are named so that alphabetical is the intended order:
+# ...deployments.api before ...deployments.stories.{configuration,deployment,operations,refusals}.
+# Reordering the comma list below changes nothing; renaming a package could change everything.
+#
+# ALL FIVE SHARE ONE @TestProfile (stories.support.StoryProfile) and therefore ONE launched process,
+# one embedded-postgres pair and one recording of each stand-in. That is the reason they can be one
+# catalogue at all, and it is why a story class run ALONE may fail its own edge counts — it would
+# inherit traffic an earlier class normally owns. Run the whole list.
+#
+# Naming the classes keeps the opt-in to this pipeline and to these stories, and keeps the property's
+# own meaning ("run everything") intact for the `native` profile in service/pom.xml that sets it.
 #
 # NO REPAIR WAS NEEDED to make the two new test-scope jars resolve. This repository already carries
 # `.qits-maven-settings.xml` and a `qits-maven` <repositories> entry — qits-auth-core,
@@ -57,7 +76,11 @@
 # Loop review: this pipeline PUTs a docs bundle and pushes no commit — no cycle. The bundle is
 # published to qits-artifacts and read back by qits-docs, neither of which is this service, and the
 # one thing that could close a loop here — this component's own event bus and its own telemetry —
-# is dark in the launched process by the two overrides the IT's profile sets. Publish-if-absent:
+# is dark in the launched process by the two overrides the story profile sets. The three peers a
+# deployment reads — the git host, qits-configuration and the idp's token endpoint — are
+# stories/support/StoryPeers, an in-JVM stub, and the orchestrator is stories/support/StorySwarm, a
+# recording POSIX-sh executable the profile points the container-runtime key at: no step container
+# needs a docker socket, and nothing here can reach a real platform. Publish-if-absent:
 # events redeliver and docs versions are immutable, so 409 is success (the qits-spa-ui-components
 # release file's discipline).
 event: SCMPublishCommit
@@ -80,7 +103,8 @@ steps:
       ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
         -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
         -Dquarkus.quinoa=false \
-        -DskipITs=false "-Dit.test=TokenValidationBootstrapIT"
+        -DskipITs=false \
+        "-Dit.test=TokenValidationBootstrapIT,DeploymentConfigurationIT,BuildDeploymentIT,PlatformOverviewIT,AccessRefusalIT"
 
       # `-C … .` so the story directories are the bundle's roots — nesting one directory deep would
       # put it in every served URL. The path is service/target/userstories because the stories live

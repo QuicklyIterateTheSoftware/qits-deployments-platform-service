@@ -104,7 +104,17 @@ public class PdPackagedSurfaceIT {
           "qits.platform.deployments.container-runtime", "docker-absent-for-this-it");
     }
 
-    private static synchronized String databaseUrl(String property, String database) {
+    /**
+     * The parking trick itself, {@code protected} so a subclass in another package can reuse it
+     * rather than copy it.
+     *
+     * <p>{@code stories.support.StoryProfile} needs databases of its OWN — the story catalogue
+     * writes tiers, services and deployment rows, and sharing a database with this IT would make
+     * each suite's assertions depend on whether the other ran. What it must not have of its own is a
+     * second copy of the two-classloader workaround, which is the thing that is easy to get subtly
+     * wrong; so the names are the subclass's and the mechanism stays here.
+     */
+    protected static synchronized String databaseUrl(String property, String database) {
       String recorded = System.getProperty(property);
       if (recorded != null) {
         return recorded;

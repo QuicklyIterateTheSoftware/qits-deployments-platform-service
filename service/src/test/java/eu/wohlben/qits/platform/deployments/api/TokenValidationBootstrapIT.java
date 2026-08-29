@@ -4,17 +4,27 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.platform.deployments.stories.support.StoryIdentities;
+import eu.wohlben.qits.platform.deployments.stories.support.StoryProfile;
+import eu.wohlben.qits.platform.deployments.stories.support.StoryTarget;
 import eu.wohlben.qits.servicemock.idp.MockIdp;
 import eu.wohlben.qits.userflows.Interactions;
+import eu.wohlben.qits.userflows.NetworkCapture;
+import eu.wohlben.qits.userflows.NetworkEdge;
+import eu.wohlben.qits.userflows.NetworkTaps;
 import eu.wohlben.qits.userflows.UserStory;
 import eu.wohlben.qits.userflows.UserStoryDescription;
 import eu.wohlben.qits.userflows.report.ReportAssertions;
 import eu.wohlben.qits.userflows.report.UserflowReport;
 import io.quarkus.test.junit.QuarkusIntegrationTest;
 import io.quarkus.test.junit.TestProfile;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.TestMethodOrder;
 
 /**
  * The whole service as it is <b>packaged</b> — like {@link PdPackagedSurfaceIT} beside it, but with
@@ -28,9 +38,24 @@ import org.junit.jupiter.api.AfterAll;
  * exercised nowhere else at all. The far side here is {@link MockIdp}, whose recordings make the
  * interaction assertable on <b>both ends</b>.
  *
- * <p>It is also this repo's first <b>userflow</b>: the proof doubles as documentation, emitted
- * under {@code target/userstories/} with the interactions drawn as a sequence diagram. The story is
+ * <p>It is also <b>the first class of this repository's userflow catalogue</b>, and the one that
+ * owns the boot. The rest of the catalogue lives in {@code stories.*} and shares this class's
+ * launched process, because they all name the same {@link StoryProfile}: one {@code @TestProfile} is
+ * one launched artifact, so a second profile would be a second deployer with a second startup whose
+ * traffic landed in whichever diagram happened to be open.
+ *
+ * <p>The diagram is <b>observed, never narrated</b> — {@code NetworkTaps.restAssured} (the framework
+ * ships the filter this repo used to keep a copy of) taps what a story sends into this service,
+ * {@link MockIdp}'s recordings supply what this service sent to the idp, and the framework drains
+ * both at story end. A story method therefore asserts and notes; it draws nothing. The stories are
  * browserless (no {@code Flow} parameter), so no Chromium is involved anywhere.
+ *
+ * <p><b>The two stories are ordered</b>, and that is load-bearing rather than tidiness: a cumulative
+ * source is attributed by a cursor, so traffic that happened before any story ran — the startup JWKS
+ * fetch, which is the whole subject of the first story — lands in whichever story drains
+ * <i>first</i>. Pinning the order is what keeps that the story it belongs to, and this class sorting
+ * first among the catalogue's packages ({@code …deployments.api} before {@code …deployments.stories})
+ * is what keeps it the first story of the run.
  *
  * <p><b>The route both stories drive is {@code GET /platform-deployments/api/pins}</b>, and it is
  * chosen because it is the one guarded read here whose caller is a MACHINE: {@link PdPinController}
@@ -46,85 +71,71 @@ import org.junit.jupiter.api.AfterAll;
  * links, the fallback that must not swallow a machine path — which the userflow pipeline
  * deliberately does not build ({@code -Dquarkus.quinoa=false}, since the qits-spa-deployments
  * submodule arrives empty in a step container). A blanket {@code -DskipITs=false} would make that
- * run red on a test that is right. {@code .config/qits/ci-event-userflows.yml} names this class
- * instead ({@code -DskipITs=false "-Dit.test=TokenValidationBootstrapIT"}), which is also what
- * keeps the userflow pipeline about these stories and nothing else.
+ * run red on a test that is right. {@code .config/qits/ci-event-userflows.yml} names the story
+ * classes instead, which is also what keeps the userflow pipeline about the stories and nothing
+ * else.
  */
 @QuarkusIntegrationTest
-@TestProfile(TokenValidationBootstrapIT.PackagedWithMockIdp.class)
+@TestProfile(StoryProfile.class)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class TokenValidationBootstrapIT {
 
   static final String CATEGORY = "authentication";
   static final String ACCEPTED_SLUG = "on-start-the-deployer-fetches-the-platform-s-signing-keys";
   static final String DENIED_SLUG = "a-stranger-s-token-never-opens-the-deployment-pin-ledger";
 
-  private static final String PINS = "/platform-deployments/api/pins";
+  private static final String PINS = StoryTarget.PINS_PATH;
+
+  /** How the diagram names this service on both sides of an edge. */
+  static final String SERVICE = StoryTarget.SERVICE;
+
+  /** The pin ledger's one real caller: qits-platform-artifacts' OCI garbage collector. */
+  static final String COLLECTOR = StoryIdentities.COLLECTOR;
+
+  /** A person's session, which reaches this door only by a credential nobody should have minted. */
+  static final String ADMIN_SESSION = "a person's session";
+
+  private static final List<String> MINTED = new ArrayList<>();
 
   /**
-   * {@link PdPackagedSurfaceIT.PackagedUnderTarget} — the two {@code QITS_RESOURCE_*} triples on
-   * this JVM's embedded postgres and the deliberately absent container runtime, parked in system
-   * properties because a test profile is instantiated in more than one classloader — <b>plus the
-   * two things these stories are about</b>: the gate that turns the shipped OIDC tenant on, and
-   * where the idp is.
+   * Wires both halves of the network diagram, once, before either story runs.
    *
-   * <p>Extending rather than copying is deliberate. What a launched qits-platform-deployments needs
-   * in order to boot at all is one answer, it is written out at length over there (both triples are
-   * mandatory: neither jar's expressions have a default behind them), and a second copy of the
-   * parking trick would be a second place for it to drift. What is added here is only the seams
-   * these stories move.
+   * <p>The near side is the framework's own RestAssured tap: every request a story makes becomes
+   * {@code <actor> -> qits-platform-deployments}, labelled with the method, the scrubbed path and the
+   * status this service answered, and any path carrying a {@code /q/} segment is skipped — which is
+   * right here, because {@code quarkus.http.non-application-root-path=/platform-deployments/q}. This
+   * repository kept a hand-written copy of that filter for one release; the framework ships it now
+   * and the copy is gone.
    *
-   * <p>The mock idp starts <b>before</b> the application, via {@link MockIdp#ensureStarted()},
-   * which parks its coordinates (and its keypair) in system properties for the same classloader
-   * reason — that is also how a story method's {@link MockIdp#attach()} reaches the very server the
-   * launched process fetched its keys from.
+   * <p>The idp is the far side, registered as a <b>cumulative</b> source: the supplier hands over the
+   * mock's whole request log every time it is asked and the framework remembers how much of it
+   * earlier stories already consumed, so the startup fetch — recorded long before any story existed —
+   * is attributed to the first story and to that one only. It is invoked lazily at story end, so
+   * registering it here is safe even though nothing has been recorded yet.
    *
-   * <p>Every key below is a RUNTIME key. A packaged process takes its configuration as {@code -D}
-   * arguments on a jar that was already built, so a build-time key here would be silently ignored
-   * and these tests would prove the opposite of what they say.
+   * <p>The label carries the status the mock <i>answered</i> with, which is the half a method and
+   * path cannot supply: {@code "GET /idp/jwks -> 200"} is evidence that the keys were served, not
+   * merely asked for.
    */
-  public static class PackagedWithMockIdp extends PdPackagedSurfaceIT.PackagedUnderTarget {
-
-    /**
-     * The audience this service enforces, and it is a LITERAL rather than a variable name — the
-     * difference from qits-githost's IT, which hands its launched process {@code
-     * QITS_AUTH_MACHINE_AUDIENCE} because the shipped expression there reads that variable. Here
-     * {@code qits.auth.machine.audience=qits-platform-deployments} is spelled out in
-     * {@code application.properties} and {@code quarkus.oidc.token.audience} references it, so the
-     * audience under test is the shipped one and there is no expression to feed. A deployment still
-     * overrides it by environment — prod sends {@code prod-qits-deployments}.
-     */
-    static final String AUDIENCE = "qits-platform-deployments";
-
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      MockIdp idp = MockIdp.ensureStarted();
-      Map<String, String> overrides = new LinkedHashMap<>(super.getConfigOverrides());
-      // THE GATE, and turning it on is the point: the shipped tenant is
-      // quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}, so this one key is the
-      // difference between a service that validates machine bearers and one that does not. The
-      // application.properties block says what flipping it implies for startup — with it on there
-      // IS a tenant, and the tenant fetches a JWKS at boot — and this is where that is proved
-      // rather than described.
-      overrides.put("qits.auth.machine.required", "true");
-      // The one seam these stories move: where the idp is. Runtime key, so the packaged artifact is
-      // otherwise exactly what ships — discovery stays off and jwks-path stays `jwks`, joined onto
-      // this URL.
-      overrides.put("quarkus.oidc.auth-server-url", idp.baseUrl());
-      // Dark outside a deployment, like %dev/%test — both are runtime keys, and both are shipped
-      // ENABLED because a library that shipped dark would be one whose first deployment discovers
-      // it was never wired up. A step container has no qits-observability and no qits-events, and
-      // an exporter retrying against an unresolvable host would bury the story's own log. The
-      // eventstream DATASOURCE is still opened and migrated — dark stops dialling, sweeping and
-      // claiming, never the datasource — which is why the inherited second triple is not optional.
-      overrides.put("quarkus.otel.sdk.disabled", "true");
-      overrides.put("qits.eventstream.enabled", "false");
-      return overrides;
-    }
+  @BeforeAll
+  static void tapBothEndsOfTheNetwork() {
+    NetworkTaps.restAssured(SERVICE);
+    NetworkCapture.source(
+        "mock-idp",
+        () ->
+            MockIdp.attach().recordedRequests().stream()
+                .map(
+                    request ->
+                        NetworkEdge.http(
+                            SERVICE,
+                            MockIdp.SERVICE_NAME,
+                            request.method() + " " + request.path() + " -> " + request.status()))
+                .toList());
   }
 
   @UserStory(
       value = "On start, the deployer fetches the platform's signing keys",
-      category = "authentication")
+      category = CATEGORY)
   @UserStoryDescription(
       """
       A freshly deployed qits-platform-deployments must validate service bearers before any
@@ -133,6 +144,7 @@ public class TokenValidationBootstrapIT {
       accepted. qits-platform-artifacts' image collector reads the rollback pins with exactly
       this credential before it deletes anything.
       """)
+  @Order(1)
   void serviceBootFetchesJwksAndAcceptsPlatformTokens(Interactions story) {
     MockIdp idp = MockIdp.attach();
 
@@ -148,36 +160,34 @@ public class TokenValidationBootstrapIT {
         idp.recordedRequests().stream().anyMatch(r -> "/idp/jwks".equals(r.path())),
         "the packaged service never fetched /idp/jwks at startup");
     story
-        .happened("qits-platform-deployments", "qits-platform-idp", "GET /idp/jwks (at startup)")
+        .note("the signing keys were fetched at startup, before this story presented any token")
         .as("jwks-fetched");
 
     // End (b), this service's side: those keys are what token validation now runs on. A platform
     // peer's bearer (aud = this service, roles in `groups`) opens the pin ledger — the read
     // qits-platform-artifacts plans its OCI sweep on, fail-closed, so an unreachable or refused
     // answer aborts the plan with nothing deleted.
-    String collectorToken =
-        idp.token()
-            .subject("qits-platform-artifacts")
-            .audience(PackagedWithMockIdp.AUDIENCE)
-            .groups("qits-platform:system")
-            .mint();
-    given()
-        .header("Authorization", "Bearer " + collectorToken)
+    //
+    // The actor is set BEFORE the call: the tap sees a request, never a narrative role, and this is
+    // what makes the observed edge read `qits-platform-artifacts -> qits-platform-deployments`.
+    NetworkCapture.actor(COLLECTOR);
+    String collectorToken = StoryIdentities.machineToken(COLLECTOR);
+    MINTED.add(collectorToken);
+    StoryIdentities.bearer(given(), collectorToken)
         .get(PINS)
         .then()
         .statusCode(200)
         .body("pins", notNullValue());
     story
-        .happened(
-            "qits-platform-artifacts",
-            "qits-platform-deployments",
-            "GET /platform-deployments/api/pins (Bearer, groups=[qits-platform:system])")
+        .note(
+            "the collector's bearer (aud=qits-platform-deployments,"
+                + " groups=[qits-platform:system]) opens the pin ledger")
         .as("pins-served");
   }
 
   @UserStory(
       value = "A stranger's token never opens the deployment pin ledger",
-      category = "authentication")
+      category = CATEGORY)
   @UserStoryDescription(
       """
       The flip side of trusting the platform's keys. A token signed by a key the published JWKS
@@ -188,72 +198,94 @@ public class TokenValidationBootstrapIT {
       and covers nothing. The pin ledger is a machine peer's read, and no browser session has
       business in it.
       """)
+  @Order(2)
   void aStrangersTokenIsRefused(Interactions story) {
     MockIdp idp = MockIdp.attach();
 
+    // The first two credentials are an impostor's, so the actor is set once, up front; the admin
+    // token below sets its own, because it is a person's session rather than a forgery.
+    NetworkCapture.actor(StoryIdentities.IMPOSTOR);
+
     String strangersToken =
         idp.token()
-            .audience(PackagedWithMockIdp.AUDIENCE)
-            .groups("qits-platform:system")
+            .audience(StoryIdentities.AUDIENCE)
+            .groups(StoryIdentities.MACHINE_ROLE)
             .signedByUnknownKey()
             .mint();
-    given().header("Authorization", "Bearer " + strangersToken).get(PINS).then().statusCode(401);
+    MINTED.add(strangersToken);
+    StoryIdentities.bearer(given(), strangersToken).get(PINS).then().statusCode(401);
+    // Both 401s are the same edge — same actor, same route, same status — so the diagram draws one
+    // arrow and the notes are what keep the two credentials distinguishable. That is the right
+    // division: the graph says who reached what and got what, the steps say why.
     story
-        .happened(
-            "an impostor",
-            "qits-platform-deployments",
-            "GET /platform-deployments/api/pins (token signed by an unknown key) -> 401")
+        .note("a token signed by a key the published JWKS never carried is refused")
         .as("unknown-key-refused");
 
-    String wrongAudienceToken =
-        idp.token().audience("some-other-service").groups("qits-platform:system").mint();
-    given()
-        .header("Authorization", "Bearer " + wrongAudienceToken)
-        .get(PINS)
-        .then()
-        .statusCode(401);
+    String wrongAudienceToken = StoryIdentities.foreignAudienceToken("some-other-service");
+    MINTED.add(wrongAudienceToken);
+    StoryIdentities.bearer(given(), wrongAudienceToken).get(PINS).then().statusCode(401);
     story
-        .happened(
-            "an impostor",
-            "qits-platform-deployments",
-            "GET /platform-deployments/api/pins (another service's audience) -> 401")
+        .note("a token minted for another service's audience is refused just the same")
         .as("wrong-audience-refused");
 
     // The third door, and the one that is this service's own shape rather than the fleet's: the
     // roles say who a caller is meant to be, and qits-platform:admin is the PERSON's — it reaches
     // this service only as a forwarded X-Qits-Roles header from an admin session, never in a
     // token. Minted into one anyway it authenticates perfectly and still covers nothing here.
-    String adminRoleToken =
-        idp.token()
-            .subject("an-admin-session")
-            .audience(PackagedWithMockIdp.AUDIENCE)
-            .groups("qits-platform:admin")
-            .mint();
-    given().header("Authorization", "Bearer " + adminRoleToken).get(PINS).then().statusCode(403);
+    //
+    // A different initiator, so a different actor and therefore a different edge: this one is a
+    // person's session reaching a machine peer's door, which is the whole of what the 403 says.
+    NetworkCapture.actor(ADMIN_SESSION);
+    String adminRoleToken = StoryIdentities.adminRoleToken("an-admin-session");
+    MINTED.add(adminRoleToken);
+    StoryIdentities.bearer(given(), adminRoleToken).get(PINS).then().statusCode(403);
     story
-        .happened(
-            "a person's session",
-            "qits-platform-deployments",
-            "GET /platform-deployments/api/pins (Bearer, groups=[qits-platform:admin]) -> 403")
+        .note("a token carrying only the person's role authenticates and still covers nothing here")
         .as("admin-role-refused");
   }
 
   @AfterAll
   static void bothStoryReportsAreComplete() {
     // The extension emits each report in its afterEach, so both are on disk before @AfterAll runs.
+    // assertComplete also proves the network section: the sidecar's edges are canonical, the
+    // networkHash recomputes from them, and every mermaid line is in the markdown.
     ReportAssertions.assertComplete(CATEGORY, ACCEPTED_SLUG, UserflowReport.PASSED);
-    ReportAssertions.assertInteraction(
-        CATEGORY,
-        ACCEPTED_SLUG,
-        "qits-platform-deployments",
-        "qits-platform-idp",
-        "GET /idp/jwks (at startup)");
+    // Observed on the far side, drained from the mock's recording, and attributed to this story
+    // because it is the first one that ran (see the class javadoc on ordering).
+    ReportAssertions.assertEdge(
+        CATEGORY, ACCEPTED_SLUG, "http", SERVICE, MockIdp.SERVICE_NAME, "GET /idp/jwks -> 200");
+    // Observed on the near side, by the shipped tap, with the actor this story set.
+    ReportAssertions.assertEdge(
+        CATEGORY, ACCEPTED_SLUG, "http", COLLECTOR, SERVICE, "GET " + PINS + " -> 200");
     ReportAssertions.assertStepId(CATEGORY, ACCEPTED_SLUG, "jwks-fetched");
     ReportAssertions.assertStepId(CATEGORY, ACCEPTED_SLUG, "pins-served");
+    // TWO, and the readiness probe is deliberately not among them: the shipped tap skips any path
+    // with a /q/ segment, and a diagram in which every node hangs off /q/health/ready documents
+    // nothing. Nothing else left this process either — the bearer is judged on keys already held.
+    ReportAssertions.assertEdgeCount(CATEGORY, ACCEPTED_SLUG, 2);
+    ReportAssertions.assertOnlyEdgesFrom(CATEGORY, ACCEPTED_SLUG, List.of(COLLECTOR, SERVICE));
 
     ReportAssertions.assertComplete(CATEGORY, DENIED_SLUG, UserflowReport.PASSED);
+    ReportAssertions.assertEdge(
+        CATEGORY, DENIED_SLUG, "http", StoryIdentities.IMPOSTOR, SERVICE, "GET " + PINS + " -> 401");
+    // The third door, and the only one of the three that answers 403 — a different initiator, so a
+    // second arrow rather than a second label on the first.
+    ReportAssertions.assertEdge(
+        CATEGORY, DENIED_SLUG, "http", ADMIN_SESSION, SERVICE, "GET " + PINS + " -> 403");
     ReportAssertions.assertStepId(CATEGORY, DENIED_SLUG, "unknown-key-refused");
     ReportAssertions.assertStepId(CATEGORY, DENIED_SLUG, "wrong-audience-refused");
     ReportAssertions.assertStepId(CATEGORY, DENIED_SLUG, "admin-role-refused");
+    // Only the two refused callers initiate here. The service itself may or may not re-ask the idp
+    // for its keys when a kid it has never seen arrives — which is quarkus-oidc's own patience and
+    // not this component's decision — so the ACTOR set is the claim and the edge count is not.
+    ReportAssertions.assertOnlyEdgesFrom(
+        CATEGORY, DENIED_SLUG, List.of(StoryIdentities.IMPOSTOR, ADMIN_SESSION, SERVICE));
+
+    // No credential either story minted is anywhere in the bundle they publish.
+    for (String slug : List.of(ACCEPTED_SLUG, DENIED_SLUG)) {
+      for (String token : MINTED) {
+        ReportAssertions.assertNotLeaked(CATEGORY, slug, token);
+      }
+    }
   }
 }
