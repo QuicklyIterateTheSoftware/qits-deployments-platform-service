@@ -29,7 +29,7 @@
 #   place before the event it selects.
 event: SCMRelease
 when:
-  - repository: { exact: qits-deployments }
+  - repository: { exact: qits-deployments-platform-service }
 artifacts:
   - { type: docker, name: qits/qits-deployments }
 steps:
@@ -65,14 +65,14 @@ steps:
       # carries no tags, hence the explicit refspec; the URL rather than `origin` because every
       # address a step needs arrives as environment. `checkout --detach` peels the annotated tag to
       # its commit — and it is what makes the submodule fetch below land on the
-      # qits-spa-deployments gitlink the release recorded rather than on main's.
+      # qits-deployments-platform-frontend gitlink the release recorded rather than on main's.
       git fetch "$QITS_CI_REPOSITORY_URL" "refs/tags/$version:refs/tags/$version"
       git checkout --detach "$version"
 
       # --- half one: the bundle -----------------------------------------------------------------
       # The daemon's shallow clone does not recurse, so initialise the packaged SPA explicitly.
-      frontend_url="${QITS_CI_REPOSITORY_URL%/*}/qits-spa-deployments"
-      git -c submodule.qits-spa-deployments.url="$frontend_url" \
+      frontend_url="${QITS_CI_REPOSITORY_URL%/*}/qits-deployments-platform-frontend"
+      git -c submodule.qits-deployments-platform-frontend.url="$frontend_url" \
         submodule update --init service/src/main/webui
 
       cd service/src/main/webui

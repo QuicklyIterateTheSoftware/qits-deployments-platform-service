@@ -18,6 +18,16 @@
 # `deployment_target` IS spelled out, against the usual rule that a default should not be repeated:
 # `environment` is the default, this file's answer has now changed twice, and a plane read off an
 # omission is one edit away from being read wrong.
+
+# THE NAME THIS DEPLOYS AS, spelled because the repository is renamed and the application is not.
+# Every derivation the deployer makes hangs off this name — the wire alias peers dial, the container
+# it manages, the extras family, the database — so letting it follow the repository would
+# decommission the running service and start a stranger beside it.
+#
+# It is the SHORT name, and always has been: the repository was qits-platform-deployments while the
+# catalog row, the wire alias and the qits_deployments database were qits-deployments.
+application: qits-deployments
+
 deployment_target: platform
 
 # TWO DATABASES, and this is the component describing itself with its own mechanism. Each entry is
