@@ -193,11 +193,12 @@ timeout, Hibernate's `JDBCConnectionException`), thirty seconds of half-second s
 the worker is single-threaded and those three brackets re-read what they write.
 
 **`DbRetry` is the platform's now** — `eu.wohlben.qits.db.DbRetry` from `qits-db-core`, published by
-qits-integrations-quarkus. It was a private class here first, and the lib's is that class with the
-budget moved from a constant to a per-call argument; the thirty seconds are stated at each call site
-as `DeployService.CUTOVER_BUDGET` (package-private, because `DeploymentObserver` wraps its brackets
-for the same reason and one budget spelled twice would drift). The lib's own suite pins every failure
-shape this component ever saw, which is why the local `DbRetryTest` went with the local class.
+qits-integrations-quarkus-javalib. It was a private class here first, and the lib's is that class
+with the budget moved from a constant to a per-call argument; the thirty seconds are stated at each
+call site as `DeployService.CUTOVER_BUDGET` (package-private, because `DeploymentObserver` wraps its
+brackets for the same reason and one budget spelled twice would drift). The lib's own suite pins
+every failure shape this component ever saw, which is why the local `DbRetryTest` went with the
+local class.
 
 **It has two spellings and the choice is not a style one — it is who owns the transaction.**
 `DbRetry.call` wraps a block; `DbRetry.inNewTx`/`runInNewTx` **is** the `requiringNew`. Owning the
@@ -601,7 +602,7 @@ joins would be an address that works by luck — `connect()` takes it for that r
 The environment qualifier exists because the legacy network is shared by every tier: without it two
 tiers' copies of one application hold the same address there. A platform service keeps the bare
 name — one instance for the whole platform has nothing to be qualified against, and the platform
-repositories carry the plane in their own names now (`qits-platform-idp`), which is also why the
+applications carry the plane in their own names now (`qits-platform-idp`), which is also why the
 platform container name **drops** the segment rather than filling it with the word.
 
 **The predecessor search asks about the wire alias AND the bare application name.** Every container
@@ -946,10 +947,10 @@ own. `@WebSocket` or anything on the Vert.x router takes a literal path and need
 
 ## The client, and where the segment still lives
 
-`service/src/main/webui` is the **qits-spa-deployments** submodule. This service has a host of its
-own, so the client is served at `/` and its `angular.json` sets `baseHref: /` — there is no segment
-in the client at all. Its calls still go to `/platform-deployments/api`, which the edge path-routes
-on every vhost.
+`service/src/main/webui` is the **qits-deployments-platform-frontend** submodule. This service has a
+host of its own, so the client is served at `/` and its `angular.json` sets `baseHref: /` — there is
+no segment in the client at all. Its calls still go to `/platform-deployments/api`, which the edge
+path-routes on every vhost.
 
 The segment is spelled in four places that move together, all of them in this repository:
 `quarkus.quinoa.ignored-path-prefixes`, `quarkus.rest.path`,
@@ -1276,10 +1277,11 @@ second row still claims to be ACTIVE.
 
 ## Dependencies
 
-**The client is the only submodule.** `service/src/main/webui` is qits-spa-deployments; `git submodule update
---init` is half of a clone here, and `.config/qits/ci-post-receive.yml` runs it for that reason.
-Shared auth comes from the platform Maven repository as `qits-auth-core`, and the event bus client
-as `qits-eventstream` — ordinary Maven dependencies, never gitlinks.
+**The client is the only submodule.** `service/src/main/webui` is
+qits-deployments-platform-frontend; `git submodule update --init` is half of a clone here, and
+`.config/qits/ci-post-receive.yml` runs it for that reason. Shared auth comes from the platform
+Maven repository as `qits-auth-core`, and the event bus client as `qits-eventstream` — ordinary
+Maven dependencies, never gitlinks.
 
 **Both are version-pinned by a property in the root pom, one line each**, because a release train
 step rewrites exactly that element: `.config/qits/ci-event-upstream-auth-core.yml` and
@@ -1417,7 +1419,7 @@ Twelve `@UserStory` methods in five classes, so `mvn verify -DskipITs=false` als
 `service/target/userstories/` — a story log plus a mermaid **network** diagram each — which
 `.config/qits/ci-event-userflows.yml` publishes per commit as the docs bundle
 `@userflows/qits-deployments`. They are **browserless** (an `Interactions` parameter and no `Flow`),
-so qits-userflows' transitive Playwright never launches anything.
+so qits-userflows-javalib's transitive Playwright never launches anything.
 
 | class | category | what it is about |
 | --- | --- | --- |

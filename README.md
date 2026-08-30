@@ -1,4 +1,4 @@
-# qits-platform-deployments
+# qits-deployments-platform-service
 
 The platform component that owns **what runs where**. Both halves of it: the *topology* — which
 environments exist, which services are linked into each of them, what shape each service has — and
@@ -235,7 +235,7 @@ served for hours. The connections are retried now; the row needed reading back t
 bare `<app>` for a platform service.** The qualifier is what lets two tiers hold one application's
 address on the legacy network, which they all share, without either resolving as the other; a
 platform service is one instance for the whole platform, so there is nothing to qualify it against
-and its repository name carries the plane already (`qits-platform-idp`). Container names follow the
+and its application name carries the plane already (`qits-platform-idp`). Container names follow the
 same shape: `qits-pd-<env>-<app>-<id8>`, and `qits-pd-<app>-<id8>` on the platform plane.
 
 **Under swarm that model collapses to two overlays**, and deliberately: every `--network-add`
@@ -369,7 +369,7 @@ serving, and the sha a rollback would put back.
 
 ## Building it
 
-    git clone … && cd qits-platform-deployments
+    git clone … && cd qits-deployments-platform-service
     git submodule update --init          # the web client
     ./mvnw clean verify
 
