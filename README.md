@@ -72,6 +72,7 @@ repository's `.config/qits/deployments.yml` at that sha, and the service row is 
 up to date from what it found there.
 
 ```yaml
+application: qits-ci                 # optional; what this deploys AS, when it is not the repo's name
 deployment_target: environment       # default when the key or the file is absent | platform
 available_on_env: false              # default; true = public node (bundle + hub joins)
 deploy_branches: environment/prod    # comma-separated refs; read here, used by the release flow
@@ -84,6 +85,17 @@ routes: /artifacts,/artifacts/api    # optional public path prefixes, ordered
 upstream_port: 8080                  # default; target port behind every declared route
 navigation: Artifacts:3              # optional label:positive-position for the first route
 ```
+
+`application:` is what this repository **deploys as**, and it is the one key that changes an
+identity rather than a behaviour. Absent — every file today — the application name is the
+repository's name and nothing is different. Present, that string is the application name everywhere:
+the swarm service and its wire alias, the container name, the image `qits/<application>:<sha>`, the
+provisioned database, the derived host label, the catalogue key, the extras family and every
+`Deployment*` event. It exists so a repository can be **renamed** without moving anything that runs —
+`qits-ci` becomes the repository `qits-ci-service`, writes `application: qits-ci`, and the platform
+does not notice. Two repositories claiming one application name is last-wins and this component
+cannot refuse it (these tables record an application name and no repository identity); changing the
+key on a live application is a decommission and a new application, not a rename.
 
 `deploy_branches` is parsed, validated and **not acted on**: where a build deploys is the
 environment rows' answer, not the file's. It is accepted because qits-workspaces' release flow reads

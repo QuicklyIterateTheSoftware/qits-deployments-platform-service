@@ -764,7 +764,7 @@ public class DeployService implements BuildAnnouncements {
    * — a reader takes it to qits-ci. The triple that actually drives the deployment is (repository,
    * branch, commitSha).
    *
-   * <p><b>This is where the application name is settled, once and for the whole event.</b> The
+   * <p><b>This is where the REPOSITORY's name is settled, once and for the whole event.</b> The
    * repository arrives in two coordinate systems — an opaque storage id, and the public {@code
    * (projectId, repoName)} pair when the announcement carried one — and {@link
    * RepositoryRef#applicationName()} picks the name over the id. Everything below takes that string
@@ -773,6 +773,10 @@ public class DeployService implements BuildAnnouncements {
    * needs the reference itself, because the git host addresses a blob by either coordinate. Passing
    * a repository id where a name is meant is the regression to watch for — it would tag images
    * {@code qits/<uuid>:<sha>} while every pipeline pushes {@code qits/<name>:<sha>}.
+   *
+   * <p><b>The APPLICATION name is settled one step later</b>, in {@link #deploy}, because a
+   * repository may declare {@code application:} in the file this has not read yet. Absent — every
+   * file today — the two are the same string and this paragraph describes both.
    *
    * <p><b>{@code causationId} is carried by value from here on, and that is the whole reason it is
    * a parameter.</b> {@code CausationScope} is a ThreadLocal: the door's scope — the frame's for the
@@ -844,11 +848,28 @@ public class DeployService implements BuildAnnouncements {
    * does not guess: the places this repository is already registered in each get a recorded {@code
    * FAILED} deployment naming the cause, and a repository with nothing registered gets nothing,
    * exactly as an unknown repository always has.
+   *
+   * <p><b>The spec read is also where the application name can stop being the repository's</b>, and
+   * this is the only place that substitution happens. {@code application:} in the file names what
+   * this repository deploys AS, and from the line below every derivation takes that string: the
+   * catalogue key, the {@link Target}, the wire alias, the container name, the image reference, the
+   * provisioned database and role, the derived host, the extras family and every event this
+   * deployment publishes. Absent — which is every file that exists today — the name is the
+   * announcement's own and nothing about this method changed. The key exists so a repository can be
+   * RENAMED without moving anything that runs: {@code qits-ci-service} declaring {@code
+   * application: qits-ci} deploys exactly what {@code qits-ci} deployed, down to the image tag its
+   * pipeline still pushes.
+   *
+   * <p><b>An unreadable spec keeps the repository's own name, and it has to.</b> The override lives
+   * in the file that could not be read, so the failure rows go to the places registered under the
+   * announcement's name — which for a repository that has been renamed AND overrides is no place at
+   * all. That is the honest answer rather than a gap: nothing here knows which application a file it
+   * could not read was speaking for, and guessing would record a failure against somebody else's.
    */
   private void deploy(
       String runId,
       RepositoryRef repository,
-      String applicationName,
+      String repositoryName,
       String branch,
       String commitSha,
       UUID causationId) {
@@ -863,8 +884,10 @@ public class DeployService implements BuildAnnouncements {
       failure = "[deployment spec unreadable: " + e.getMessage() + "]";
       LOG.warnf(
           "Could not read the deployment spec of %s@%s: %s",
-          applicationName, commitSha, e.getMessage());
+          repositoryName, commitSha, e.getMessage());
     }
+
+    String applicationName = applicationName(repositoryName, spec);
 
     List<Target> targets;
     if (spec == null) {
@@ -899,6 +922,32 @@ public class DeployService implements BuildAnnouncements {
         finish(deploymentId, targets.get(i), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
       }
     }
+  }
+
+  /**
+   * The name this build deploys under: the repository's own, unless the file it carries says
+   * otherwise.
+   *
+   * <p>One line, and it is the whole of the {@code application:} key. It sits here rather than in
+   * the parser because the parser never knows which repository it is reading for — the {@code
+   * ResourceProvisioning.resolve} and {@link #browserHost} arrangement, applied to the value those
+   * two are themselves derived from.
+   *
+   * <p><b>Two repositories declaring one application name is last-wins and nothing here can refuse
+   * it</b>: this schema records an application NAME and no repository identity, by V1's own rule, so
+   * there is nothing to compare a second claimant against. It is not a hazard the key introduces —
+   * two repositories in two projects may already carry one name and already collapse the same way —
+   * so what the key adds is the log line below, which puts the claim on the record of every
+   * deployment that makes it.
+   */
+  static String applicationName(String repositoryName, DeploymentSpec spec) {
+    if (spec == null || spec.application() == null || spec.application().equals(repositoryName)) {
+      return repositoryName;
+    }
+    LOG.infof(
+        "The repository %s declares `application: %s`, so it deploys as %s",
+        repositoryName, spec.application(), spec.application());
+    return spec.application();
   }
 
   /**

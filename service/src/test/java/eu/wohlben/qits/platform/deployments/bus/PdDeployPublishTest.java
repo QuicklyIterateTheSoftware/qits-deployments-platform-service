@@ -237,6 +237,7 @@ public class PdDeployPublishTest {
             null,
             false,
             List.of(new NavigationEntry("system", "No host", 1)),
+            null,
             null));
 
     postBuildSucceeded("run-pub-nohost", "repo-pub-nohost", "environment/pub-nohost", null);
@@ -264,6 +265,7 @@ public class PdDeployPublishTest {
         host,
         true,
         navigationEntries,
+        null,
         null);
   }
 

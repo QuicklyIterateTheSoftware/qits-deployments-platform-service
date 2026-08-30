@@ -159,6 +159,47 @@ class DeploymentSpecParserTest {
   }
 
   @Test
+  void anAbsentApplicationKeyIsTheRepositorysOwnName() {
+    // The whole of the compatibility contract for this key: every file that exists today says
+    // nothing, and null is what "the repository's own name" is spelled as here — the parser never
+    // knows which repository it reads for, so it cannot fill the value in.
+    assertNull(DeploymentSpec.DEFAULTS.application());
+    assertNull(parse("").application());
+    assertNull(parse("deployment_target: platform\nroutes: /ci\n").application());
+  }
+
+  @Test
+  void aStatedApplicationIsTheNameThisRepositoryDeploysAs() {
+    // The rename: the repository is qits-ci-service and the application stays qits-ci, so nothing
+    // that is running moves. What the name then drives is DeployService's, not this parser's.
+    assertEquals("qits-ci", parse("application: qits-ci\n").application());
+    assertEquals(
+        "qits-ci",
+        parse("application: qits-ci\ndeployment_target: platform\nroutes: /ci\n").application(),
+        "it sits beside every other key and changes none of them");
+    // Naming the repository's own name is a no-op rather than an error — a file may say it out loud.
+    assertEquals("qits-ci", parse("application: 'qits-ci'\n").application(), "quoted like any value");
+  }
+
+  @Test
+  void anApplicationNameIsCheckedLikeEveryOtherStoredName() {
+    // It becomes a service name, a network alias, an image path segment and half a postgres
+    // identifier, so it takes PdIdentifiers' stored-name rule: lowercase, digits, inner dashes.
+    // Uppercase is refused outright, which is what makes two spellings differing only in case
+    // impossible rather than merely discouraged.
+    assertTrue(messageOf("application: Qits-CI\n").contains("application"));
+    assertTrue(messageOf("application: qits/ci\n").contains("application"));
+    assertTrue(messageOf("application: qits ci\n").contains("application"));
+    assertTrue(messageOf("application: qits.ci\n").contains("application"));
+    assertTrue(messageOf("application: -qits-ci\n").contains("application"));
+    assertTrue(messageOf("application: qits-ci-\n").contains("application"));
+    assertTrue(messageOf("application:\n").contains("application"));
+    assertTrue(messageOf("application: " + "c".repeat(64) + "\n").contains("application"));
+    // And it is one key like any other: stating it twice is the duplicate every key is refused for.
+    assertTrue(messageOf("application: qits-ci\napplication: qits-ci\n").contains("duplicate"));
+  }
+
+  @Test
   void oneApplicationClaimsEachSlotOnce() {
     assertTrue(
         messageOf("routes: /ci\nnavigation-entries: system.CI:1, system.Runs:2\n")
@@ -520,6 +561,7 @@ class DeploymentSpecParserTest {
     assertTrue(message.contains("update_order"), message);
     assertTrue(message.contains("publish_mode"), message);
     assertTrue(message.contains("navigation-entries"), message);
+    assertTrue(message.contains("application"), message);
   }
 
   @Test
