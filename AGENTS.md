@@ -1046,6 +1046,58 @@ git host was split out of it). It is `http://qits-githost:8080` now, the sibling
 Every deployment overrides the key, which is why it cost nothing and hid this long — and it is why
 the shipped value carries no environment prefix: a prefixed hostname is deployment config.
 
+### …unless the file says otherwise: `application:` (2026-08-30)
+
+**`application:` in `.config/qits/deployments.yml` decouples the deployed identity from the
+repository name, and it is the whole of the wrapper reorganisation's phase 2 for this component.**
+Absent — which is every file that exists today — behaviour is byte-identical to the section above:
+the application name is the repository's name. Present, that string IS the application name
+everywhere the repository's would have been, and the list is the same one: the catalogue key, the
+swarm service and its wire alias, the container name, the image `qits/<application>:<sha>`, the
+provisioned database and role, the derived `host` label, the extras family
+`qits.platform.deployments.extras.<application>.*`, the `QITS_APPLICATION` the container boots with,
+and the name every `Deployment*` event carries.
+
+It exists so a repository can be **renamed** with nothing on the platform moving: `qits-ci` becomes
+the repository `qits-ci-service`, writes `application: qits-ci`, and the running platform does not
+notice. The image reference following the application rather than the repository is the feature — a
+renamed repository's pipeline yml keeps pushing `qits/qits-ci`, and the deployer keeps pulling it.
+
+Five things about it, each easy to undo by accident:
+
+- **The substitution is `DeployService.deploy`'s, and there is exactly one of it.** The parser reads
+  and validates the value and no more — it never knows which repository it is reading for, the
+  `ResourceProvisioning.resolve` and `browserHost` arrangement applied to the value those two are
+  themselves derived from. `announce` still settles the REPOSITORY's name (id vs the name pair);
+  `deploy` settles the APPLICATION's, one line after the spec read, and everything below takes it by
+  value exactly as before. A second substitution point is the regression to watch for.
+- **The spec read still addresses the REPOSITORY.** `SpecSource.read` takes the `RepositoryRef`,
+  which is unchanged and must stay so: the blob lives at `/git/<projectId>/<repoName>`, and an
+  override that redirected the read would fetch somebody else's file.
+- **An unreadable spec keeps the repository's own name**, so the `FAILED` rows go to the places
+  registered under it — which for a repository that has been renamed AND overrides is no place at
+  all. That is the honest answer rather than a gap: nothing knows which application a file it could
+  not read was speaking for, and guessing would record a failure against a stranger.
+- **Two repositories declaring one application name is LAST-WINS, and this component cannot refuse
+  it.** `pd_service`, `pd_deployment` and `pd_resource` record an application NAME and no repository
+  identity at all — V1's header states that as the rule — so there is nothing to compare a second
+  claimant against. It is not a hazard the key introduces: two repositories in two projects may
+  already carry one name and already collapse the same way. What the key adds is that every
+  deployment taking an override logs which repository claimed which application, so the claim is on
+  the record. **Refusing it is a follow-up with a price**: a repository identity on `pd_service` and
+  a migration to hold it, which is a decision about foreign identity in this schema rather than a
+  detail of this key — and it would have to key on the storage id, because the repository NAME is
+  the thing phase 2 changes.
+- **CHANGING the value later is a decommission and a new application, and nothing here helps.** The
+  old name keeps its service, alias, database, rows and routes; the new one gets fresh ones and
+  deploys beside it. The rename runbook moves repositories, never applications.
+
+**The release door is unaffected**, and that was checked rather than assumed: qits-workspaces'
+`DeploymentSpecReader` **stats** this file and never opens it (a file means "it deploys"), so a new
+key is invisible to it. qits-ci's strict unknown-key parser only ever sees `ci-event-*.yml`. And,
+like every spec key: **it must ship in the deployer before any repository writes the line**, since a
+spec is read at the built sha and an unknown key fails a deployment.
+
 ### The cause rides the seam, because the scope cannot (2026-08-10)
 
 **`announce` takes a fifth value now, `causationId`, and the domain modules hold the eventstream jar

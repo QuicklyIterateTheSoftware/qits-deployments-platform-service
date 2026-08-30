@@ -12,11 +12,12 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Fourteen scalar keys, no nesting, no YAML
+ * The strict reader of {@code .config/qits/deployments.yml}. Fifteen scalar keys, no nesting, no YAML
  * lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
  * <pre>
+ * application: qits-ci                 # optional; the name this deploys as, when it is not the repo's
  * deployment_target: environment       # default when the key or the file is absent | platform
  * available_on_env: false              # default; true = public node (bundle + hub joins)
  * health_path: /q/health/ready         # default: /&lt;name without the qits- prefix&gt;/q/health/ready
@@ -32,6 +33,46 @@ import java.util.Set;
  * api-docs: /artifacts/q/swagger-ui    # optional; where the browsable API document lives
  * deploy_branches: environment/prod    # RETIRED, accepted and ignored — see below
  * </pre>
+ *
+ * <p><b>{@code application} is what this repository deploys AS, and it decouples the deployed
+ * identity from the repository's name.</b> Absent — which is every file that exists today — the
+ * application name is the repository's name and every derivation is byte-identical to what it
+ * always was. Present, that string IS the application name everywhere the repository's would have
+ * been: the swarm service and its wire alias, the container name, the image reference {@code
+ * qits/<application>:<sha>}, the provisioned database ({@code qits_} plus the name without its
+ * prefix), the derived {@code host} label, the catalogue key, the extras family {@code
+ * qits.platform.deployments.extras.<application>.*}, the {@code QITS_APPLICATION} the container
+ * boots with, and the name every {@code Deployment*} event carries. The parser only reads and
+ * validates it — the substitution happens in {@code DeployService.deploy}, which is the first place
+ * that holds both the spec and the announcement it was read for.
+ *
+ * <p>It exists so a repository can be RENAMED without moving anything that is running: {@code
+ * qits-ci} becomes the repository {@code qits-ci-service}, writes {@code application: qits-ci}, and
+ * the platform does not notice. That is also why the image reference following it is a feature
+ * rather than a leak — a renamed repository's pipeline keeps pushing {@code qits/qits-ci}, and the
+ * deployer keeps pulling it.
+ *
+ * <p><b>It is validated as a stored name, not as free text</b> ({@link PdIdentifiers#requireName}):
+ * lowercase letters, digits and inner dashes, at most 63 characters. Uppercase is refused outright,
+ * so two spellings differing only in case cannot both exist; slashes, dots and spaces are refused
+ * because this value becomes a docker service name, a DNS alias, an image path segment and half of
+ * a postgres identifier.
+ *
+ * <p><b>Two repositories declaring one application name is LAST-WINS and this component cannot
+ * refuse it.</b> {@code pd_service}, {@code pd_deployment} and {@code pd_resource} record an
+ * application NAME and no repository identity at all — V1's header states that as the rule, not as
+ * an omission — so there is nothing to compare a second claimant against. It is not a hazard this
+ * key introduces either: two repositories in two projects may already carry one name, and they
+ * already collapse the same way. What the key adds is that the claim is now written down, so every
+ * deployment that takes an override logs which repository claimed which application. Refusing it
+ * would take a repository identity on {@code pd_service} and a migration to hold it, which is a
+ * decision about foreign identity in this schema rather than a detail of this key.
+ *
+ * <p><b>CHANGING an application name later is a decommission and a new application, and nothing
+ * here helps with it.</b> The old name keeps its service, its alias, its database, its rows and its
+ * routes; the new name gets fresh ones and deploys beside it. Editing this key on a live
+ * application is that, whether or not anybody meant it — so the rename runbook moves repositories,
+ * never applications.
  *
  * <p><b>{@code navigation-entries} is where an application asks to appear, and it is a list.</b>
  * One application shows up under several headings — a repository's Docs, CI and Workspaces are the
@@ -137,6 +178,7 @@ import java.util.Set;
  */
 public final class DeploymentSpecParser {
 
+  private static final String APPLICATION = "application";
   private static final String TARGET = "deployment_target";
   private static final String AVAILABLE_ON_ENV = "available_on_env";
   private static final String DEPLOY_BRANCHES = "deploy_branches";
@@ -205,6 +247,7 @@ public final class DeploymentSpecParser {
    * @throws SpecException on anything this schema does not describe
    */
   public static DeploymentSpec parse(String yaml, String source) {
+    String application = null;
     PdDeploymentTarget target = PdDeploymentTarget.ENVIRONMENT;
     boolean availableOnEnv = false;
     List<String> deployBranches = List.of();
@@ -241,6 +284,7 @@ public final class DeploymentSpecParser {
         throw error(source, lineNumber, "duplicate key `" + key + "`");
       }
       switch (key) {
+        case APPLICATION -> application = application(value, source, lineNumber);
         case TARGET -> target = target(value, source, lineNumber);
         case AVAILABLE_ON_ENV -> availableOnEnv = bool(key, value, source, lineNumber);
         case DEPLOY_BRANCHES -> deployBranches = deployBranches(value, source, lineNumber);
@@ -263,6 +307,8 @@ public final class DeploymentSpecParser {
                 "unknown key `"
                     + key
                     + "` — this file knows "
+                    + APPLICATION
+                    + ", "
                     + TARGET
                     + ", "
                     + AVAILABLE_ON_ENV
@@ -370,7 +416,31 @@ public final class DeploymentSpecParser {
         // on a vhost the release that ships this parser never promised.
         seen.contains(HOST) || seen.contains(NAVIGATION_ENTRIES),
         navigationEntries,
-        apiDocs);
+        apiDocs,
+        application);
+  }
+
+  /**
+   * The name this repository deploys as. Checked with {@link PdIdentifiers#requireName}, the rule
+   * every STORED name of this platform already passes, because that is what this value becomes: a
+   * catalogue row's unique name, a docker service name, a network alias, an image path segment and
+   * the tail of a postgres identifier. Uppercase, dots, slashes and spaces are all outside that
+   * charset, so two names differing only in case cannot both be written.
+   */
+  private static String application(String value, String source, int line) {
+    try {
+      return PdIdentifiers.requireName(value, APPLICATION);
+    } catch (RuntimeException e) {
+      throw error(
+          source,
+          line,
+          "`"
+              + APPLICATION
+              + "` is one lowercase name — letters, digits and inner dashes, at most 63 characters"
+              + " — because it becomes a service name, a network alias, an image path segment and"
+              + " a database name. Got: "
+              + value);
+    }
   }
 
   /** Under a published route: the route itself, or a path below it. */

@@ -76,6 +76,14 @@ public interface SpecSource {
    * published routes ({@code /ci/q/swagger-ui}). Null is a real answer — a service that documents
    * no HTTP surface — and the parser has already refused a path that sits under no route.
    *
+   * <p>{@code application} is the name this repository deploys AS, and <b>null is the answer every
+   * file gives today</b>: the application name is the repository's own. A file that states it
+   * decouples the deployed identity from the repository name, so a repository can be renamed
+   * without moving the service, the alias, the image, the database or the routes that are running.
+   * The substitution is {@code DeployService.deploy}'s, the first place holding both this spec and
+   * the announcement it was read for — see {@code DeploymentSpecParser} for what it costs and what
+   * it cannot refuse.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -93,7 +101,8 @@ public interface SpecSource {
       String host,
       boolean browserHostDeclared,
       List<NavigationEntry> navigationEntries,
-      String apiDocs) {
+      String apiDocs,
+      String application) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
@@ -120,7 +129,11 @@ public interface SpecSource {
       this(target, availableOnEnv, deployBranches, healthPath, healthCmd, resources, null, null);
     }
 
-    /** The pre-routing shape: no routes is the compatible, empty endpoint declaration. */
+    /**
+     * The pre-routing shape: no routes is the compatible, empty endpoint declaration, and no
+     * {@code application} is the repository's own name — both of them what a file that says
+     * nothing has always meant.
+     */
     public DeploymentSpec(
         PdDeploymentTarget target,
         boolean availableOnEnv,
@@ -144,6 +157,7 @@ public interface SpecSource {
           null,
           false,
           List.of(),
+          null,
           null);
     }
 

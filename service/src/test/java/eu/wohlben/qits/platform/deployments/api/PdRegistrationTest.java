@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import eu.wohlben.qits.platform.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.platform.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeploymentDriver;
+import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
@@ -44,12 +45,14 @@ public class PdRegistrationTest {
 
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
+  @Inject FakeResourceProvisioner provisioner;
   @Inject DeployService deployService;
 
   @BeforeEach
   void reset() {
     driver.reset();
     specs.reset();
+    provisioner.reset();
   }
 
   @Test
@@ -384,6 +387,64 @@ public class PdRegistrationTest {
         List.of("repo-reg-unnamed"),
         List.of((String) service("repo-reg-unnamed").get("name")),
         "the catalogue is keyed by the same string it always was");
+  }
+
+  @Test
+  public void aRepositoryThatDeclaresAnApplicationDeploysUnderThatNameAndNotItsOwn() {
+    // The rename in one test. The repository is qits-reg-ci-service, its deployments.yml says
+    // `application: qits-reg-ci`, and every name the platform can see stays what it was: the
+    // catalogue key, the health path, the wire alias, the container name, the image the pipeline
+    // still pushes, and the database this deployment provisions. Nothing about the running platform
+    // moves when a repository is renamed — that is the whole point of the key.
+    String environmentId = createEnvironment("reg-app", "environment/reg-app");
+    specs.script(
+        "qits-reg-ci-service",
+        DeploymentSpecParserAlias.parse(
+            "application: qits-reg-ci\nresources: postgresql:db\n"));
+
+    postBuildSucceeded(STORAGE_UUID, "qits", "qits-reg-ci-service", "environment/reg-app", SHA_A);
+    awaitApplied(1);
+
+    assertNull(service("qits-reg-ci-service"), "the repository's own name registered nothing");
+    Map<String, Object> service = service("qits-reg-ci");
+    assertEquals(List.of(environmentId), service.get("environmentIds"));
+    assertEquals(
+        "/reg-ci/q/health/ready",
+        service.get("healthPath"),
+        "the convention path follows the application, not the repository");
+
+    DeploymentDriver.ServiceSpec applied = driver.applied().get(0);
+    assertEquals("qits-reg-ci", applied.applicationName());
+    assertEquals("reg-app-qits-reg-ci", applied.wireAlias());
+    assertTrue(applied.imageRef().endsWith("/qits-reg-ci:" + SHA_A), "image: " + applied.imageRef());
+    assertTrue(
+        applied.deploymentName().startsWith("qits-pd-reg-app-qits-reg-ci-"),
+        applied.deploymentName());
+    assertFalse(applied.imageRef().contains("service"), "image: " + applied.imageRef());
+    assertEquals(
+        "qits_reg_ci",
+        provisioner.requests().get(0).databaseName(),
+        "the default database is derived from the application name too");
+  }
+
+  @Test
+  public void aRepositoryThatStatesNoApplicationIsNamedAfterItselfExactlyAsBefore() {
+    // The other arm, and it is the one that has to stay byte-identical: a file that says nothing
+    // about the key — which is every file that exists — deploys under the repository's own name.
+    createEnvironment("reg-noapp", "environment/reg-noapp");
+    specs.script(
+        "qits-reg-plain",
+        DeploymentSpecParserAlias.parse("resources: postgresql:db\nroutes: /reg-plain\n"));
+
+    postBuildSucceeded(STORAGE_UUID, "qits", "qits-reg-plain", "environment/reg-noapp", SHA_A);
+    awaitApplied(1);
+
+    DeploymentDriver.ServiceSpec applied = driver.applied().get(0);
+    assertEquals("qits-reg-plain", applied.applicationName());
+    assertEquals("reg-noapp-qits-reg-plain", applied.wireAlias());
+    assertTrue(applied.imageRef().endsWith("/qits-reg-plain:" + SHA_A), applied.imageRef());
+    assertEquals("/reg-plain/q/health/ready", service("qits-reg-plain").get("healthPath"));
+    assertEquals("qits_reg_plain", provisioner.requests().get(0).databaseName());
   }
 
   @Test
