@@ -73,8 +73,9 @@ health_path: /platform-deployments/q/health/ready
 # root of this service's own host, which the edge derives from the application name.
 routes: /platform-deployments
 
-# WHERE THE EDGE APPEARS THIS APPLICATION IN THE SIDEBAR. One entry per slot: `platform` is the
-# project-scoped group, and this is its fourth row. The label and the position are the whole
+# WHERE THE EDGE APPEARS THIS APPLICATION IN THE SIDEBAR. One entry per `<slot>.<Label>` pair — an
+# application may hang several rows under one heading, and this one hangs a single row under
+# `platform`, the project-scoped group, as its fourth entry. The label and the position are the whole
 # statement — the host is derived from the application name (`qits-platform-deployments` minus its
 # `qits-platform-` prefix is `deployments`), so there is no `host:` line to keep in step.
 #
