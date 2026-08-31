@@ -200,10 +200,60 @@ class DeploymentSpecParserTest {
   }
 
   @Test
-  void oneApplicationClaimsEachSlotOnce() {
+  void oneApplicationHangsSeveralRowsUnderOneHeading() {
+    // The workspaces shape, byte for byte: one application, one container, two rows under the
+    // project node. The claim is the (slot, label) pair — keyed on the slot alone this file was
+    // refused whole ("claims the slot `project.detail` twice"), so the deployment failed as
+    // "deployment spec unreadable" while the build that produced it stayed green.
+    assertEquals(
+        List.of(
+            new NavigationEntry("project.detail", "Workspaces", 1),
+            new NavigationEntry("project.detail", "Editor", 2, "editor")),
+        parse(
+                "routes: /workspaces\n"
+                    + "navigation-entries: project.detail.Workspaces:1,"
+                    + " project.detail.Editor:2=editor\n")
+            .navigationEntries());
+    // And a label that is only a label away from another one is still two rows: what makes them
+    // distinct is the pair, not how different the words are.
+    assertEquals(
+        2,
+        parse("routes: /ci\nnavigation-entries: system.CI:1, system.Runs:2\n")
+            .navigationEntries()
+            .size());
+  }
+
+  @Test
+  void oneApplicationClaimsEachSlotAndLabelOnce() {
+    // One row asked for twice, which no consumer can draw two of. The message names the pair rather
+    // than the slot, so a file with four project.detail entries says which one is the duplicate.
+    String message = messageOf("routes: /ci\nnavigation-entries: system.CI:1, system.CI:2\n");
+    assertTrue(message.contains("twice"), message);
+    assertTrue(message.contains("system.CI"), message);
+    // The subpath is not part of the claim either: two views of one application under one heading
+    // are two ROWS and need two labels to be told apart in the tree.
     assertTrue(
-        messageOf("routes: /ci\nnavigation-entries: system.CI:1, system.Runs:2\n")
+        messageOf(
+                "routes: /ci\nnavigation-entries: project.detail.Editor:1=editor,"
+                    + " project.detail.Editor:2=terminal\n")
             .contains("twice"));
+  }
+
+  @Test
+  void twoRowsOfOneApplicationMayNameOnePosition() {
+    // A position is the repository's own number and a tie is broken by label — the consumer already
+    // does that between applications (NavigationEntry's javadoc says so, and EdgeRoutes sorts slot,
+    // position, label, application). Refusing the tie within one application would be a rule the
+    // navigation document does not have, and the two rows would still both render.
+    assertEquals(
+        List.of(
+            new NavigationEntry("project.detail", "Workspaces", 1),
+            new NavigationEntry("project.detail", "Editor", 1, "editor")),
+        parse(
+                "routes: /workspaces\n"
+                    + "navigation-entries: project.detail.Workspaces:1,"
+                    + " project.detail.Editor:1=editor\n")
+            .navigationEntries());
   }
 
   @Test
@@ -258,6 +308,7 @@ class DeploymentSpecParserTest {
         List.of(
             "services.details.CI:2,platform.Deployments:4",
             "services.details.Api Docs:6=api-docs",
+            "project.detail.Workspaces:1,project.detail.Editor:2=editor",
             "services.details.CI:v2:1=runs/latest,system.CI:1")) {
       assertEquals(
           spelled,

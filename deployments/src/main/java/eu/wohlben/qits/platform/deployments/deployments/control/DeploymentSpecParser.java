@@ -82,7 +82,17 @@ import java.util.Set;
  * the last dot of what remains separates the label, and everything before it is the slot. That
  * order is what lets a label contain a colon or an equals sign ({@code services.details.CI:v2:1})
  * while the slot vocabulary stays closed. A label may not contain a dot or a comma, which is what
- * makes both separators safe, and one application may claim each slot once.
+ * makes both separators safe.
+ *
+ * <p><b>What one application may claim once is a {@code (slot, label)} pair, not a slot.</b> An
+ * application contributes several ROWS to one heading — {@code project.detail.Workspaces:1,
+ * project.detail.Editor:2=editor} is one application asking for two entries under the project node,
+ * which is exactly what a list of placements is for. Keying the claim on the slot alone refused that
+ * whole file with "claims the slot `project.detail` twice", and the deployment then failed as
+ * "deployment spec unreadable" while the build that produced it stayed green. The same label twice
+ * in one slot stays an error: it is one row asked for twice, and no consumer can draw two of it. A
+ * repeated POSITION is not an error — a number is the repository's own and a tie is broken by
+ * label, which is what the document already does between applications.
  *
  * <p><b>The subpath is the view the entry opens, and it is a client-side route segment.</b> The
  * shell composes every entry's address as origin + scope + subpath ({@code
@@ -527,13 +537,21 @@ public final class DeploymentSpecParser {
    * The subpath's own charset has no colon, dot or comma, which is what keeps every separator here
    * safe around it.
    *
-   * <p>A blank entry, an unknown slot and a second entry for one slot are all errors. The slot is
-   * quoted back with the whole vocabulary, because a typo here is an application that silently
-   * appears nowhere.
+   * <p>A blank entry, an unknown slot and a second entry for one {@code (slot, label)} pair are all
+   * errors. The slot is quoted back with the whole vocabulary, because a typo here is an application
+   * that silently appears nowhere.
+   *
+   * <p><b>The claim is the pair, not the slot.</b> One application legitimately contributes several
+   * ROWS to one heading — qits-workspaces hangs Workspaces and Editor under the project node — and
+   * the slot alone as the key refused that spec outright. What stays refused is the same label
+   * twice in one slot, which is one row asked for twice and no shell can draw two of. Positions are
+   * NOT part of the key: {@link NavigationEntry} says a repeated number is an ordinary tie the
+   * consumer breaks by label, and it already breaks that tie between applications, so refusing it
+   * within one would be a rule the document does not have.
    */
   private static List<NavigationEntry> navigationEntries(String value, String source, int line) {
     List<NavigationEntry> declared = new ArrayList<>();
-    Set<String> slots = new HashSet<>();
+    Set<String> claimed = new HashSet<>();
     for (String candidate : value.split(",", -1)) {
       String entry = candidate.strip();
       if (entry.isBlank()) {
@@ -598,11 +616,11 @@ public final class DeploymentSpecParser {
       if (!SLOTS.contains(slot)) {
         throw unknownSlot(slot, entry, source, line);
       }
-      if (!slots.add(slot)) {
+      if (!claimed.add(slot + "." + label)) {
         throw error(
             source,
             line,
-            "`" + NAVIGATION_ENTRIES + "` claims the slot `" + slot + "` twice");
+            "`" + NAVIGATION_ENTRIES + "` claims `" + slot + "." + label + "` twice");
       }
       declared.add(new NavigationEntry(slot, label, position, subpath));
     }

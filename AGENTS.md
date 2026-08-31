@@ -1099,6 +1099,33 @@ key is invisible to it. qits-ci's strict unknown-key parser only ever sees `ci-e
 like every spec key: **it must ship in the deployer before any repository writes the line**, since a
 spec is read at the built sha and an unknown key fails a deployment.
 
+### `navigation-entries` claims a (slot, label) pair, not a slot (2026-08-31)
+
+**One application contributes SEVERAL rows to one heading, and the parser refused that outright for
+a release.** `DeploymentSpecParser.navigationEntries` keyed its duplicate check on the slot alone,
+so `navigation-entries: project.detail.Workspaces:1, project.detail.Editor:2=editor` — qits-workspaces
+asking for the workspace list and the web editor under the project node, from one application in one
+container — came back as "claims the slot `project.detail` twice" and the deployment failed with
+`deployment spec unreadable` while its build stayed green. A list of placements exists precisely so
+an application can appear in more than one place; the slot was never the thing being claimed.
+
+The key is the **pair**. Three things about it:
+
+- **The same `(slot, label)` twice is still an error**, and the message names the pair
+  (``claims `project.detail.Editor` twice``) rather than the slot, so a file with four entries under
+  one heading says which one is the duplicate. It is one row asked for twice and no shell can draw
+  two of it.
+- **A repeated POSITION is NOT an error, and that is a decision.** `NavigationEntry`'s own javadoc
+  has always said a repeated number is an ordinary tie the consumer breaks by label, and both
+  consumers do exactly that today — qits-edge sorts slot, position, label, application, and the
+  shell's jslib re-sorts `position - position || label.localeCompare(label)`. Two applications at
+  one number in one slot already render as two stably-ordered rows; refusing the same tie inside one
+  application would be a rule the navigation document does not have, and the rows would render
+  anyway if it did.
+- **qits-edge widened the same rule in the same campaign** — `EdgeRoutes.validateSnapshot` and the
+  projection's primary key, which was `(environment, application, slot)`. Move one, move both: the
+  edge is a hop later, so a parser alone would have turned a refused spec into a refused frame.
+
 ### The cause rides the seam, because the scope cannot (2026-08-10)
 
 **`announce` takes a fifth value now, `causationId`, and the domain modules hold the eventstream jar
