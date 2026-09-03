@@ -53,6 +53,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PdApplicationDto"
+    ListDeploymentRequestsResponse:
+      type: object
+      properties:
+        deploymentRequests:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdDeploymentRequestDto"
     ListDeploymentsResponse:
       type: object
       properties:
@@ -136,6 +143,33 @@ components:
           $ref: "#/components/schemas/Instant"
         finishedAt:
           $ref: "#/components/schemas/Instant"
+    PdDeploymentRequestDto:
+      type: object
+      properties:
+        id:
+          type: string
+        applicationName:
+          type: string
+        version:
+          type: string
+        environmentId:
+          type: string
+        packageName:
+          type: string
+        repoId:
+          type: string
+        projectId:
+          type: string
+        qualityGate:
+          $ref: "#/components/schemas/PdQualityGate"
+        gateDetail:
+          type: string
+        deploymentId:
+          type: string
+        createdAt:
+          $ref: "#/components/schemas/Instant"
+        gateSettledAt:
+          $ref: "#/components/schemas/Instant"
     PdDeploymentStatus:
       type: string
       enum:
@@ -192,6 +226,11 @@ components:
           type: array
           items:
             type: string
+    PdQualityGate:
+      type: string
+      enum:
+      - UNMET
+      - MET
     PdServiceDto:
       type: object
       properties:
@@ -258,6 +297,38 @@ paths:
           description: Not Allowed
       tags:
       - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits-platform:admin
+  /platform-deployments/api/deployment-requests:
+    get:
+      summary: "One environment's deployment requests, newest-first — the gate's record"
+      parameters:
+      - name: applicationName
+        in: query
+        schema:
+          type: string
+      - name: environmentId
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDeploymentRequestsResponse"
+        "400":
+          description: environmentId was not given
+        "404":
+          description: No such environment
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Deployment Request Controller
       security:
       - SecurityScheme:
         - qits-platform:admin

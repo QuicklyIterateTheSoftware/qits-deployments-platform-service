@@ -23,6 +23,29 @@ public class PdDeploymentRequestRepository
   }
 
   /**
+   * One tier's requests across every application asked for in it, newest-first — the read surface's
+   * listing, and the platform plane's requests are in it for the reason its deployments are: a
+   * platform service is deployed into the main environment and its request names that tier.
+   *
+   * <p>{@code environment_id} is nullable and the null is never matched here, exactly as on {@link
+   * PdDeploymentRepository#listByEnvironmentNewestFirst}: a request written before V8 on an install
+   * with no designated tier carries one, and {@code environment_id = null} matches nothing in SQL
+   * anyway.
+   */
+  public List<PdDeploymentRequest> listByEnvironmentNewestFirst(String environmentId) {
+    return list("environmentId = ?1 order by seq desc", environmentId);
+  }
+
+  /** The same listing narrowed to one application — "what has this service been asked for here". */
+  public List<PdDeploymentRequest> listByEnvironmentAndApplicationNewestFirst(
+      String environmentId, String applicationName) {
+    return list(
+        "environmentId = ?1 and applicationName = ?2 order by seq desc",
+        environmentId,
+        applicationName);
+  }
+
+  /**
    * The newest version this application was ever asked for, whatever the gate said and whatever
    * became of it.
    *

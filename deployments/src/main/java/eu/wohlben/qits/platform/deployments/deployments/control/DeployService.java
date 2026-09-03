@@ -2176,6 +2176,22 @@ public class DeployService implements ReleaseAnnouncements {
     return deployments.listPlatformNewestFirst();
   }
 
+  /**
+   * An environment's deployment REQUESTS, newest-first — what was asked for here, whatever the gate
+   * said and whatever became of it.
+   *
+   * <p>It is the listing beside {@link #deploymentsFor}, and it is a separate question rather than a
+   * richer answer to that one: a request the gate refused produced no deployment at all, so it is
+   * invisible in the deployment listing by construction. {@code applicationName} narrows it to one
+   * service and is optional — a null asks about the whole tier.
+   */
+  public List<PdDeploymentRequest> deploymentRequestsFor(
+      String environmentId, String applicationName) {
+    return applicationName == null || applicationName.isBlank()
+        ? requests.listByEnvironmentNewestFirst(environmentId)
+        : requests.listByEnvironmentAndApplicationNewestFirst(environmentId, applicationName);
+  }
+
   /** Drop this environment's recorded deployments — the first step of a teardown. */
   public void forgetEnvironment(String environmentId) {
     QuarkusTransaction.requiringNew()

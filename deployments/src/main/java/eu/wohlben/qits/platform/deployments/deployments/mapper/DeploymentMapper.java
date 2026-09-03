@@ -1,7 +1,9 @@
 package eu.wohlben.qits.platform.deployments.deployments.mapper;
 
 import eu.wohlben.qits.platform.deployments.deployments.dto.PdDeploymentDto;
+import eu.wohlben.qits.platform.deployments.deployments.dto.PdDeploymentRequestDto;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
+import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentRequest;
 import eu.wohlben.qits.platform.deployments.environments.control.ApplicationKeys;
 import jakarta.enterprise.context.ApplicationScoped;
 
@@ -35,5 +37,30 @@ public class DeploymentMapper {
         deployment.detail,
         deployment.createdAt,
         deployment.finishedAt);
+  }
+
+  /**
+   * The deployment REQUEST's wire shape — a field-for-field copy, and that is the point of it being
+   * here rather than being derived like its sibling above.
+   *
+   * <p>No {@code applicationId} is computed. The derivation needs the PLANE, a request has no column
+   * for one, and inventing {@code platform:} or {@code <tier>:} from the tier alone is exactly the
+   * silent mis-join this class's header describes. The name is the join key, and {@link
+   * eu.wohlben.qits.platform.deployments.deployments.dto.PdDeploymentRequestDto} says so.
+   */
+  public PdDeploymentRequestDto toDto(PdDeploymentRequest request) {
+    return new PdDeploymentRequestDto(
+        request.id,
+        request.applicationName,
+        request.version,
+        request.environmentId,
+        request.packageName,
+        request.repoId,
+        request.projectId,
+        request.qualityGate,
+        request.gateDetail,
+        request.deploymentId,
+        request.createdAt,
+        request.gateSettledAt);
   }
 }

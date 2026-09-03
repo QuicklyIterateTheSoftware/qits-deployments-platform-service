@@ -1033,8 +1033,11 @@ is queued, which it must: the handler is holding that transaction open while it 
 ### The deployment REQUEST, and the gate in front of the queue
 
 `pd_deployment_request` (V6) is the row a release writes **before** anything is queued: application,
-version, environment (null is the platform plane), the package and repository it came from, the
-quality gate and its detail, and — once the gate is met — the `deployment_id` it handed off to.
+version, environment, the package and repository it came from, the quality gate and its detail, and
+— once the gate is met — the `deployment_id` it handed off to. The environment is the tier the
+release entered at, **including for a platform service**: the plane deploys into the designated tier
+since V8, so the request names it exactly as the deployment does. (The column is still nullable, for
+rows written before that.)
 
 - **The request points at the deployment, never the reverse.** The request is the cause and is
   written first, so it cannot hold a key to a row that does not exist yet, and `pd_deployment` keeps
@@ -1047,6 +1050,17 @@ quality gate and its detail, and — once the gate is met — the `deployment_id
   in the queueing transaction before a real gate has an opinion, or the first one arrives as a
   migration over live history. Whatever asks a question later answers in that one method — it takes
   the release AND the target, because a real gate is about a (version, place) pair.
+- **It is a read surface too**: `GET /platform-deployments/api/deployment-requests?environmentId=…`
+  (`PdDeploymentRequestController`, `qits-platform:admin`, optional `&applicationName=`), newest
+  first, 400 without the filter and 404 for a tier that does not exist. It is a separate resource
+  from the deployment listing and not a richer answer to it, for the reason the table exists at all:
+  **a refused request queues nothing**, so it has no deployment row to be seen through, and a client
+  reading only the deployments would draw that release as never having happened. Note it takes **no
+  `platform` value** where the deployment listing does — a request records no plane, and a platform
+  service's request names the tier it deploys into, so it comes back in that tier's answer. The
+  deployments frontend polls it beside the deployments and folds each request into its application's
+  row by NAME; `PdDeploymentRequestDto` deliberately derives no `applicationId`, because deriving
+  `platform:` or `<tier>:` from a row with no plane column would be a guess.
 
 ### Where a release lands: the ENTRY TIER, not a branch
 
