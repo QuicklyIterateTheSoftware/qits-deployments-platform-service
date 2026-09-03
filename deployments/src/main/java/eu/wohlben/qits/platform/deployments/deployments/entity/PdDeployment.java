@@ -2,6 +2,7 @@ package eu.wohlben.qits.platform.deployments.deployments.entity;
 
 import eu.wohlben.qits.eventstream.CausationStamp;
 import eu.wohlben.qits.eventstream.CausedRow;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -66,9 +67,39 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   @Column(name = "application_name", nullable = false, length = 64)
   public String applicationName;
 
-  /** The tier it was deployed into, or null for a platform deployment. */
+  /**
+   * The tier it was deployed into.
+   *
+   * <p><b>Every deployment has one since V8, the platform plane included</b> — a platform service
+   * is deployed into the designated platform environment like any other application. Null is only a
+   * row written before that file on an install that had designated no tier, and nothing reads it as
+   * a plane any more: {@link #deploymentTarget} says which plane this is.
+   */
   @Column(name = "environment_id")
   public String environmentId;
+
+  /**
+   * <b>Which plane this deployment is on</b>, recorded rather than inferred — the same word {@link
+   * eu.wohlben.qits.platform.deployments.environments.entity.PdService#deploymentTarget} carries,
+   * put on the execution row so nothing has to re-derive it from a missing tier.
+   *
+   * <p>It exists because the absence it replaced stopped being true. "Platform" was spelled as a
+   * null {@code environment_id} until V8; a platform deployment names the main environment now, so
+   * every reader that asked the old question — the {@code ?environmentId=platform} listing, the
+   * {@code platform:<name>} id a client joins on ({@code ApplicationKeys}), the bare wire alias the
+   * startup sweep rebuilds when it adopts a self-update — asks this instead.
+   *
+   * <p>Not null and no default, {@code pd_service.deployment_target}'s rule: every writer states
+   * the plane. V8 backfilled the two existing writers' rows from exactly what the null meant.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "deployment_target", nullable = false, length = 32)
+  public PdDeploymentTarget deploymentTarget;
+
+  /** Whether this deployment is the platform plane's — the one question the column is asked. */
+  public boolean platform() {
+    return deploymentTarget == PdDeploymentTarget.PLATFORM;
+  }
 
   /**
    * <b>The released coordinate — the CalVer stamp, and the tag the image carries.</b> {@code

@@ -82,7 +82,7 @@ class MachineGuardEnforcedTest {
     // is the right order: an unauthenticated caller learns nothing about what exists.
     given()
         .contentType(ContentType.JSON)
-        .body("{\"branch\":\"main\"}")
+        .body("{\"name\":\"guarded-rename\"}")
         .when()
         .patch(ENVIRONMENTS + "/whatever")
         .then()
@@ -193,8 +193,8 @@ class MachineGuardEnforcedTest {
         .when()
         .post(INTAKE)
         .then()
-        // 202 and nothing deploys: no environment listens to this branch, which is the intake's
-        // normal answer. What is asserted is that the guard let the caller through.
+        // 202 and nothing deploys: nothing is registered for this repository, which is the
+        // intake's normal answer. What is asserted is that the guard let the caller through.
         .statusCode(202);
   }
 
@@ -213,12 +213,12 @@ class MachineGuardEnforcedTest {
 
     machine()
         .contentType(ContentType.JSON)
-        .body("{\"branch\":\"environment/guarded\"}")
+        .body("{\"name\":\"guarded-renamed\"}")
         .when()
         .patch(ENVIRONMENTS + "/" + environmentId)
         .then()
         .statusCode(200)
-        .body("environment.branch", equalTo("environment/guarded"));
+        .body("environment.name", equalTo("guarded-renamed"));
 
     machine()
         .contentType(ContentType.JSON)

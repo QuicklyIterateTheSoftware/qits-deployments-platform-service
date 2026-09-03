@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -68,6 +69,12 @@ public class PdSweepAdoptionTest {
               row.id = id;
               row.applicationName = applicationName;
               row.environmentId = environmentId;
+              // The plane, stated: V8 made it a not-null column, because a row that could not
+              // say which plane it was on was answering that question with a missing tier.
+              row.deploymentTarget =
+                  environmentId == null
+                      ? PdDeploymentTarget.PLATFORM
+                      : PdDeploymentTarget.ENVIRONMENT;
               row.commitSha = SHA;
               row.status = status;
               row.containerName = containerName;
@@ -139,6 +146,7 @@ public class PdSweepAdoptionTest {
               row.id = id;
               row.applicationName = "qits-platform-deployments";
               row.environmentId = "env-sweep-version";
+              row.deploymentTarget = PdDeploymentTarget.ENVIRONMENT;
               row.version = VERSION;
               // The commit the tag resolved to, deliberately DIFFERENT from the tag: a sweep that
               // read this column would compare the wrong string and still be green if the two

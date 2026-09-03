@@ -120,6 +120,42 @@ public class PdSweepAdoptionPublishTest {
   }
 
   @Test
+  public void anAdoptedPlatformServiceAnnouncesItsTierAndKeepsItsBareUpstreamHost() {
+    // The self-update of a PLATFORM service, which is this component's own every single time, and
+    // the two halves of what V8 changed about it — both read off the row by a sweep with no live
+    // process that read the spec.
+    //
+    // The tier is announced, where a platform deployment used to announce null: the edge projects
+    // its route table per environment, so an application it could not place was an application it
+    // could not route. And the upstream host is BARE, because the alias is the plane's address and
+    // does not take the tier — a sweep that rebuilt it from the row's environment would announce
+    // `sweep-pub-plane-qits-sweep-pub-plane`, a name docker's DNS answers for nobody.
+    String environmentId = createEnvironment("sweep-pub-plane");
+    specs.scriptFailure("qits-sweep-pub-plane", "the git host must not be asked");
+    String handedOff =
+        deployment(
+            "qits-sweep-pub-plane",
+            environmentId,
+            PdDeploymentTarget.PLATFORM,
+            "run-sweep-pub-plane",
+            null,
+            "new-plane");
+    routing(handedOff, "/plane", 8080, "plane", "platform.Plane:1");
+    driver.scriptRunningImage("new-plane", image(SHA));
+
+    deployService.sweepInFlight();
+
+    OutboxEvent active = only("DeploymentActive");
+    assertTrue(
+        active.payload.contains("\"environmentId\":\"" + environmentId + "\""), active.payload);
+    assertTrue(
+        active.payload.contains("\"environmentName\":\"sweep-pub-plane\""), active.payload);
+    assertTrue(
+        active.payload.contains("\"upstreamHost\":\"qits-sweep-pub-plane\""),
+        "the plane's address is bare whichever tier it is deployed into: " + active.payload);
+  }
+
+  @Test
   public void navigationIsTheApplicationsAndNotARoutes() {
     // Two routes and two placements, and neither number follows the other: an application appears
     // where it says it appears, which a label hanging off a path prefix could never have said.
@@ -264,7 +300,7 @@ public class PdSweepAdoptionPublishTest {
   private String createEnvironment(String name) {
     return given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", name, "branch", "environment/" + name, "platform", false))
+        .body(Map.of("name", name, "platform", false))
         .when()
         .post("/platform-deployments/api/environments")
         .then()
@@ -283,6 +319,22 @@ public class PdSweepAdoptionPublishTest {
       String runId,
       UUID cause,
       String containerName) {
+    return deployment(
+        applicationName,
+        environmentId,
+        environmentId == null ? PdDeploymentTarget.PLATFORM : PdDeploymentTarget.ENVIRONMENT,
+        runId,
+        cause,
+        containerName);
+  }
+
+  private String deployment(
+      String applicationName,
+      String environmentId,
+      PdDeploymentTarget target,
+      String runId,
+      UUID cause,
+      String containerName) {
     String id = UUID.randomUUID().toString();
     QuarkusTransaction.requiringNew()
         .run(
@@ -291,6 +343,7 @@ public class PdSweepAdoptionPublishTest {
               row.id = id;
               row.applicationName = applicationName;
               row.environmentId = environmentId;
+              row.deploymentTarget = target;
               row.commitSha = SHA;
               row.runId = runId;
               row.causationId = cause;

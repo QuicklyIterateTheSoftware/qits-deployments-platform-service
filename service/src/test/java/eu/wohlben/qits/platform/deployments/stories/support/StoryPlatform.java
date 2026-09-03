@@ -14,7 +14,7 @@ import java.time.Duration;
 import java.util.Set;
 
 /**
- * The platform a story <b>walks up to</b> rather than builds — one tier, listening to one branch —
+ * The platform a story <b>walks up to</b> rather than builds — one designated tier —
  * and the patience a story spends waiting for the deploy worker.
  *
  * <h2>Setup is invisible to the tap, by construction</h2>

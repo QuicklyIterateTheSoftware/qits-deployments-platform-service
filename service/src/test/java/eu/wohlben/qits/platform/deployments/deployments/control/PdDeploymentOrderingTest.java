@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -68,6 +69,7 @@ public class PdDeploymentOrderingTest {
               row.id = id;
               row.applicationName = "app-ordering";
               row.environmentId = environmentId;
+              row.deploymentTarget = PdDeploymentTarget.ENVIRONMENT;
               row.commitSha = sha;
               row.status = PdDeploymentStatus.ACTIVE;
               row.createdAt = createdAt;

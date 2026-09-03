@@ -594,25 +594,27 @@ Two derived shapes, and only one of them resolves:
 | container name (`ContainerNames`) | `qits-pd-<env>-<app>-<id8>` | `qits-pd-<app>-<id8>` |
 | wire alias (`PdNetworks.alias`) | `<env>-<app>` | `<app>` |
 
-**The wire alias is the address, and it is derived in one place because three callers have to
-agree**: the `docker run --network-alias`, every `docker network connect --alias` after it
-(`DeployService.join`, and `reconcile` for the hubs and platform containers it pulls onto a fresh
-network), and the predecessor search. An alias that resolved on the primary network and not on the
-joins would be an address that works by luck — `connect()` takes it for that reason, and always has.
+**Both are asked which PLANE they are on, and neither reads it off a missing tier any more.** Both
+take a `PdDeploymentTarget`, because a platform service is deployed INTO the designated environment
+and therefore has an environment name to be qualified by — one that must not reach either shape.
+The regression is not cosmetic: a swarm service's NAME is the wire alias, and swarm cannot rename a
+service, so an alias that started carrying `dev-` would create `dev-qits-ci` **beside**
+`qits-ci` and leave every peer dialling a name nothing answers to.
 
-The environment qualifier exists because the legacy network is shared by every tier: without it two
+**The wire alias is the address, and it is derived in one place because everything that has to
+agree about an address takes it from here** — swarm's service name first of all, which is also what
+makes a replace an update rather than a second service.
+
+The environment qualifier exists because the flat overlay is shared by every tier: without it two
 tiers' copies of one application hold the same address there. A platform service keeps the bare
-name — one instance for the whole platform has nothing to be qualified against, and the platform
-applications carry the plane in their own names now (`qits-platform-idp`), which is also why the
-platform container name **drops** the segment rather than filling it with the word.
+name — it serves every tier, so a consumer must be able to reach it without knowing which one the
+plane runs in — and the platform applications carry the plane in their own names
+(`qits-platform-idp`), which is also why the platform container name **drops** the segment rather
+than filling it with the word.
 
-**The predecessor search asks about the wire alias AND the bare application name.** Every container
-started before the qualifier existed holds only the latter, and a search for the new spelling alone
-would run a second copy beside the one serving — once per application, on the deployment that
-introduces the qualifier. Same posture as `legacy-network`, and it comes out the same way: the
-environment label still keeps another tier's container out, and an unlabelled one stays adoptable.
-`parseHolders` matches a container's own **name** against that set too, which is what absorbs a
-bootstrap-seeded original called `qits-gateway`.
+**This is the one fact about the plane that survived "a platform service is deployed to the main
+environment".** The row, the labels, `QITS_ENVIRONMENT` and all four events name the designated
+tier now; the address does not, and `PdNetworks.platformAlias` is where that is spelled.
 
 ## Networks are docker's bookkeeping, never a row
 
@@ -625,7 +627,12 @@ Hub and spoke, as README describes. Two things to leave alone unless you mean it
   other half of the same thought. The legacy network is shared by every tier, so the union also returns another tier's
   healthy copy of the same application under the same alias; stopping that would be one tier reaching
   into another. This tier's label → predecessor; another tier's → left alone; **unlabelled** →
-  adoptable. A platform deployment keeps only the unlabelled ones.
+  adoptable. (Both bullets are the **retired docker driver's**, kept because the reasoning is what
+  `legacy-network` still rests on. Under swarm there is no predecessor search at all: a service is
+  found by NAME, the name is the wire alias, and a platform service's alias is bare — which is
+  exactly what makes the existing fleet's platform services be UPDATED in place by the first
+  deployment under the new code rather than duplicated beside it. No label filtering is involved,
+  and the pre-change containers need no adoption arm because they were never a different service.)
 - **A join asked for and not granted FAILS the deployment.** `docker network connect` reports
   "already there" as an error, so the driver tells that wording apart from a refusal and only the
   refusal counts. It has to fail rather than warn: the health gate curls localhost *inside* the
@@ -860,12 +867,18 @@ each is easy to undo by accident:
   Without them the first self-deploy takes the reconcile arm and rotates the passwords its own
   connection pools are holding open.
 
-  **No `QITS_ENVIRONMENT` means the platform plane, not "skip".** The swarm driver writes that
-  variable for environment applications only, and this component is a platform service — so the
-  boot records its rows with a null environment name, which is the key `ResourceProvisioning` looks
-  a platform service's rows up by. Returning early there would have stopped these rows being
-  written at all, silently. Rows left from the per-tier era keep their tier name and are read by
-  nobody.
+  **An absent `QITS_ENVIRONMENT` is RESOLVED, not read as a plane.** It used to mean "the platform
+  plane" — the swarm driver wrote the variable for environment applications only, and the rows went
+  in under a null tier, which was the key `ResourceProvisioning` looked a platform service's rows up
+  by. A platform service is deployed into the designated environment now and is started with the
+  variable like everything else, so the absence means exactly one thing: **this container was
+  started by the previous code**, in the window between the deploy that ships the change and the one
+  after it. `BootResourceRegistration.environmentName()` then reads `pd_environment.platform` — the
+  same designation the deploying instance used to choose where to put this container — and records
+  under that name, which is the key the next self-deploy looks it up by. Recording null there would
+  send that deploy down the reconcile arm and rotate both passwords this process's pools are holding
+  open. Null survives only as the last resort, with a WARN, on an install with no tier designated at
+  all.
 
   **It declares TWO resources now** — `db` (this component's registry) and `eventstream` (the bus
   client's claim ledger and outbox, a store of its own with its own Flyway lineage) — so
@@ -1045,10 +1058,73 @@ registers nothing and deploys nothing rather than picking a tier at random, whic
 `registerPlatform` always gave. The link set written is still the **union** of what the catalogue
 holds and the entry tier, so a tier a promotion already reached is never unlinked.
 
-`pd_environment.branch` still exists and **nothing on this path reads it** — removing the column is
-a later task. A promotion ladder is the follow-up this shape waits for: a version promoted to the
-next tier is a deployment request of its own against another environment, which is the row that now
-exists. What must not come back is a branch.
+**`pd_environment.branch` is GONE** — the column (V8), `EnvironmentService.BRANCH_PREFIX`,
+`onBranch`, `listByBranch`, the create/patch payload fields and the DTO field with it. An older
+sender's `branch` still deserializes into nothing rather than failing a creation, which is the only
+compatibility owed. `PdIdentifiers.requireBranch` stays: `pd_service.branch` (vestigial, written
+null by derived registration, settable over the operator's `PUT`) and the parser's `deploy_branches`
+tolerance are its callers. A promotion ladder is the follow-up this shape waits for: a version
+promoted to the next tier is a deployment request of its own against another environment, which is
+the row that now exists. **What must not come back is a branch.**
+
+### …and the PLATFORM PLANE lands there too (2026-09-03)
+
+**A platform service is deployed TO the designated environment, and "platform" stopped being
+spelled as an absence.** It used to deploy with no tier at all: null `environmentId`/
+`environmentName` on the four lifecycle events, no environment label, no `QITS_ENVIRONMENT`. That
+read well — it serves every tier, so naming one would be untrue — and cost the plane the ability to
+state anything about its own install: no tier in its telemetry, no tier on the events consumers
+project a route table per environment from, and a resource registry keyed by a null. So the plane
+deploys into `entryTiers()`' answer like everything else, and **both register arms now build a
+`Target` from the same environment**.
+
+**What the plane still decides is three things, and every one of them is asked of the SPEC's
+`deployment_target: platform` rather than of a missing tier:**
+
+- **the bare wire alias** (`PdNetworks.alias(target, env, app)` / `platformAlias`) — the address,
+  and under swarm the service NAME. This is the one that would have been a silent outage: swarm
+  cannot rename a service, so `dev-qits-ci` would be created beside the `qits-ci` that was serving.
+  It is also what makes the existing fleet's platform services be updated in place by the first
+  deployment under the new code;
+- **the membership** — the `qits-platform` overlay on top of the flat one (`collapse`), which is the
+  swarm spelling of "on every environment's networks";
+- **the read-surface key** `platform:<name>` (`ApplicationKeys.of(target, …)`), which both sides of
+  the client's join have to agree on — the catalogue side still carries no link, so a key taken from
+  the tier would have broken the join one application at a time as each was redeployed.
+
+**Everything that inferred the plane from an absent environment was converted, and the list is the
+audit:**
+
+| was | is |
+| --- | --- |
+| `pd_deployment.environment_id is null` = the plane | `pd_deployment.deployment_target`, a not-null column (V8) |
+| `ApplicationKeys.of(environmentId, name)` | `of(target, environmentId, name)` |
+| `PdNetworks.alias(null, app)` = bare | `alias(PLATFORM, env, app)` / `platformAlias(app)` |
+| `ContainerNames.of(null, …)` = unqualified | `of(target, env, …)` |
+| `listPlatformNewestFirst` = `environment_id is null` | `deployment_target = PLATFORM` |
+| `listEnvironmentScoped` = `environment_id is not null` | `deployment_target = ENVIRONMENT` |
+| `newestInPlaces(…, includePlatform)`'s `or environment_id is null` | deleted with the method — BuildTips' last caller went with the build trigger |
+| `ResourceProvisioning`'s null lookup key | the tier's name, which for the plane is the designated one |
+| `postgresHost(null)` → the designated tier's postgres | the tier arrives on the `Target`; null is a refusal |
+| boot self-registration's null environment name | resolved from `pd_environment.platform` |
+| swarm: no environment label for the plane | the label, plus a **`target=environment` filter on the teardown's reap** |
+| swarm: no `QITS_ENVIRONMENT` for the plane | written for every service |
+
+**The teardown filter is the one that had to move with the label.** `removeEnvironmentContainers`
+reaps every service carrying a tier's environment label, and a platform service carries one now — so
+it demands `qits.platform.deployments.target=environment` beside it, or tearing down the designated
+tier would take the whole plane with it. (Deleting the designated tier is a 409 anyway; the two
+guards are independent on purpose, because a designation moved a minute earlier would otherwise make
+a teardown reap the plane.)
+
+**V8 backfills, and it is the one backfill in this lineage.** A null `environment_id` meant the
+platform plane and nothing else — V1's own header says so — so the translation is decidable: the
+plane column is written from exactly that, and those rows are then moved onto the designated tier so
+the successor's cutover finds them (two ACTIVE rows for one place is the invariant
+`listActiveByApplication`, the pins and the observation pass are all written around). `pd_resource`
+follows for the same reason one step further on: a lookup that missed would rotate a live password.
+`PdSchemaTest` migrates to V7, writes the rows the old code wrote and migrates the rest of the way —
+both the designated and the undesignated case.
 
 ### The application name is the repository's NAME, never its storage id (2026-08-21)
 
@@ -1382,6 +1458,24 @@ equality, so it followed the version change with no edit at all — and it is **
 renamed field would abort garbage collection across the platform rather than degrade it. The values
 inside changed; the contract did not.
 
+**`V8__platform_plane_is_the_main_environment.sql` gives `pd_deployment` the PLANE as a column,
+backfills it, moves the plane's rows onto the designated tier, and drops `pd_environment.branch`** —
+see *…and the PLATFORM PLANE lands there too* for what changed above the file and why the backfill
+is the decidable kind. Three things worth carrying:
+
+- **`deployment_target` is not null and has no default**, `pd_service.deployment_target`'s rule
+  applied to the execution row: every writer states the plane, and a row that could not say would be
+  the inference the file exists to remove. A test fixture that builds a `PdDeployment` by hand sets
+  it (`PdSchemaTest`, `PdSweepAdoptionTest`, `PdDeploymentObservationTest`, `PdDeploymentOrderingTest`,
+  `PdSweepAdoptionPublishTest` all do).
+- **The backfill reads exactly one statement**: `environment_id is null` meant the platform plane,
+  by V1's header, so it becomes `PLATFORM` plus the designated tier. On an install with no
+  designation the subselect answers null and nothing moves — which is every database the suite
+  migrates.
+- **`pd_resource` moves with it**, and the stale per-tier row it would collide with is deleted
+  first. The registry key is what `ResourceProvisioning` looks a credential up by before every
+  deploy; a miss takes the reconcile arm and rotates a password a running container is using.
+
 The suites run every migration against an **empty** schema, so a backfill is untested by them.
 `deployments/src/test/.../PdSchemaTest` is the shape to copy: plain JUnit, a real postgres from
 `EmbeddedPg`, Flyway, then the claims. A migration that backfills needs a test that migrates to the
@@ -1398,10 +1492,13 @@ the id is a random UUID, so that tiebreak swapped two rows recorded in the same 
 which is what the deployments of one build-succeeded event are, and what a client reads "the current
 one per application" off.
 
-**Nulls are distinct to `=`.** A platform deployment's `environment_id` is null, so every query
-matching "the same (application, tier)" tests for null explicitly. The startup sweep's adoption hangs
-on it: get it wrong and a self-updating instance comes back having failed its own deployment while a
-second row still claims to be ACTIVE.
+**Nulls are distinct to `=`, and the queries still test for one.** A platform deployment's
+`environment_id` was null until V8 and is the designated tier now, so the null-testing arms of
+`listActiveByApplication`/`listByApplication` are there for rows written before it on an install
+that had designated nothing. Keep them: `= ?` matches nothing against a null, and the startup
+sweep's adoption hangs on it — get it wrong and a self-updating instance comes back having failed
+its own deployment while a second row still claims to be ACTIVE. **What must not come back is a
+query that reads the null as a PLANE**; that question is `deployment_target` now.
 
 ## Dependencies
 
@@ -1505,9 +1602,11 @@ against.
 - They live in `…deployments.control`, the seam's own package, which is also what lets
   `PdSweepAdoptionTest` drive the package-private `sweepInFlight()`.
 - Flow tests poll the read surface to a deadline rather than reaching into the service — the same way
-  a caller experiences the API, and immune to the worker's timing. Platform deployments are the one
-  thing that surface cannot show (`/deployments` takes an environment, and a platform deployment has
-  none), so those tests wait on the driver (`awaitApplied`) and read the row through `/applications`.
+  a caller experiences the API, and immune to the worker's timing. Platform deployments used to be
+  the one thing that surface could not show; they name the designated tier now, so
+  `/deployments?environmentId=<tier>` carries them and `?environmentId=platform` asks the same rows
+  by plane. `awaitApplied` (wait on the driver) survives because it is still the shortest way to
+  synchronise on a deployment the worker has finished, not because the listing is blind.
 - `OpenApiSchemaExportTest` writes `docs/openapi.yml`. Regenerate and commit when the surface
   changes: `./mvnw -pl service -am test -Dtest=OpenApiSchemaExportTest
   -Dsurefire.failIfNoSpecifiedTests=false`. The intake is `@Operation(hidden = true)` (a wire API);

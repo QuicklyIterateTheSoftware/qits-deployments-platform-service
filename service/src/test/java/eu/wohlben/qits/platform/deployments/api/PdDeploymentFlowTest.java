@@ -135,8 +135,9 @@ public class PdDeploymentFlowTest {
   }
 
   /**
-   * A platform deployment is unreachable through the environment-scoped listing, so a test about
-   * one reads the row directly — the same thing PdSweepAdoptionTest does for the same reason.
+   * The row itself, when a test needs a column the wire shape does not carry. It used to exist
+   * because a platform deployment was unreachable through the environment-scoped listing; the rows
+   * name their tier now, so what it is for is the plane column and the detail text.
    */
   private PdDeployment deploymentOf(
       String applicationName, String environmentId, String version) {
@@ -483,22 +484,26 @@ public class PdDeploymentFlowTest {
             "app-single-seed"));
     specs.script(
         "repo-idp", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    // An environment's own branch, because that is the only kind of deploy ref there is — and what
-    // comes out of it is still platform-shaped.
     postRelease("repo-idp", V_A);
 
     awaitApplied(1);
     DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
     assertEquals("qits-platform", spec.primaryNetwork());
-    assertEquals(PdDeploymentTarget.PLATFORM, spec.target());
-    assertNull(spec.environmentId(), "a platform service belongs to no tier");
-    assertNull(spec.environmentName());
+    assertEquals(PdDeploymentTarget.PLATFORM, spec.target(), "the plane is stated on the spec");
+    // IT IS DEPLOYED INTO THE MAIN ENVIRONMENT. Everything an application is told about where it
+    // runs — the label an operator greps the host by, the QITS_ENVIRONMENT it boots with, the tier
+    // on all four lifecycle events — comes off these two, and a platform service used to be told
+    // nothing at all.
+    assertEquals(environmentId, spec.environmentId(), "a platform service is deployed into a tier");
+    assertEquals("flow-single", spec.environmentName());
+    // ...and the three things the PLANE still decides, none of them read off a missing tier.
     assertTrue(
         spec.deploymentName().startsWith("qits-pd-repo-idp-"),
-        "no tier segment in the derived name, because there is no tier: " + spec.deploymentName());
-    // Its wire alias stays the bare application name — one instance for the whole platform has
-    // nothing to be qualified against.
-    assertEquals("repo-idp", spec.wireAlias());
+        "the plane's names stay unqualified: " + spec.deploymentName());
+    assertEquals(
+        "repo-idp",
+        spec.wireAlias(),
+        "and the address most of all — a peer in any tier reaches it by writing its bare name");
     assertTrue(
         spec.networks().contains("qits-env-flow-single-app-single-seed"),
         "a platform service is on every application network of every environment: "
@@ -507,9 +512,9 @@ public class PdDeploymentFlowTest {
         spec.networks().contains("qits-net"),
         "and the legacy network while the transition lasts: " + spec.networks());
 
-    // The environment it is not part of deploys nothing on this event.
-    assertEquals(
-        0,
+    // The tier it deploys into shows it, which it could not before: `?environmentId=` was a query
+    // no platform row could answer.
+    List<Map<String, Object>> inTier =
         given()
             .when()
             .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
@@ -517,18 +522,22 @@ public class PdDeploymentFlowTest {
             .statusCode(200)
             .extract()
             .jsonPath()
-            .getList("deployments")
-            .size());
+            .getList("deployments");
+    assertEquals(1, inTier.size(), "the plane's deployment is in the tier's listing: " + inTier);
+    assertEquals(
+        "platform:repo-idp",
+        inTier.get(0).get("applicationId"),
+        "and it is still keyed by its PLANE, so a client's join against /applications holds");
   }
 
   @Test
   public void thePlatformPlaneIsRolledOnceByTheTierTheReleaseEntersAt() {
     // The claim that survived branch matching, restated. There is one designated platform
-    // environment, and it is what decides that the plane may be rolled at all — with one instance
-    // and no environment id, a per-tier fan-out was never a fan-out anyway, it was several tiers
-    // taking turns overwriting one container.
+    // environment; it decides that the plane may be rolled at all, and — since V8 — where. Two
+    // tiers exist and only the designated one is named: a second instance in the other would be
+    // the fan-out this plane has never had.
     createEnvironment("flow-otherplane");
-    createEnvironment("flow-thisplane");
+    String designated = createEnvironment("flow-thisplane");
     specs.script(
         "repo-planegate",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
@@ -537,7 +546,10 @@ public class PdDeploymentFlowTest {
     awaitApplied(1);
     assertEquals(1, driver.applied().size(), "one instance, once");
     assertTrue(driver.applied().get(0).imageRef().endsWith(":" + V_B));
-    assertNull(driver.applied().get(0).environmentId(), "still one instance, on no tier");
+    assertEquals(
+        designated,
+        driver.applied().get(0).environmentId(),
+        "one instance, in the tier the release entered at — not in the other one, and not nowhere");
   }
 
   @Test
@@ -568,22 +580,33 @@ public class PdDeploymentFlowTest {
             .toList();
     assertEquals(1, registered.size(), "one row, not two: " + registered);
     assertEquals("PLATFORM", registered.get(0).get("target"));
-    assertNull(registered.get(0).get("environmentId"));
+    assertNull(registered.get(0).get("environmentId"), "a platform service still carries no link");
     assertNull(registered.get(0).get("branch"), "the plane has no deploy ref of its own");
 
-    // The history moved with it: the environment it left has no deployments of it any more, and
-    // the row that was serving is decommissioned rather than deleted.
-    assertEquals(
-        0,
+    // The history moved onto the PLANE, which is a column now rather than a missing tier — so the
+    // plane's listing has both rows and the one that was serving as an environment application is
+    // decommissioned rather than deleted.
+    List<Map<String, Object>> onThePlane =
         given()
             .when()
-            .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+            .get("/platform-deployments/api/deployments?environmentId=platform")
             .then()
             .statusCode(200)
             .extract()
             .jsonPath()
-            .getList("deployments")
-            .size());
+            .<Map<String, Object>>getList("deployments")
+            .stream()
+            .filter(d -> "repo-convert".equals(d.get("applicationName")))
+            .toList();
+    assertEquals(2, onThePlane.size(), "both rows are the plane's now: " + onThePlane);
+    assertEquals("ACTIVE", onThePlane.get(0).get("status"), "the newest is serving");
+    assertEquals(
+        "DECOMMISSIONED",
+        onThePlane.get(1).get("status"),
+        "and the environment row it converted is decommissioned rather than dropped");
+    assertTrue(
+        onThePlane.stream().allMatch(d -> "platform:repo-convert".equals(d.get("applicationId"))),
+        "one history, one key — the conversion must not split it: " + onThePlane);
   }
 
   @Test
@@ -592,7 +615,7 @@ public class PdDeploymentFlowTest {
     // the history", and the environment deployment would find the running platform container
     // through the legacy network and remove it — leaving a row saying ACTIVE about nothing. So it
     // is refused, and the refusal is written where an operator looks: a FAILED row on the plane.
-    createEnvironment("flow-unflip");
+    String environmentId = createEnvironment("flow-unflip");
     specs.script(
         "repo-unflip", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
     postRelease("repo-unflip", V_A);
@@ -621,8 +644,10 @@ public class PdDeploymentFlowTest {
     assertEquals("PLATFORM", rows.get(0).get("target"));
     assertEquals(1, driver.applied().size(), "the refused build deployed nothing");
 
-    // ...and the refusal is on the record, naming the flip.
-    PdDeployment refused = deploymentOf("repo-unflip", null, V_B);
+    // ...and the refusal is on the record, naming the flip. It is written where the deployment it
+    // refuses would have gone: on the plane, in the tier the plane deploys into.
+    PdDeployment refused = deploymentOf("repo-unflip", environmentId, V_B);
+    assertEquals(PdDeploymentTarget.PLATFORM, refused.deploymentTarget);
     assertEquals("FAILED", refused.status.name());
     assertTrue(
         refused.detail.contains("deployment_target: environment"),

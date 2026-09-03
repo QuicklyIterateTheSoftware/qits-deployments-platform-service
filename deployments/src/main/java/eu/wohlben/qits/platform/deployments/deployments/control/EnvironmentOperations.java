@@ -51,8 +51,8 @@ public class EnvironmentOperations {
    * network could not be created yet is still an environment (the driver re-ensures every network
    * before every deployment), so a momentarily unreachable docker must not make the create fail.
    */
-  public PdEnvironment create(String name, String branch, String network, boolean platform) {
-    PdEnvironment environment = environments.create(name, branch, network, platform);
+  public PdEnvironment create(String name, String network, boolean platform) {
+    PdEnvironment environment = environments.create(name, network, platform);
     driver.ensureNetwork(
         new DeploymentDriver.Network(
             environment.network, environment.id, DeploymentDriver.NetworkKind.BUNDLE, null));
@@ -60,19 +60,20 @@ public class EnvironmentOperations {
   }
 
   /**
-   * Rename an environment or point it at another branch. <b>No docker side effects</b>, so this is
-   * a pass-through and stays one: a rename that tore containers down would be a delete in disguise,
-   * and delete is the one operation never to reach for on a live environment. The next deployment
-   * of each application moves it onto the networks the new name derives; what runs now keeps
-   * running.
+   * Rename an environment, or designate it the platform one. <b>No docker side effects</b>, so this
+   * is a pass-through and stays one: a rename that tore containers down would be a delete in
+   * disguise, and delete is the one operation never to reach for on a live environment. The next
+   * deployment of each application moves it onto the networks the new name derives; what runs now
+   * keeps running.
    *
    * <p>Moving the platform designation is a pass-through for the same reason, and it is the one
-   * place that reasoning is worth restating: a platform service has no environment id and keeps its
-   * bare wire alias, so the containers of the platform plane are not this tier's to move. What the
-   * flag changes is which branch is allowed to roll them.
+   * place that reasoning is worth restating: a platform service keeps its bare wire alias, so a
+   * peer reaches it under the same name whichever tier is designated. What the move changes is the
+   * tier the plane's <em>next</em> deployment names — its row, its labels and its
+   * {@code QITS_ENVIRONMENT}.
    */
-  public PdEnvironment update(String environmentId, String name, String branch, Boolean platform) {
-    return environments.update(environmentId, name, branch, platform);
+  public PdEnvironment update(String environmentId, String name, Boolean platform) {
+    return environments.update(environmentId, name, platform);
   }
 
   /**
@@ -89,8 +90,8 @@ public class EnvironmentOperations {
    * already lost the services.
    *
    * <p>The order between the container reap and the network removal is load-bearing too. Platform
-   * services live on this environment's per-application networks without belonging to the
-   * environment, so they survive the reap and would then hold every network open — docker refuses
+   * services live on this environment's networks without being this environment's,
+   * so they survive the reap and would then hold every network open — docker refuses
    * to remove a network with an endpoint on it. The plane is detached first ({@link
    * DeploymentDriver#detachPlatformPlane}, which is nothing at all under swarm, where a service's
    * networks are declared rather than joined), and only the networks THIS environment owns (its bundle plus
@@ -105,11 +106,18 @@ public class EnvironmentOperations {
    * itself mid-request. So it is skipped for both steps, and the environment's derived
    * per-application networks still go.
    *
-   * <p><b>The platform environment is refused.</b> It is the tier whose branch rolls the platform
-   * plane, so tearing it down would leave qits-platform-idp and the rest deployable from no branch
-   * at all — running, unreachable by any future build, and with nothing in the model to say why.
-   * Designate another environment first; that is a move, and it leaves the plane with a tier
-   * throughout.
+   * <p><b>The platform environment is refused.</b> It is the tier a release enters at and the tier
+   * the platform plane is deployed into, so tearing it down would leave qits-platform-idp and the
+   * rest with nowhere to deploy — running, unreachable by any future release, and with nothing in
+   * the model to say why. Designate another environment first; that is a move, and it leaves the
+   * plane with a tier throughout.
+   *
+   * <p><b>And the reap does not take the plane with it</b>, which the label alone no longer
+   * guarantees: a platform service carries this tier's environment label now, so {@link
+   * DeploymentDriver#removeEnvironmentContainers} demands the {@code target=environment} label
+   * beside it. That refusal above means the designated tier is never the one being torn down, but
+   * the two guards are independent on purpose — a designation moved a minute earlier would
+   * otherwise make a teardown reap the plane.
    */
   public void delete(String environmentId) {
     PdEnvironment environment = environments.require(environmentId);
@@ -117,8 +125,8 @@ public class EnvironmentOperations {
       throw new ConflictException(
           "Environment "
               + environment.name
-              + " is the platform environment: the platform plane would have no branch to deploy"
-              + " from. Designate another environment first.");
+              + " is the platform environment: a release would enter nowhere and the platform"
+              + " plane would have no tier to deploy into. Designate another environment first.");
     }
     String legacy = legacyNetwork.map(String::strip).filter(n -> !n.isEmpty()).orElse(null);
     Set<String> networks = new LinkedHashSet<>();

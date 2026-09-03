@@ -2,11 +2,10 @@ package eu.wohlben.qits.platform.deployments.deployments.persistence;
 
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
-import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 
 /**
  * Panache DAO for {@link PdDeployment}.
@@ -16,24 +15,31 @@ import java.util.Optional;
  * recorded in the same tick at random, which is exactly what the deployments of one
  * build-succeeded event are.
  *
- * <p>Where a tier is matched, {@code null} is tested as a value rather than compared: a platform
- * deployment belongs to no tier, and {@code environment_id = null} matches nothing at all in SQL.
- * The startup sweep's adoption of a self-update row hangs on getting that right.
+ * <p><b>The PLANE is a column and the tier is a tier.</b> A platform deployment used to be spelled
+ * as a null {@code environment_id}, so the two questions were one query; it names the main
+ * environment since V8, so "which plane" is {@code deploymentTarget} and "which tier" is the
+ * environment. Where a tier is still matched, {@code null} is tested as a value rather than
+ * compared — rows written before V8 on an install with no designated tier keep a null, and {@code
+ * environment_id = null} matches nothing at all in SQL.
  */
 @ApplicationScoped
 public class PdDeploymentRepository implements PanacheRepositoryBase<PdDeployment, String> {
 
-  /** An environment's deployments across all its applications, newest-first. */
+  /**
+   * An environment's deployments across all its applications, newest-first — the platform plane's
+   * included, since the plane is deployed into the designated tier and its rows name it.
+   */
   public List<PdDeployment> listByEnvironmentNewestFirst(String environmentId) {
     return list("environmentId = ?1 order by seq desc", environmentId);
   }
 
   /**
-   * The platform plane's deployments across all its applications, newest-first — the rows no
-   * environment filter can reach, because they belong to no tier.
+   * The platform plane's deployments across all its applications, newest-first — asked by PLANE,
+   * which is what {@code ?environmentId=platform} means. It was a null-tier scan while the plane
+   * had no tier; the rows carry the main environment now and only the column tells them apart.
    */
   public List<PdDeployment> listPlatformNewestFirst() {
-    return list("environmentId is null order by seq desc");
+    return list("deploymentTarget = ?1 order by seq desc", PdDeploymentTarget.PLATFORM);
   }
 
   /**
@@ -51,9 +57,16 @@ public class PdDeploymentRepository implements PanacheRepositoryBase<PdDeploymen
         : list("applicationName = ?1 and environmentId = ?2", applicationName, environmentId);
   }
 
-  /** Every environment-scoped deployment of one application — what a platform conversion absorbs. */
+  /**
+   * Every ENVIRONMENT-plane deployment of one application — what a conversion to the platform plane
+   * absorbs. Asked by plane rather than by "has a tier", which stopped telling the two apart when
+   * the platform plane gained one.
+   */
   public List<PdDeployment> listEnvironmentScoped(String applicationName) {
-    return list("applicationName = ?1 and environmentId is not null", applicationName);
+    return list(
+        "applicationName = ?1 and deploymentTarget = ?2",
+        applicationName,
+        PdDeploymentTarget.ENVIRONMENT);
   }
 
   /** The application's currently serving deployment(s) in one tier — by invariant at most one. */
@@ -82,31 +95,9 @@ public class PdDeploymentRepository implements PanacheRepositoryBase<PdDeploymen
     return list("status = ?1", status);
   }
 
-  /**
-   * The newest deployment of one application among a set of places — the tiers named, plus the
-   * platform plane when {@code includePlatform}. Newest by {@code seq}, like every listing here.
-   *
-   * <p>What asks is {@link
-   * eu.wohlben.qits.platform.deployments.deployments.control.BuildTips}: a branch resolves to the
-   * tiers listening to it, and this is what those tiers have most recently been handed. An empty
-   * set of places is answered without a query — a {@code where … in ()} is not a question SQL
-   * agrees to be asked.
-   */
-  public Optional<PdDeployment> newestInPlaces(
-      String applicationName, Collection<String> environmentIds, boolean includePlatform) {
-    if (environmentIds.isEmpty()) {
-      return includePlatform
-          ? find(
-                  "applicationName = ?1 and environmentId is null order by seq desc",
-                  applicationName)
-              .firstResultOptional()
-          : Optional.empty();
-    }
-    String places =
-        includePlatform
-            ? "(environmentId in ?2 or environmentId is null)"
-            : "environmentId in ?2";
-    return find("applicationName = ?1 and " + places + " order by seq desc", applicationName, environmentIds)
-        .firstResultOptional();
-  }
+  // `newestInPlaces` lived here, and it went with BuildTips: a build resolved a branch to a set of
+  // tiers and asked what those tiers were last handed, with the platform plane joined in as `or
+  // environmentId is null`. A release has no branch and ReleaseTips' cross-restart floor is a
+  // deployment REQUEST row, so the query had no caller left — and its platform arm was the exact
+  // absent-environment inference V8 removes.
 }

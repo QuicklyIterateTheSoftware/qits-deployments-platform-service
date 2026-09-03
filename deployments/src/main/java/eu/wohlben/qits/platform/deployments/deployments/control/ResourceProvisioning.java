@@ -3,10 +3,8 @@ package eu.wohlben.qits.platform.deployments.deployments.control;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdResource;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdResourceRepository;
-import eu.wohlben.qits.platform.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdEnvironment;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -63,7 +61,6 @@ public class ResourceProvisioning {
 
   @Inject PdResourceRepository resources;
   @Inject ResourceProvisioner provisioner;
-  @Inject EnvironmentService environments;
 
   @ConfigProperty(name = "qits.platform.deployments.postgres.admin-username")
   String adminUsername;
@@ -132,7 +129,16 @@ public class ResourceProvisioning {
   /**
    * Make every declared resource exist and answer with what to inject for it.
    *
-   * @param environmentName the tier, or null for the platform plane
+   * <p><b>The tier is part of the key and there is always one.</b> It used to be null for a
+   * platform-plane deployment, and that null was doing two jobs: it named the plane, and it was the
+   * {@code pd_resource} lookup key those rows were written under. A platform service is deployed
+   * into the designated environment now, so both jobs are done by an ordinary tier name — the
+   * postgres it talks to is that tier's, which is the same instance the null arm resolved to, and
+   * its registry rows are keyed by that tier's name. {@code BootResourceRegistration} resolves the
+   * same name for its own rows, from the same designation, which is what keeps this component's
+   * first self-deploy on the no-op arm rather than rotating a password its pools are holding.
+   *
+   * @param environmentName the tier — the designated platform environment for a platform service
    * @throws ResourceException with an operator-facing sentence, and no password in it
    */
   public List<DeploymentDriver.ResourceBinding> ensureAll(
@@ -184,8 +190,10 @@ public class ResourceProvisioning {
                               + " different one in `resources:`");
                     }
                   }
-                  // Null is tested, never compared: the platform plane's environment_name is null,
-                  // and `= null` would match nothing and rotate a working password every deploy.
+                  // Keyed by the tier this deployment goes into, the platform plane's included.
+                  // The repository still tests null rather than comparing it, because rows written
+                  // before the plane had a tier keep theirs — and `= null` matches nothing, which
+                  // would rotate a working password on every deploy.
                   return resources
                       .findOne(applicationName, environmentName, name)
                       .map(row -> row.password)
@@ -245,28 +253,24 @@ public class ResourceProvisioning {
   }
 
   /**
-   * Which postgres this deployment's resources live on.
+   * Which postgres this deployment's resources live on: its own tier's instance, at the wire alias
+   * that tier's postgres answers to — derived rather than configured, because it is the same
+   * derivation every other address on the platform uses.
    *
-   * <p>An environment application talks to its own tier's instance, at the wire alias that tier's
-   * postgres answers to — derived rather than configured, because it is the same derivation every
-   * other address on the platform uses. A <b>platform-plane</b> application has no tier to derive
-   * from, so it takes the platform environment's, which is the same answer the plane's own
-   * deployments already hang off.
+   * <p><b>There is one branch fewer here than there was.</b> A platform-plane deployment had no
+   * tier and this method reached for the designated environment's on its behalf; a platform service
+   * is deployed into that very environment now, so the tier arrives on the {@link
+   * DeployService.Target} and the answer is the same address by the ordinary route. The refusal
+   * survives as the guard it always was — a queued deployment cannot get here without a tier, since
+   * both register arms come from {@code entryTiers()} and return nothing when none is designated.
    */
   private String postgresHost(String environmentName) {
-    if (environmentName != null) {
-      return PdNetworks.alias(environmentName, POSTGRES_APPLICATION);
+    if (environmentName == null) {
+      throw new ResourceException(
+          "this deployment declares resources and names no environment, so there is no postgres to"
+              + " provision on — designate a platform environment");
     }
-    PdEnvironment platform =
-        environments
-            .platformEnvironment()
-            .orElseThrow(
-                () ->
-                    new ResourceException(
-                        "this platform-plane deployment declares resources and no environment is"
-                            + " designated the platform one, so there is no postgres to provision"
-                            + " on"));
-    return PdNetworks.alias(platform.name, POSTGRES_APPLICATION);
+    return PdNetworks.alias(environmentName, POSTGRES_APPLICATION);
   }
 
   /**

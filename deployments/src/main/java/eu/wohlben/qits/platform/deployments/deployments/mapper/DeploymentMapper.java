@@ -7,10 +7,16 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 /**
  * The deployment wire shape. Hand-written rather than a MapStruct interface for one reason: {@code
- * applicationId} is not a column. It is derived from the row's {@code (environmentId,
- * applicationName)} pair through {@link ApplicationKeys}, which is the same definition the
- * applications listing derives its own id from — that shared derivation is what lets a client keep
- * joining the two listings when neither side has a row to take an id from.
+ * applicationId} is not a column. It is derived from the row's {@code (deploymentTarget,
+ * environmentId, applicationName)} through {@link ApplicationKeys}, which is the same definition
+ * the applications listing derives its own id from — that shared derivation is what lets a client
+ * keep joining the two listings when neither side has a row to take an id from.
+ *
+ * <p><b>The PLANE goes into the key, and V8 is why.</b> A platform deployment names the main
+ * environment now, so a key taken from the tier alone would have turned {@code platform:qits-ci}
+ * into {@code <devId>:qits-ci} on one deployment — while the catalogue side, where a platform
+ * service still carries no link, went on saying {@code platform:}. The join would have broken
+ * silently, one application at a time, as each was redeployed.
  */
 @ApplicationScoped
 public class DeploymentMapper {
@@ -18,7 +24,8 @@ public class DeploymentMapper {
   public PdDeploymentDto toDto(PdDeployment deployment) {
     return new PdDeploymentDto(
         deployment.id,
-        ApplicationKeys.of(deployment.environmentId, deployment.applicationName),
+        ApplicationKeys.of(
+            deployment.deploymentTarget, deployment.environmentId, deployment.applicationName),
         deployment.applicationName,
         deployment.version,
         deployment.commitSha,

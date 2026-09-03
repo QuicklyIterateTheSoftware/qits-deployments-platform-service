@@ -124,10 +124,13 @@ public class PdRegistrationTest {
   }
 
   @Test
-  public void aPlatformServiceShipsWhenAnEntryTierIsDesignated() {
+  public void aPlatformServiceShipsIntoTheDesignatedEntryTier() {
     // The entry tier is one question, asked the same way on both planes: is a platform environment
-    // designated. What it deploys is still platform-shaped: one instance, no environment, no links.
-    createEnvironment("reg-trunk");
+    // designated. What it deploys is one instance with no LINKS — and, since V8, one instance IN
+    // that tier: the plane's deployments carry the environment on the row, in the labels, in
+    // QITS_ENVIRONMENT and on all four events, because "no environment" was a fact the plane could
+    // not state about itself rather than a fact about the plane.
+    String environmentId = createEnvironment("reg-trunk");
     specs.script(
         "repo-reg-trunk",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
@@ -136,8 +139,15 @@ public class PdRegistrationTest {
 
     Map<String, Object> service = service("repo-reg-trunk");
     assertEquals("PLATFORM", service.get("target"));
-    assertEquals(List.of(), service.get("environmentIds"));
-    assertNull(driver.applied().get(0).environmentId(), "one instance, on no tier");
+    assertEquals(
+        List.of(), service.get("environmentIds"), "still no link: it is present everywhere");
+    DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
+    assertEquals(environmentId, spec.environmentId(), "and deployed into the designated tier");
+    assertEquals("reg-trunk", spec.environmentName());
+    assertEquals(PdDeploymentTarget.PLATFORM, spec.target(), "the plane is stated, not inferred");
+    // ...and the one thing that does NOT take the tier: the address.
+    assertEquals("repo-reg-trunk", spec.wireAlias(), "the bare alias is what makes it reachable"
+        + " from every tier without knowing which one the plane runs in");
   }
 
   @Test
@@ -151,8 +161,8 @@ public class PdRegistrationTest {
     awaitApplied(1);
 
     assertEquals("PLATFORM", service("repo-alias").get("target"));
-    // No environment segment in the derived name: a platform service belongs to no tier, and the
-    // word that used to fill the gap is in the repository names now.
+    // No environment segment in the derived name: the plane's names are unqualified even now that
+    // it has a tier, and the word that used to fill the gap is in the repository names.
     assertTrue(
         driver.applied().get(0).deploymentName().startsWith("qits-pd-repo-alias-"),
         driver.applied().get(0).deploymentName());
@@ -160,10 +170,14 @@ public class PdRegistrationTest {
 
   @Test
   public void aPlatformDeploymentIsReadBackByAskingForThePlaneByName() {
-    // The gap this closes: the deployment listing's filter is required, so the plane that has no
-    // environment id could not be asked for at all — every platform row was recorded and then
-    // unreadable, and a client drawing "what is deployed" showed the tiers and nothing else.
-    // `platform` is the stand-in the application id already carries, reused as the filter value.
+    // The gap this closes: the deployment listing's filter is required, so the plane could not be
+    // asked for at all — every platform row was recorded and then unreadable, and a client drawing
+    // "what is deployed" showed the tiers and nothing else. `platform` is the stand-in the
+    // application id already carries, reused as the filter value.
+    //
+    // IT IS A PLANE QUESTION AND NOT A NULL SCAN NOW. The rows carry the designated tier, so both
+    // the listing and the `platform:` id come off pd_deployment.deployment_target — the id most of
+    // all, since the catalogue side has no link to derive a tier from and the two have to join.
     createEnvironment("reg-plane");
     specs.script(
         "repo-reg-plane",
@@ -188,7 +202,8 @@ public class PdRegistrationTest {
   public void thePlatformPlaneCarriesNoTieredDeployment() {
     // The filter is a filter, not a widening: asking for the plane must not answer with the rows of
     // every tier as well. An environment deployment and a platform one, and only the latter comes
-    // back.
+    // back — which is a sharper claim than it was, because both rows now name the same tier and
+    // only the plane column tells them apart.
     createEnvironment("reg-planes");
     postRelease("repo-reg-tiered", V_A);
     awaitApplied(1);

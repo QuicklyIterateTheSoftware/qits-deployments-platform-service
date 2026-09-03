@@ -28,7 +28,6 @@ public class EnvironmentMapper {
     return new PdEnvironmentDto(
         environment.id,
         environment.name,
-        environment.branch,
         environment.network,
         environment.platform,
         environment.createdAt,
@@ -42,7 +41,7 @@ public class EnvironmentMapper {
   public PdApplicationDto toDto(ApplicationView view) {
     PdService service = view.service();
     return new PdApplicationDto(
-        ApplicationKeys.of(view.environmentId(), service.name),
+        ApplicationKeys.of(service.deploymentTarget, view.environmentId(), service.name),
         service.name,
         service.name,
         view.environmentId(),

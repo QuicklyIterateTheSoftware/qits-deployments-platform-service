@@ -88,9 +88,15 @@ public class RollbackPins {
   /**
    * One deployment row reduced to what the rule reads. Grouped by {@code applicationId} and
    * reported by {@code applicationName}: the id is what makes a tier's history its own, the name is
-   * what a pin addresses. The id is derived from the row's own {@code (environmentId,
-   * applicationName)} pair ({@link ApplicationKeys}) rather than read off a service row — same
-   * grouping, and nothing to join.
+   * what a pin addresses. The id is derived from the row's own {@code (deploymentTarget,
+   * environmentId, applicationName)} ({@link ApplicationKeys}) rather than read off a service row —
+   * same grouping, and nothing to join.
+   *
+   * <p><b>The plane is part of that grouping since V8</b>, and it has to be: a platform deployment
+   * names the main environment now, so a key without it would have split one application's history
+   * across the deployment that introduced the tier — the rows before it under {@code platform:} and
+   * the rows after it under the tier — and the pin rule reads "the previous distinct tag" straight
+   * off one such group.
    */
   public record Row(
       String applicationId, String applicationName, String imageTag, PdDeploymentStatus status) {}
@@ -108,7 +114,10 @@ public class RollbackPins {
     for (PdDeployment deployment : deployments.listAllNewestFirst()) {
       rows.add(
           new Row(
-              ApplicationKeys.of(deployment.environmentId, deployment.applicationName),
+              ApplicationKeys.of(
+                  deployment.deploymentTarget,
+                  deployment.environmentId,
+                  deployment.applicationName),
               deployment.applicationName,
               deployment.imageTag(),
               deployment.status));

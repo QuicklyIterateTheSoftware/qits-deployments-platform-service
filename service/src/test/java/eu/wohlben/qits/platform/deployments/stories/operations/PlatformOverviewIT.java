@@ -99,12 +99,12 @@ public class PlatformOverviewIT {
       half is a person's and stays one.
 
       The four reads answer four different questions and are deliberately not one endpoint. The
-      tiers say which branches deploy where. The catalogue says which services exist and which tiers
-      each is linked into — one row per service, and it round-trips into the upsert. The
-      applications listing is the same data one row per (service, tier), flat because a platform
-      service belongs to no tier and reading through the tiers would leave out the two a reader most
-      wants to find. And the deployment listing is history, scoped to one plane, reporting every
-      attempt rather than only what is serving.
+      tiers say which places exist, and which of them a release enters at. The catalogue says which
+      services exist and which tiers each is linked into — one row per service, and it round-trips
+      into the upsert. The applications listing is the same data one row per (service, tier), flat
+      because a platform service carries no link and reading through the tiers would leave out the
+      two a reader most wants to find. And the deployment listing is history, scoped to one plane,
+      reporting every attempt rather than only what is serving.
       """)
   @UserflowRunsAfter({TokenValidationBootstrapIT.class, BuildDeploymentIT.class})
   @Order(1)
@@ -118,8 +118,8 @@ public class PlatformOverviewIT {
         .body("environments.name", hasItem(StoryTarget.TIER));
     story
         .note(
-            "the tiers, each with the branch it listens to — which is the whole of how a green"
-                + " build decides where it deploys")
+            "the tiers, and which of them is the designated one — which is the whole of where a"
+                + " release lands, on both planes")
         .as("tiers-listed");
 
     StoryIdentities.person(given(), "story-operator")

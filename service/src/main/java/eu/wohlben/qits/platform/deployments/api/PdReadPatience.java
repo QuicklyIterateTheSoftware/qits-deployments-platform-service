@@ -23,13 +23,12 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * <ul>
  *   <li><b>Inside an open transaction.</b> {@code ServiceCatalog.delete} calls {@code require},
  *       {@code ServiceCatalog.allApplications} calls {@code list}, {@code EnvironmentService}'s
- *       {@code update}/{@code delete} call {@code require}, and {@code BuildTips} calls {@code
- *       onBranch} from inside two {@code requiringNew} brackets. A retry there would sleep holding a
- *       transaction, which is the one placement the platform's db-patience rules forbid.
- *   <li><b>Inside a monitor.</b> {@code BuildTips.claim} is {@code synchronized} and reaches {@code
- *       onBranch} under it. Sleeping there stalls the other delivery channel. ({@code
- *       ServiceCatalog.upsert} is {@code synchronized} too, but it is a write and no read of that
- *       class shares its monitor.)
+ *       {@code update}/{@code delete} call {@code require}, and {@code ReleaseTips} reads the
+ *       request rows from inside a {@code requiringNew} bracket. A retry there would sleep holding
+ *       a transaction, which is the one placement the platform's db-patience rules forbid.
+ *   <li><b>Inside a monitor.</b> {@code ReleaseTips.claim} is {@code synchronized} and reads under
+ *       it. Sleeping there stalls the other delivery channel. ({@code ServiceCatalog.upsert} is
+ *       {@code synchronized} too, but it is a write and no read of that class shares its monitor.)
  *   <li><b>On the deploy worker.</b> Those reads are already wrapped, at {@code
  *       DeployService.CUTOVER_BUDGET} — thirty seconds rather than this deadline, because the worker
  *       waits out an outage it caused itself. Wrapping inside the read as well would nest one budget

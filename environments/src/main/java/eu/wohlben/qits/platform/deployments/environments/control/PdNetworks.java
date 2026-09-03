@@ -1,5 +1,7 @@
 package eu.wohlben.qits.platform.deployments.environments.control;
 
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+
 /**
  * The docker network names this component derives, in one place — the topology is hub-and-spoke and
  * the names are the whole of how it is addressed.
@@ -48,23 +50,49 @@ public final class PdNetworks {
 
   /**
    * The <b>wire alias</b> a container answers to on every network it is on — the address peers dial,
-   * and the thing a cutover finds a predecessor by. It is derived here rather than at the argv,
-   * because three callers have to agree on it: the {@code docker run --network-alias}, every {@code
-   * docker network connect --alias} after it, and the predecessor search.
+   * and under swarm the service's own NAME. It is derived here rather than at the argv, because
+   * everything that has to agree about an address takes it from here.
    *
    * <ul>
    *   <li><b>An environment service</b> is {@code <environment>-<application>} — {@code
    *       prod-qits-gateway}. The qualifier is what lets two tiers hold the same application's
-   *       address on one shared network (the legacy one is shared by all of them) without one
+   *       address on one shared network (the flat overlay is shared by all of them) without one
    *       resolving as the other.
-   *   <li><b>A platform service</b> keeps the bare {@code <application>}: it is one instance for the
-   *       whole platform, so there is nothing to qualify it against, and the repository names now
-   *       carry the plane themselves ({@code qits-platform-idp}).
+   *   <li><b>A platform service</b> keeps the bare {@code <application>} — see {@link
+   *       #platformAlias}.
    * </ul>
    *
-   * @param environmentName null for a platform service — the same null that leaves it unlabelled
+   * <p><b>The plane is a parameter now and used to be a null environment.</b> A platform service is
+   * deployed into the main environment since V8, so "no tier" no longer identifies one and an alias
+   * derived from the tier would have renamed every platform service on one deployment — which,
+   * swarm's service name being its address, is a second service beside the one that was serving.
+   *
+   * @param target which plane; {@link PdDeploymentTarget#PLATFORM} answers bare
+   */
+  public static String alias(
+      PdDeploymentTarget target, String environmentName, String applicationName) {
+    return target == PdDeploymentTarget.PLATFORM
+        ? platformAlias(applicationName)
+        : alias(environmentName, applicationName);
+  }
+
+  /**
+   * An environment service's alias, {@code <environment>-<application>}. The tier is required: a
+   * caller that has no tier is on the platform plane and says so with {@link #platformAlias}.
    */
   public static String alias(String environmentName, String applicationName) {
-    return environmentName == null ? applicationName : environmentName + "-" + applicationName;
+    return environmentName + "-" + applicationName;
+  }
+
+  /**
+   * A platform service's alias: the bare application name, whichever tier it is deployed into.
+   *
+   * <p><b>This is what "platform" still means after V8.</b> The plane's deployments carry the main
+   * environment everywhere else — the row, the labels, {@code QITS_ENVIRONMENT}, the events — and
+   * the address is the one thing that deliberately does not, because a consumer in any tier reaches
+   * qits-ci by writing {@code qits-ci} and must not have to know where the platform's own tier is.
+   */
+  public static String platformAlias(String applicationName) {
+    return applicationName;
   }
 }

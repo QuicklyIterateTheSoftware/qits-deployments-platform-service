@@ -2,6 +2,7 @@ package eu.wohlben.qits.platform.deployments.deployments.control;
 
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdResource;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdResourceRepository;
+import eu.wohlben.qits.platform.deployments.environments.control.EnvironmentService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.StartupEvent;
@@ -42,13 +43,21 @@ import org.jboss.logging.Logger;
  * the truth here; the row is a copy this component keeps so it can reason about itself the way it
  * reasons about every other application.
  *
- * <p><b>No {@code QITS_ENVIRONMENT} means the platform plane, not "skip".</b> This component is a
- * platform service now, and the swarm driver writes that variable for environment applications
- * only — so a boot without it is the normal boot, and returning early would silently stop recording
- * these rows. Null is what the plane spells "no tier" as everywhere else: {@code
- * pd_resource.environment_name} is nullable, its unique key treats null as a value ({@code nulls
- * not distinct}), and {@link ResourceProvisioning} looks a platform service's rows up by exactly
- * that key.
+ * <p><b>An absent {@code QITS_ENVIRONMENT} is resolved, not read as a plane.</b> It used to mean
+ * "the platform plane", because the swarm driver wrote that variable for environment applications
+ * only and this component is a platform service — so the rows were recorded under a null tier, and
+ * {@link ResourceProvisioning} looked them up by that null. A platform service is deployed INTO the
+ * designated platform environment now and is started with the variable like everything else, so the
+ * absence means only one thing: <b>this container was started by the old code</b>, in the window
+ * between the deploy that ships this file and the one after it. The tier is then resolved from the
+ * database — {@code pd_environment.platform}, the same designation the deploying instance used to
+ * choose where to put this container — and the row is written under that name, which is the key the
+ * next self-deploy will look it up by. Recording null there instead would send that deploy down the
+ * reconcile arm and rotate the passwords this process's pools are holding open.
+ *
+ * <p>Null survives as the last resort and says so in a WARN: an install with no designated tier has
+ * nothing to key a row by, and it also has nothing that could deploy this component, so the row is
+ * written where the old code wrote it and the operator is told.
  *
  * <p><b>Warn-only, and skipped under TEST</b> — the {@code DeployService.onStart} shape. A
  * component that cannot record its own resource must still start: it is the thing that redeploys
@@ -87,14 +96,13 @@ public class BootResourceRegistration {
   static final String ENVIRONMENT_VARIABLE = "QITS_ENVIRONMENT";
 
   @Inject PdResourceRepository resources;
+  @Inject EnvironmentService environments;
 
   void onStart(@Observes StartupEvent event) {
     if (LaunchMode.current() == LaunchMode.TEST) {
       return;
     }
-    // Null, not a skip: see the class javadoc. A platform service is started without the variable,
-    // and the plane's rows are the ones with no environment name.
-    String environmentName = value(ENVIRONMENT_VARIABLE).orElse(null);
+    String environmentName = environmentName();
     for (String resourceName : RESOURCES) {
       try {
         Optional<String> url = value(variable(resourceName, "URL"));
@@ -116,6 +124,51 @@ public class BootResourceRegistration {
     }
   }
 
+  /**
+   * Which tier this instance's own resource rows are keyed by: what it was started with, and — when
+   * it was started with nothing — the designation that decides where a platform service is
+   * deployed. Package-private for its own test.
+   *
+   * <p><b>The second arm is the bootstrap window and nothing else.</b> This component is deployed by
+   * the instance before it, so the first container carrying this file was started by code that
+   * wrote no {@code QITS_ENVIRONMENT} for a platform service. Reading the designation gives that
+   * container the same answer its successor will be started with, which is what makes the rows it
+   * writes the rows the next self-deploy finds.
+   *
+   * <p>The read is bracketed rather than left to the callee: this runs on the startup observer's
+   * thread, which has no transaction of its own, and {@code EnvironmentService}'s reads join an
+   * existing one. It is also the reason for the catch — a component that cannot read its own
+   * topology must still start, exactly as the rest of this class is warn-only.
+   */
+  String environmentName() {
+    Optional<String> declared = value(ENVIRONMENT_VARIABLE);
+    if (declared.isPresent()) {
+      return declared.get();
+    }
+    String designated = null;
+    try {
+      designated =
+          QuarkusTransaction.requiringNew()
+              .call(() -> environments.platformEnvironment().map(e -> e.name).orElse(null));
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not read the designated platform environment while recording own rows");
+    }
+    if (designated == null) {
+      LOG.warnf(
+          "This instance was started without %s and no environment is designated the platform one,"
+              + " so its own resource rows are recorded with no tier. They are the rows a"
+              + " self-deploy looks up, so designate one before deploying this component.",
+          ENVIRONMENT_VARIABLE);
+      return null;
+    }
+    LOG.infof(
+        "This instance was started without %s — the boot before its first deployment by the"
+            + " current code — so its own resource rows are recorded under the designated platform"
+            + " environment %s, which is where it is deployed",
+        ENVIRONMENT_VARIABLE, designated);
+    return designated;
+  }
+
   /** {@code QITS_RESOURCE_<NAME>_<SUFFIX>}, with the name's hyphens spelled as underscores. */
   static String variable(String resourceName, String suffix) {
     return "QITS_RESOURCE_"
@@ -129,14 +182,12 @@ public class BootResourceRegistration {
    * for the platform plane. Package-private because the startup path is skipped under TEST and the
    * suite drives this directly — the {@code sweepInFlight()} arrangement.
    *
-   * <p><b>The flip leaves the old tier rows behind, deliberately.</b> A platform that ran this per
-   * tier has rows keyed {@code ('qits-deployments', 'dev', …)}, and nothing here reads or rewrites
-   * them: the deploy that performs the flip finds no null-keyed row, rotates both passwords once
-   * and hands the fresh ones to the successor, which records them under the null key at its first
-   * boot. Every self-deploy after that is a no-op again. A fallback to the old tier's row would
-   * spare that single rotation and then have to be carried forever; the leftovers are harmless
-   * (same application name, so the database cross-check still passes) and an operator may delete
-   * them.
+   * <p><b>The tier-keyed rows are the live ones again.</b> A platform that ran this per tier has
+   * rows keyed {@code ('qits-deployments', 'dev', …)}; the plane's own era wrote {@code
+   * ('qits-deployments', null, …)}; V8 moves the null-keyed rows onto the designated tier's name
+   * and drops whichever stale tier-keyed row they collide with, so there is one row per resource
+   * again. This upsert then rewrites it from the environment on every boot, which is what makes the
+   * environment the truth and the row a copy.
    */
   void record(
       String resourceName,
