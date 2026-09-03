@@ -70,8 +70,45 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   @Column(name = "environment_id")
   public String environmentId;
 
-  @Column(name = "commit_sha", nullable = false, length = 64)
+  /**
+   * <b>The released coordinate — the CalVer stamp, and the tag the image carries.</b> {@code
+   * qits/<application>:<version>} is what the deployment pulls, {@code refs/tags/<version>} is what
+   * the spec is read at, and this is the string the startup sweep compares a running image against.
+   *
+   * <p>Null on every row written before V7 added the column, and only on those: a release names a
+   * version or it is refused at the intake. Read it through {@link #imageTag()} rather than
+   * directly, which is what makes a historical row keep answering.
+   */
+  @Column(length = 64)
+  public String version;
+
+  /**
+   * The commit the released tag RESOLVED to, recorded rather than assumed: the spec read addresses
+   * {@code refs/tags/<version>} and the git host answers with the commit in a header, so one
+   * request gets both the file and the commit it came from. It is the edge from a container back to
+   * a diff.
+   *
+   * <p><b>Nullable since V7, and the null is a real answer.</b> A repository that carries no
+   * deployments.yml gets a 404 from the blob read, and a 404 says nothing about where the tag
+   * points; so does a spec read that failed outright. On rows older than V7 it is the opposite —
+   * the sha was the whole coordinate, which is why {@link #imageTag()} falls back to it.
+   */
+  @Column(name = "commit_sha", length = 64)
   public String commitSha;
+
+  /**
+   * What tag this deployment's image carries — the single spelling of that question, because three
+   * readers have to agree on it: the pull, the startup sweep's adoption check, and the rollback
+   * pins qits-artifacts' garbage collector keeps images by.
+   *
+   * <p>The version, and the commit sha behind it. The fallback is not defensive: a row written
+   * before V7 describes a deployment whose image really is tagged with a sha, so answering the
+   * version there (null) would make the pins claim nothing and the collector delete an image that
+   * is live. V7 deliberately backfills nothing for exactly that reason.
+   */
+  public String imageTag() {
+    return version != null ? version : commitSha;
+  }
 
   /**
    * The qits-ci run whose green build caused this deployment, as the intake received it — the one

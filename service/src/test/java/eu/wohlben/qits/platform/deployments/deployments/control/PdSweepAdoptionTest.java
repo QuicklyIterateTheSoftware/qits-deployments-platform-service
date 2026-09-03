@@ -20,9 +20,15 @@ import org.junit.jupiter.api.Test;
  *
  * <p>That is the half of a self-update no orchestrator does for us: the instance that deployed
  * itself died before it could record the outcome, so the next one asks what the service is running
- * and compares it with the row's own sha. Carrying the sha is this deployment serving; carrying
- * another is a rollback or a later deployment; nothing running at all is a row a restart
- * interrupted.
+ * and compares it with the row's own IMAGE TAG — the released version, and the commit sha behind
+ * it on a row written before versions were the coordinate. Carrying that tag is this deployment
+ * serving; carrying another is a rollback or a later deployment; nothing running at all is a row a
+ * restart interrupted.
+ *
+ * <p><b>Most rows here are written the LEGACY way, with a sha and no version</b>, and that is
+ * deliberate: it is the arm that says a row predating the version column still adopts rather than
+ * coming back SUPERSEDED by its own successor. {@link #aRowDeployedByAReleaseIsAdoptedOnItsVersion}
+ * is the other arm.
  *
  * <p>The rows are written straight to the table rather than through an environment, and that is the
  * point since the extraction: the sweep must read nothing but this component's own columns.
@@ -33,6 +39,9 @@ public class PdSweepAdoptionTest {
   private static final String SHA = "c".repeat(40);
   private static final String OTHER_SHA = "d".repeat(40);
 
+  /** What a release-era row records — and therefore what its image is tagged with. */
+  private static final String VERSION = "2026.903.113443";
+
   @Inject DeployService deployService;
   @Inject FakeDeploymentDriver driver;
   @Inject PdDeploymentRepository deployments;
@@ -42,8 +51,8 @@ public class PdSweepAdoptionTest {
     driver.reset();
   }
 
-  private static String image(String sha) {
-    return "qits-platform-artifacts:8080/qits/qits-platform-deployments:" + sha;
+  private static String image(String tag) {
+    return "qits-platform-artifacts:8080/qits/qits-platform-deployments:" + tag;
   }
 
   private String deployment(
@@ -114,6 +123,38 @@ public class PdSweepAdoptionTest {
     assertEquals("ACTIVE", statusOf(handedOff));
     assertEquals("DECOMMISSIONED", statusOf(predecessor));
     assertEquals("ACTIVE", statusOf(otherTier), "another tier's copy is not this plane's to retire");
+  }
+
+  @Test
+  public void aRowDeployedByAReleaseIsAdoptedOnItsVersion() {
+    // The release-era arm. The row records a version, the image is tagged with it, and the sweep
+    // has to compare THAT rather than the commit sha beside it — a self-update that compared the
+    // sha would find `qits/...:2026.903.113443` carrying no such string and come back SUPERSEDED by
+    // its own successor, which is the failure this component's own deployment would hit first.
+    String id = UUID.randomUUID().toString();
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDeployment row = new PdDeployment();
+              row.id = id;
+              row.applicationName = "qits-platform-deployments";
+              row.environmentId = "env-sweep-version";
+              row.version = VERSION;
+              // The commit the tag resolved to, deliberately DIFFERENT from the tag: a sweep that
+              // read this column would compare the wrong string and still be green if the two
+              // happened to match.
+              row.commitSha = SHA;
+              row.status = PdDeploymentStatus.STARTING;
+              row.containerName = "new-release";
+              row.createdAt = Instant.now();
+              deployments.persist(row);
+            });
+    driver.scriptRunningImage("new-release", image(VERSION));
+
+    deployService.sweepInFlight();
+
+    assertEquals("ACTIVE", statusOf(id));
+    assertTrue(detailOf(id).contains("adopted at startup"), detailOf(id));
   }
 
   @Test

@@ -205,7 +205,7 @@ public class BuildDeploymentIT {
         .get(StoryTarget.DEPLOYMENTS_PATH + "?environmentId=" + StoryPlatform.tierId())
         .then()
         .statusCode(200)
-        .body("deployments.commitSha", hasItem(FIRST_VERSION));
+        .body("deployments.version", hasItem(FIRST_VERSION));
     story
         .note(
             "and an operator reads the whole attempt back on the tier's own listing — the only"

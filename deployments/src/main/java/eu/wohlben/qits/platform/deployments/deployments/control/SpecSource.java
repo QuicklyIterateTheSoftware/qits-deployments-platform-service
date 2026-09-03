@@ -21,18 +21,51 @@ public interface SpecSource {
   String SPEC_PATH = ".config/qits/deployments.yml";
 
   /**
-   * Read the spec a repository declares at {@code sha}.
+   * The rev a released version is read at — <b>fully qualified, and that is the point</b>.
+   *
+   * <p>The git host resolves a bare {@code 2026.903.113443} perfectly well, but a bare name is
+   * whatever the repository happens to hold under it: a branch of that name would win, and a
+   * repository is free to have one. {@code refs/tags/<version>} can only ever be the tag the
+   * release pushed, which is the ref whose contents this deployment is supposed to be.
+   */
+  static String tagRev(String version) {
+    return "refs/tags/" + version;
+  }
+
+  /**
+   * Read the spec a repository declares at {@code rev}.
    *
    * <p><b>It takes the whole {@link RepositoryRef} rather than one id</b>, because the git host
-   * serves the same blob under two addresses and only the caller knows which one this build has:
-   * the public {@code /git/<projectId>/<repoName>} when the event carried the name pair, and the
-   * internal {@code /git/<repoId>} when it did not.
+   * serves the same blob under two addresses and only the caller knows which one this release has:
+   * the public {@code /git/<projectId>/<repoName>} when the announcement carried the name pair, and
+   * the internal {@code /git/<repoId>} when it did not — which is every release event, since a
+   * {@code SoftwareRelease} carries no repository name.
    *
-   * @return {@link DeploymentSpec#DEFAULTS} when the repository carries no such file at that commit
+   * <p><b>{@code rev} is a git rev and not a sha</b>, and the ordinary caller passes {@link
+   * #tagRev}. The startup sweep's one legacy path passes a sha, because that is what the row it is
+   * adopting recorded.
+   *
+   * @return {@link DeploymentSpec#DEFAULTS} when the repository carries no such file at that rev
    * @throws SpecException when the file exists but could not be fetched or understood — the
    *     deployment fails on it rather than guessing a topology
    */
-  DeploymentSpec read(RepositoryRef repository, String sha);
+  SpecRead read(RepositoryRef repository, String rev);
+
+  /**
+   * A spec, and the commit the rev it was read at resolved to.
+   *
+   * <p><b>The commit comes back because the read already knows it and nothing else does.</b> A
+   * release names a version and no sha, so without this the deployment row could record no commit
+   * at all and there would be no edge from a running container back to a diff. The git host answers
+   * every blob read with the resolved commit in a header, so this costs no second request and no
+   * ref-resolution endpoint — which is just as well, because it has none.
+   *
+   * <p><b>{@code commitSha} is null when the rev could not be resolved to one</b>, which is the
+   * 404 case: a repository that carries no {@code deployments.yml} gets the defaults and no commit,
+   * because a missing blob says nothing about where a tag points. It is a real answer, and {@code
+   * pd_deployment.commit_sha} is nullable for it.
+   */
+  record SpecRead(DeploymentSpec spec, String commitSha) {}
 
   /**
    * What a repository declares about how it is deployed. Every key optional, and the shape a

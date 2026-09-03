@@ -117,7 +117,7 @@ public class PdDeployPublishTest {
       assertTrue(event.payload.contains("\"environmentId\":\"" + environmentId + "\""),
           event.payload);
       assertTrue(event.payload.contains("\"environmentName\":\"pub-green\""), event.payload);
-      assertTrue(event.payload.contains("\"commitSha\":\"" + VERSION + "\""), event.payload);
+      assertTrue(event.payload.contains("\"version\":\"" + VERSION + "\""), event.payload);
       assertTrue(event.payload.contains("\"runId\":\"run-pub-green\""), event.payload);
       assertNotNull(event.occurredAt);
       assertEquals(cause, event.parentId, "every event of one deployment names the same cause");

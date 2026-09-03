@@ -20,6 +20,7 @@ public class DeploymentMapper {
         deployment.id,
         ApplicationKeys.of(deployment.environmentId, deployment.applicationName),
         deployment.applicationName,
+        deployment.version,
         deployment.commitSha,
         deployment.runId,
         deployment.status,

@@ -43,7 +43,7 @@ import java.util.Set;
  * <p>A software-release event is handled whole on {@code pd-deploy-worker} — spec read, registration,
  * queueing, the orchestrator, the cutover — and the intake returns 202 the moment it is queued. So
  * "the deployment finished" is only observable through the rows, which is also how a caller
- * experiences this service. {@link #awaitSettled} polls until the row for one (application, commit)
+ * experiences this service. {@link #awaitSettled} polls until the row for one (application, version)
  * leaves {@code QUEUED}/{@code STARTING}, which is exactly when every edge that deployment produces
  * is on disk.
  */
@@ -123,11 +123,11 @@ public final class StoryPlatform {
    * deployment wants its {@code FAILED} row exactly as much as a story about a green one wants its
    * {@code ACTIVE}, so this waits for an ANSWER rather than for success.
    */
-  public static JsonNode awaitSettled(String applicationName, String sha) {
+  public static JsonNode awaitSettled(String applicationName, String version) {
     long deadline = System.nanoTime() + SETTLE_PATIENCE.toNanos();
     JsonNode last = null;
     while (true) {
-      last = deploymentOf(applicationName, sha);
+      last = deploymentOf(applicationName, version);
       if (last != null && !IN_FLIGHT.contains(last.path("status").asText())) {
         return last;
       }
@@ -136,7 +136,7 @@ public final class StoryPlatform {
             "the deployment of "
                 + applicationName
                 + "@"
-                + sha
+                + version
                 + " never settled; the row is "
                 + (last == null ? "not there at all" : last.toString()));
       }
@@ -144,12 +144,12 @@ public final class StoryPlatform {
     }
   }
 
-  /** One recorded deployment of an application at a commit, or null while there is none. */
-  public static JsonNode deploymentOf(String applicationName, String sha) {
+  /** One recorded deployment of an application at a released version, or null while there is none. */
+  public static JsonNode deploymentOf(String applicationName, String version) {
     JsonNode listed = get(StoryTarget.DEPLOYMENTS_PATH + "?environmentId=" + tierId());
     for (JsonNode row : listed.path("deployments")) {
       if (applicationName.equals(row.path("applicationName").asText())
-          && sha.equals(row.path("commitSha").asText())) {
+          && version.equals(row.path("version").asText())) {
         return row;
       }
     }

@@ -32,7 +32,7 @@ import java.util.Optional;
  * repository:
  *
  * <ul>
- *   <li><b>the git host</b> — {@code GET /git/<project>/<repo>/blob/<sha>/.config/qits/deployments.yml},
+ *   <li><b>the git host</b> — {@code GET /git/<project>/<repo>/blob/<rev>/.config/qits/deployments.yml},
  *       the spec read that decides <i>which places exist</i>. It is read at the BUILT sha, which is
  *       why an unknown key in an old commit's file is a failed deployment and why every retired key
  *       stays tolerated;
@@ -86,6 +86,13 @@ import java.util.Optional;
  * loudly, which is the right way for that assumption to break.
  */
 public final class StoryPeers {
+
+  /**
+   * The commit every spec read here reports the released tag resolved to. One literal for the whole
+   * catalogue: a story asserts that a deployment RECORDED a commit, never which one, and a stamped
+   * value would move the {@code networkHash} on every run.
+   */
+  public static final String RESOLVED_COMMIT = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736";
 
   /** How a diagram names the blob store this stub answers {@code /git/…} as. */
   public static final String GIT_HOST = "qits-githost";
@@ -216,7 +223,10 @@ public final class StoryPeers {
   }
 
   private static void handle(HttpExchange exchange) throws IOException {
-    String path = exchange.getRequestURI().getPath();
+    // The RAW path: a git rev is one path segment, so `refs/tags/<version>` arrives percent-encoded
+    // and the decoded path would read as three segments instead of one — which is exactly the shape
+    // `specFor` counts. Reading it decoded made every release-tag spec read a 404.
+    String path = exchange.getRequestURI().getRawPath();
     String method = exchange.getRequestMethod();
     int status = 404;
     String contentType = "application/json";
@@ -227,6 +237,9 @@ public final class StoryPeers {
       status = 200;
       contentType = "text/plain; charset=utf-8";
       body = spec;
+      // What the real git host answers every blob read with — the commit the rev resolved to, and
+      // the only way a released deployment learns one.
+      exchange.getResponseHeaders().add("Git-Commit-Sha", RESOLVED_COMMIT);
     } else if (isTokenRequest(method, path)) {
       status = 200;
       // An hour, so the mint lands in exactly one story of the run — see the class javadoc.
@@ -256,7 +269,11 @@ public final class StoryPeers {
   }
 
   /**
-   * The blob at {@code /git/<project>/<repo>/blob/<sha>/.config/qits/deployments.yml}, or null.
+   * The blob at {@code /git/<project>/<repo>/blob/<rev>/.config/qits/deployments.yml}, or null.
+   *
+   * <p>The rev is the RELEASED TAG and arrives percent-encoded ({@code refs%2Ftags%2F<version>}),
+   * which is why the caller hands this the raw path: one segment, as the git host's own route
+   * regex reads it.
    *
    * <p>Only the name-addressed route is served, which is a claim rather than a shortcut: every
    * announcement above the storage seam carries the public {@code (projectId, repoName)} pair now,
@@ -329,14 +346,14 @@ public final class StoryPeers {
   }
 
   /** The label an answered spec read renders as — what an assertion has to spell. */
-  public static String specLabel(String repository, String sha, int status) {
+  public static String specLabel(String repository, String version, int status) {
     return Labels.scrub(
         "GET /git/"
             + StoryTarget.PROJECT
             + "/"
             + repository
-            + "/blob/"
-            + sha
+            + "/blob/refs%2Ftags%2F"
+            + version
             + "/"
             + SPEC_PATH
             + " -> "

@@ -410,7 +410,7 @@ to an application that publishes no port. **Nothing derives one key from the oth
 service that says `stop-first` gets `stop-first`. The mode is part of a service's SHAPE, so an
 existing service keeps the mode it was created with until a `service rm` and a redeploy — an
 update never restates ports. And, like every spec key: **it must ship in the deployer before any
-repository writes the line**, since a spec is read at the built sha and an unknown key fails a
+repository writes the line**, since a spec is read at the released tag and an unknown key fails a
 deployment.
 
 ### The registry credential, and the outcome it used to be mistaken for
@@ -876,7 +876,7 @@ each is easy to undo by accident:
   here silently stops matching.
 
   **Self-provisioning works for everything after the first container**, and that is worth being
-  precise about because this component is its own deployer: the spec is read at the built sha, so
+  precise about because this component is its own deployer: the spec is read at the released tag, so
   the *running* instance reads the new `resources:` line, creates the role and the database, and
   injects the triple into the successor it starts. Only a cold bootstrap has no deployer to do it,
   which is why the bootstrap's generated config carries both triples. A missing one is not a degraded boot —
@@ -1058,7 +1058,7 @@ doors carry it — the intake payload and the `BuildSuccessful` payload each gai
 `projectId` and `repoName`.
 
 **`applicationName = repoName != null ? repoName : repoId`, resolved ONCE in `announce` and threaded
-by value from there.** That string is the image tag `qits/<name>:<sha>`, the wire alias, the
+by value from there.** That string is the image PATH `qits/<name>`, the wire alias, the
 container name, the provisioned database and role, the `ApplicationKeys` key and the GC pin. Every
 pipeline yml pushes its image as a literal `qits/<name>`, so an application named after a storage
 UUID is every deployment ending `IMAGE_MISSING` **and** the orchestrator's collector deleting the
@@ -1080,6 +1080,26 @@ always stored the application NAME and never a repository id (the no-FK, no-fore
 in *Adding a dependency on another context*), so `applicationName`-as-name is the columns doing what
 they already said.
 
+### The spec is read at the RELEASED TAG, and the answer carries the commit (2026-09-03)
+
+**`SpecSource.read` takes a git REV and returns a `SpecRead`, which is the spec plus the commit that
+rev resolved to.** The ordinary caller passes `SpecSource.tagRev(version)` — `refs/tags/<version>`,
+fully qualified — and the reason it is qualified is not tidiness: the git host resolves a bare
+`2026.903.113443` perfectly well, and a *branch* of that name would win. The file that decides where
+a container runs has to be the file the version was cut from.
+
+**A rev is ONE path segment to the git host** (its route regex is `[^/]+` and its charset refuses a
+literal `/`), so the slashes are percent-encoded: `/blob/refs%2Ftags%2F<version>/...`. jgit's
+`Repository#resolve` then peels an annotated tag. A stub that reads `getRequestURI().getPath()`
+instead of `getRawPath()` sees three segments and 404s everything — which is exactly what happened
+to `stories/support/StoryPeers` and is why it reads the raw path now.
+
+**The commit comes back in the `Git-Commit-Sha` header, and that is the only place a released
+deployment can learn one.** qits-githost has no ref-resolution endpoint at all — no tag listing, no
+ref→sha JSON — so without the header `pd_deployment.commit_sha` would be null forever and the edge
+from a container back to a diff would be gone. One request, both answers. A response without the
+header costs the trace edge and never the deployment.
+
 **`GitHostSpecSource` reads one blob at two addresses.** With the name pair,
 `GET <git-host-url>/git/<projectId>/<repoName>/blob/<sha>/.config/qits/deployments.yml`; without it,
 the id-addressed URL it always used. Half a pair is no pair and takes the id route.
@@ -1100,7 +1120,7 @@ repository name, and it is the whole of the wrapper reorganisation's phase 2 for
 Absent — which is every file that exists today — behaviour is byte-identical to the section above:
 the application name is the repository's name. Present, that string IS the application name
 everywhere the repository's would have been, and the list is the same one: the catalogue key, the
-swarm service and its wire alias, the container name, the image `qits/<application>:<sha>`, the
+swarm service and its wire alias, the container name, the image `qits/<application>:<version>`, the
 provisioned database and role, the derived `host` label, the extras family
 `qits.platform.deployments.extras.<application>.*`, the `QITS_APPLICATION` the container boots with,
 and the name every `Deployment*` event carries.
@@ -1143,7 +1163,7 @@ Five things about it, each easy to undo by accident:
 `DeploymentSpecReader` **stats** this file and never opens it (a file means "it deploys"), so a new
 key is invisible to it. qits-ci's strict unknown-key parser only ever sees `ci-event-*.yml`. And,
 like every spec key: **it must ship in the deployer before any repository writes the line**, since a
-spec is read at the built sha and an unknown key fails a deployment.
+spec is read at the released tag and an unknown key fails a deployment.
 
 ### `navigation-entries` claims a (slot, label) pair, not a slot (2026-08-31)
 
@@ -1221,6 +1241,15 @@ only by asking this component's API. Four events close it, one per lifecycle poi
 | `DeploymentStarted` | after the `QUEUED`→`STARTING` transaction | taken at the transition — there is no `started_at` column |
 | `DeploymentActive` | after the cutover bookkeeping, last thing in `execute` — **and from the startup sweep's adoption**, which is the only path a self-update has | the row's `finished_at` |
 | `DeploymentFailed` | the single `finish` funnel, when the status is not `ACTIVE` | the row's `finished_at` |
+
+**All four carry the VERSION now, and `commitSha` beside it.** The version is the released
+coordinate — what the image is tagged with, and what a consumer joins a deployment back to a release
+by; the sha is the commit that tag resolved to, and it is a trace edge that may legitimately be
+null. That is a **widening of the vocabulary jar**: a consumer reading the payload gains a field and
+is otherwise untouched (the canonical mapper ignores unknown keys in both directions), but anything
+CONSTRUCTING one of these records takes a new positional argument. Only this repository does.
+`DeployEventsTest` holds the exact payload bytes, so a change here that is not also a change there
+is a cross-repo break rather than a refactor.
 
 Six things about it, each easy to undo by accident:
 
@@ -1326,6 +1355,32 @@ because postgres would now permit what H2 could not, and the answers are still t
 constraint on any enum column, and no partial unique index on `pd_environment.platform`. **A second
 clean start is not a precedent** — it cost a re-bootstrap, and the ordinary rule (append, never edit)
 is back from V1 onward.
+
+**`V6__deployment_request.sql` adds the decision in front of the queue** — see *The event side* for
+what a request is and why it is not a column on `pd_deployment`. It points AT the deployment
+(`deployment_id`, nullable) rather than the other way round, because the request is the cause and is
+written first.
+
+**`V7__deployment_version.sql` is the coordinate change, and its whole care is the two nulls.** A
+deployment is a released version now, so `pd_deployment.version` holds the CalVer stamp — the tag
+the image carries, the rev the spec is read at, and what the startup sweep compares a running image
+against. `commit_sha` survives, is **nullable**, and means what it says: the commit the released tag
+RESOLVED to, read out of the git host's `Git-Commit-Sha` header. Null there is a real answer (a
+repository with no `deployments.yml` 404s the blob read, which says nothing about where the tag
+points).
+
+**There is NO backfill and there must not be one.** A row written before V7 describes a deployment
+whose image really is tagged with a sha, so copying that sha into `version` would make the rollback
+pins claim a tag that does not exist. Every reader goes through **`PdDeployment.imageTag()`** — the
+single spelling of "what tag is this deployment's image", version first and commit_sha behind it —
+and three of them have to agree: the pull, the sweep's adoption check, and `RollbackPins`. Adding a
+fourth reader that touches `version` directly is the regression.
+
+**The pin wire field is still called `shas` and must stay so.** qits-artifacts' image collector
+parses `{"pins":[{"applicationName","shas"}]}` and matches each string against an OCI tag by plain
+equality, so it followed the version change with no edit at all — and it is **fail-closed**, so a
+renamed field would abort garbage collection across the platform rather than degrade it. The values
+inside changed; the contract did not.
 
 The suites run every migration against an **empty** schema, so a backfill is untested by them.
 `deployments/src/test/.../PdSchemaTest` is the shape to copy: plain JUnit, a real postgres from

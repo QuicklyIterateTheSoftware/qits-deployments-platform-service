@@ -122,6 +122,8 @@ components:
           type: string
         applicationName:
           type: string
+        version:
+          type: string
         commitSha:
           type: string
         runId:

@@ -81,7 +81,7 @@ public class PdSwarmDeployFlowTest {
     List<Map<String, Object>> deployments = awaitSettled(environmentId, 1);
 
     assertEquals("ACTIVE", deployments.get(0).get("status"));
-    assertEquals(VERSION, deployments.get(0).get("commitSha"));
+    assertEquals(VERSION, deployments.get(0).get("version"));
     // The row records the name the ORCHESTRATOR gave it, which under swarm is the wire alias: the
     // service name is the address, and a replace is an update of that same service.
     assertEquals("swarm-green-repo-swarm-green", deployments.get(0).get("containerName"));
@@ -109,7 +109,7 @@ public class PdSwarmDeployFlowTest {
     OutboxEvent active = only("DeploymentActive");
     for (OutboxEvent event : List.of(queued, started, active)) {
       assertTrue(event.payload.contains("\"applicationName\":\"repo-swarm-green\""), event.payload);
-      assertTrue(event.payload.contains("\"commitSha\":\"" + VERSION + "\""), event.payload);
+      assertTrue(event.payload.contains("\"version\":\"" + VERSION + "\""), event.payload);
     }
     assertTrue(
         active.payload.contains("\"containerName\":\"swarm-green-repo-swarm-green\""),

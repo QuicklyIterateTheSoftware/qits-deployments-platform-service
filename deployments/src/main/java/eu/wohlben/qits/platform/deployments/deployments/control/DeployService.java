@@ -424,6 +424,7 @@ public class DeployService implements ReleaseAnnouncements {
       String environmentId,
       PdDeploymentStatus status,
       String containerName,
+      String imageTag,
       String commitSha,
       String runId,
       UUID causationId,
@@ -460,6 +461,7 @@ public class DeployService implements ReleaseAnnouncements {
                     row.environmentId,
                     row.status,
                     row.containerName,
+                    row.imageTag(),
                     row.commitSha,
                     row.runId,
                     row.causationId,
@@ -482,7 +484,10 @@ public class DeployService implements ReleaseAnnouncements {
     if (running == null) {
       return new Verdict(PdDeploymentStatus.FAILED, INTERRUPTED);
     }
-    if (ImageRefs.carries(running.imageRef(), row.commitSha())) {
+    // The VERSION, through the row's own coalesce: a row written before V7 is tagged with a sha
+    // and still has to adopt. Getting this wrong makes a self-updated instance come back SUPERSEDED
+    // by its own successor.
+    if (ImageRefs.carries(running.imageRef(), row.imageTag())) {
       return new Verdict(
           PdDeploymentStatus.ACTIVE,
           "[adopted at startup: " + row.containerName() + " is running this deployment]");
@@ -573,6 +578,7 @@ public class DeployService implements ReleaseAnnouncements {
                     row.applicationName(),
                     row.environmentId(),
                     environmentName,
+                    row.imageTag(),
                     row.commitSha(),
                     row.runId(),
                     row.containerName(),
@@ -652,8 +658,10 @@ public class DeployService implements ReleaseAnnouncements {
         // Id-addressed on purpose: a row carries the application NAME and no storage id, and this
         // path only ever runs for deployments queued before V3's routing columns existed — which
         // is to say before the identity rollback, when the id and the name were the same string.
+        // A SHA rev, not a tag: this path runs only for rows queued before V3's routing columns
+        // existed, which is to say long before a version was the coordinate.
         DeploymentSpec spec =
-            specs.read(RepositoryRef.ofId(row.applicationName()), row.commitSha());
+            specs.read(RepositoryRef.ofId(row.applicationName()), row.commitSha()).spec();
         LOG.infof(
             "Adopted deployment %s predates the routing columns; its snapshot was read from the"
                 + " spec of %s@%s",
@@ -884,12 +892,17 @@ public class DeployService implements ReleaseAnnouncements {
       String packageName,
       UUID causationId) {
     DeploymentSpec spec = null;
+    String commitSha = null;
     String failure = null;
     try {
       // The reference, not the application: the git host serves this blob under the repository's
-      // own address, and the released version is the REV it is read at — the tag the release
-      // pushed. Everything after this line takes the application name instead.
-      spec = specs.read(repository, version);
+      // own address. The REV is the released TAG, fully qualified — a bare version would let a
+      // branch of the same name win, and the file that decides where this container runs has to be
+      // the file the version was cut from. The answer carries the commit the tag resolved to, which
+      // is the only place a release deployment can learn one.
+      SpecSource.SpecRead read = specs.read(repository, SpecSource.tagRev(version));
+      spec = read.spec();
+      commitSha = read.commitSha();
     } catch (RuntimeException e) {
       failure = "[deployment spec unreadable: " + e.getMessage() + "]";
       LOG.warnf(
@@ -918,7 +931,8 @@ public class DeployService implements ReleaseAnnouncements {
 
     List<Queued> queued =
         queue(
-            new Release(runId, repository, applicationName, version, packageName, causationId),
+            new Release(
+                runId, repository, applicationName, version, commitSha, packageName, causationId),
             targets);
     if (failure != null) {
       for (Queued row : queued) {
@@ -928,7 +942,7 @@ public class DeployService implements ReleaseAnnouncements {
     }
     for (Queued row : queued) {
       try {
-        execute(row.deploymentId(), row.target(), version);
+        execute(row.deploymentId(), row.target(), version, commitSha);
       } catch (RuntimeException e) {
         LOG.errorf(e, "Deployment %s failed unexpectedly", row.deploymentId());
         finish(
@@ -947,6 +961,7 @@ public class DeployService implements ReleaseAnnouncements {
       RepositoryRef repository,
       String applicationName,
       String version,
+      String commitSha,
       String packageName,
       UUID causationId) {}
 
@@ -1293,7 +1308,7 @@ public class DeployService implements ReleaseAnnouncements {
               rejected.causationId = causationId;
               rejected.applicationName = applicationName;
               rejected.environmentId = null;
-              rejected.commitSha = version;
+              rejected.version = version;
               rejected.runId = runId;
               rejected.status = PdDeploymentStatus.FAILED;
               rejected.detail = detail;
@@ -1424,7 +1439,7 @@ public class DeployService implements ReleaseAnnouncements {
                   return queued;
                 });
     for (Queued row : rows) {
-      announceQueued(row, release.runId(), release.version(), release.causationId());
+      announceQueued(row, release);
     }
     return rows;
   }
@@ -1492,10 +1507,11 @@ public class DeployService implements ReleaseAnnouncements {
     deployment.causationId = release.causationId();
     deployment.applicationName = target.applicationName();
     deployment.environmentId = target.environmentId();
-    // The released coordinate. It is what the image is tagged with and what the deployment is
-    // identified by from here on; the column still carries the ancestor's name, which the version
-    // task moves off.
-    deployment.commitSha = release.version();
+    // The released coordinate — the tag the image carries and what everything below derives from
+    // — and, beside it, the commit that tag resolved to. The second is null when the spec read
+    // could not resolve one, which is a real answer and never a reason to refuse a deployment.
+    deployment.version = release.version();
+    deployment.commitSha = release.commitSha();
     deployment.runId = release.runId();
     deployment.status = PdDeploymentStatus.QUEUED;
     deployment.createdAt = Instant.now();
@@ -1525,7 +1541,8 @@ public class DeployService implements ReleaseAnnouncements {
   private record Plan(
       String deploymentId,
       Target target,
-      String sha,
+      String version,
+      String commitSha,
       String healthPath,
       String healthCmd,
       String runId,
@@ -1614,7 +1631,7 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /** The synchronous deployment — package-private so tests drive it without the worker. */
-  void execute(String deploymentId, Target target, String commitSha) {
+  void execute(String deploymentId, Target target, String version, String commitSha) {
     Plan plan =
         QuarkusTransaction.requiringNew()
             .call(
@@ -1627,6 +1644,7 @@ public class DeployService implements ReleaseAnnouncements {
                   return new Plan(
                       deploymentId,
                       target,
+                      version,
                       commitSha,
                       target.healthPath() != null ? target.healthPath() : defaultHealthPath,
                       // No default to fall back on, and none to want: an image that named no
@@ -1667,8 +1685,11 @@ public class DeployService implements ReleaseAnnouncements {
       return;
     }
 
+    // The released version is the tag: `qits/<application>:<version>`, which is the coordinate the
+    // release pipeline published under. Never the commit — an image tagged with a sha is what the
+    // retired build trigger pulled.
     String imageRef =
-        ImageRefs.imageRef(registryHost, imageRepository, plan.applicationName(), plan.sha());
+        ImageRefs.imageRef(registryHost, imageRepository, plan.applicationName(), plan.version());
 
     // The registry having no image for a green build is an expected outcome (nothing may publish
     // this application yet) and gets its own state rather than a generic failure.
@@ -1843,7 +1864,7 @@ public class DeployService implements ReleaseAnnouncements {
     LOG.infof(
         "Deployed %s@%s into %s (%s)",
         plan.applicationName(),
-        plan.sha(),
+        plan.version(),
         plan.platform() ? "the platform" : plan.environmentName(),
         name);
     // Last, so an unreachable qits-events delays nothing this deployment still has to do. The
@@ -1881,7 +1902,7 @@ public class DeployService implements ReleaseAnnouncements {
         ApplicationKeys.of(plan.environmentId(), plan.applicationName()),
         plan.applicationName(),
         plan.deploymentId(),
-        plan.sha(),
+        plan.version(),
         deploymentName,
         plan.wireAlias(),
         networks,
@@ -1969,6 +1990,7 @@ public class DeployService implements ReleaseAnnouncements {
               // statement phase, so a lost connection is retriable — see the cutover bracket
               deployments.flush();
               return new Finished(
+                  deployment.imageTag(),
                   deployment.commitSha,
                   deployment.runId,
                   deployment.causationId,
@@ -1984,7 +2006,8 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /** What the outcome bracket carries out — the row's own values, for the announcement. */
-  private record Finished(String commitSha, String runId, UUID cause, Instant finishedAt) {}
+  private record Finished(
+      String version, String commitSha, String runId, UUID cause, Instant finishedAt) {}
 
   /**
    * The four announcements, each called after the transaction that made its statement true.
@@ -1998,7 +2021,7 @@ public class DeployService implements ReleaseAnnouncements {
    * <p>Every announcer is offered the event — {@code Instance} is a set, usually of one and validly
    * of none — and one that throws does not stop the next.
    */
-  private void announceQueued(Queued row, String runId, String commitSha, UUID cause) {
+  private void announceQueued(Queued row, Release release) {
     announce(
         row.deploymentId(),
         announcer ->
@@ -2008,10 +2031,11 @@ public class DeployService implements ReleaseAnnouncements {
                     row.target().applicationName(),
                     row.target().environmentId(),
                     row.target().environmentName(),
-                    commitSha,
-                    runId,
+                    release.version(),
+                    release.commitSha(),
+                    release.runId(),
                     row.queuedAt()),
-                cause));
+                release.causationId()));
   }
 
   private void announceStarted(Plan plan) {
@@ -2024,7 +2048,8 @@ public class DeployService implements ReleaseAnnouncements {
                     plan.applicationName(),
                     plan.environmentId(),
                     plan.environmentName(),
-                    plan.sha(),
+                    plan.version(),
+                    plan.commitSha(),
                     plan.runId(),
                     plan.startedAt()),
                 plan.cause()));
@@ -2040,7 +2065,8 @@ public class DeployService implements ReleaseAnnouncements {
                     plan.applicationName(),
                     plan.environmentId(),
                     plan.environmentName(),
-                    plan.sha(),
+                    plan.version(),
+                    plan.commitSha(),
                     plan.runId(),
                     containerName,
                     finishedAt,
@@ -2066,6 +2092,7 @@ public class DeployService implements ReleaseAnnouncements {
                     target.applicationName(),
                     target.environmentId(),
                     target.environmentName(),
+                    finished.version(),
                     finished.commitSha(),
                     finished.runId(),
                     status.name(),

@@ -138,15 +138,18 @@ public class PdDeploymentFlowTest {
    * A platform deployment is unreachable through the environment-scoped listing, so a test about
    * one reads the row directly — the same thing PdSweepAdoptionTest does for the same reason.
    */
-  private PdDeployment deploymentOf(String applicationName, String environmentId, String sha) {
+  private PdDeployment deploymentOf(
+      String applicationName, String environmentId, String version) {
     return QuarkusTransaction.requiringNew()
         .call(
             () ->
                 deployments.listByApplication(applicationName, environmentId).stream()
-                    .filter(d -> sha.equals(d.commitSha))
+                    .filter(d -> version.equals(d.version))
                     .findFirst()
                     .orElseThrow(
-                        () -> new AssertionError("no deployment of " + applicationName + " at " + sha)));
+                        () ->
+                            new AssertionError(
+                                "no deployment of " + applicationName + " at " + version)));
   }
 
   /** Platform deployments have no environment to read through — wait on the driver instead. */
@@ -170,7 +173,7 @@ public class PdDeploymentFlowTest {
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     Map<String, Object> deployment = deployments.get(0);
     assertEquals("ACTIVE", deployment.get("status"));
-    assertEquals(V_A, deployment.get("commitSha"));
+    assertEquals(V_A, deployment.get("version"));
     assertEquals("repo-green", deployment.get("applicationName"));
     // The run that caused it, straight from the intake and out again on the read surface — this is
     // the whole deployment -> /ci/runs/<runId> click-through.
@@ -207,6 +210,32 @@ public class PdDeploymentFlowTest {
   }
 
   @Test
+  public void theSpecIsReadAtTheReleasedTagAndTheResolvedCommitLandsOnTheRow() {
+    // The version coordinate end to end. Three things have to agree and each is a separate
+    // regression: the image is pulled at `:<version>`, the spec is read at `refs/tags/<version>`
+    // rather than at a branch tip that happens to carry the same name, and the commit the git host
+    // resolved that tag to is recorded — the only edge a released deployment has back to a diff.
+    String environmentId = createEnvironment("flow-tag");
+    postRelease("repo-tag", V_B);
+
+    List<Map<String, Object>> settled = awaitDeployments(environmentId, 1);
+    assertEquals("ACTIVE", settled.get(0).get("status"));
+    assertEquals(V_B, settled.get(0).get("version"));
+    assertEquals(
+        FakeSpecSource.RESOLVED_COMMIT,
+        settled.get(0).get("commitSha"),
+        "the commit the released tag resolved to, recorded rather than assumed");
+    assertEquals(
+        "refs/tags/" + V_B,
+        specs.revOf("repo-tag"),
+        "a bare version would let a branch of the same name win");
+    assertEquals(
+        List.of("qits-platform-artifacts:8080/qits/repo-tag:" + V_B),
+        driver.pulled(),
+        "the image carries the released tag, never the commit");
+  }
+
+  @Test
   public void theNextGreenBuildCutsOverAndDecommissionsThePrevious() {
     String environmentId = createEnvironment("flow-cutover");
     postRelease("repo-cutover", V_A);
@@ -217,7 +246,7 @@ public class PdDeploymentFlowTest {
 
     // Newest-first: the sha-B deployment is ACTIVE, the sha-A one decommissioned.
     assertEquals("ACTIVE", deployments.get(0).get("status"));
-    assertEquals(V_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertEquals("DECOMMISSIONED", deployments.get(1).get("status"));
     // Both rows name the same service, which is what an in-place replace is — so there is nothing
     // to reap, and reaping it would remove the deployment that just went live.
@@ -284,7 +313,7 @@ public class PdDeploymentFlowTest {
         "ROLLED_BACK",
         deployments.get(0).get("status"),
         "the orchestrator put the predecessor back, and the word says so");
-    assertEquals(V_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertTrue(
         ((String) deployments.get(0).get("detail")).contains("never went healthy"),
         "the orchestrator's own words are on the row: " + deployments.get(0).get("detail"));
@@ -670,7 +699,7 @@ public class PdDeploymentFlowTest {
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 2);
     assertEquals("FAILED", deployments.get(0).get("status"));
-    assertEquals(V_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertTrue(
         ((String) deployments.get(0).get("detail")).contains("the git host answered 500"),
         "the cause is on the row: " + deployments.get(0).get("detail"));
@@ -703,9 +732,9 @@ public class PdDeploymentFlowTest {
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 2);
     assertEquals("b41d7e90-9a11-4c33-8f0d-77c0e13a4412", deployments.get(0).get("runId"));
-    assertEquals(V_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertEquals("6f31a0c4-1c2b-4f7a-9b03-2ee45c1f8d61", deployments.get(1).get("runId"));
-    assertEquals(V_A, deployments.get(1).get("commitSha"));
+    assertEquals(V_A, deployments.get(1).get("version"));
   }
 
   @Test
