@@ -45,7 +45,7 @@ class MachineGuardEnforcedTest {
 
   private static final String ENVIRONMENTS = "/platform-deployments/api/environments";
   private static final String SERVICES = "/platform-deployments/api/services";
-  private static final String INTAKE = "/platform-deployments/api/events/build-succeeded";
+  private static final String INTAKE = "/platform-deployments/api/events/software-released";
   private static final String PINS = "/platform-deployments/api/pins";
 
   private static final String ENVIRONMENT_BODY = "{\"name\":\"guarded-env\"}";
@@ -53,15 +53,15 @@ class MachineGuardEnforcedTest {
       "{\"deploymentTarget\":\"PLATFORM\",\"branch\":\"main\",\"availableOnEnv\":false}";
   private static final String EVENT =
       """
-      {"repoId":"guarded-repo","branch":"main","commitSha":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"}
+      {"repoId":"guarded-repo","version":"2026.903.193059"}
       """;
 
   // --- no credential at all: 401 everywhere -----------------------------------------------------
 
   @Test
   void theIntakeWithNoTokenIsRefused() {
-    // This is the exact call qits-ci makes today, and it stops working the moment the gate is on —
-    // which is why the sender has to be sending before a deployment flips it.
+    // This is the exact call a release replay makes, and it stops working the moment the gate is
+    // on — which is why the sender has to be holding a credential before a deployment flips it.
     given().contentType(ContentType.JSON).body(EVENT).when().post(INTAKE).then().statusCode(401);
   }
 

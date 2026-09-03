@@ -3,8 +3,11 @@ package eu.wohlben.qits.platform.deployments.deployments.control;
 import eu.wohlben.qits.db.DbRetry;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
+import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentRequest;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
+import eu.wohlben.qits.platform.deployments.deployments.entity.PdQualityGate;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
+import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRequestRepository;
 import eu.wohlben.qits.platform.deployments.environments.control.ApplicationKeys;
 import eu.wohlben.qits.platform.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
@@ -108,7 +111,7 @@ import org.jboss.logging.Logger;
  * #sweepInFlight() sweep} settles the row from the image the service is running.
  */
 @ApplicationScoped
-public class DeployService implements BuildAnnouncements {
+public class DeployService implements ReleaseAnnouncements {
 
   private static final Logger LOG = Logger.getLogger(DeployService.class);
 
@@ -144,6 +147,7 @@ public class DeployService implements BuildAnnouncements {
   private static final Duration ADOPTION_SPEC_RETRY = Duration.ofSeconds(2);
 
   @Inject PdDeploymentRepository deployments;
+  @Inject PdDeploymentRequestRepository requests;
   @Inject DeploymentDriver driver;
   @Inject SpecSource specs;
   @Inject ServiceCatalog catalog;
@@ -746,9 +750,9 @@ public class DeployService implements BuildAnnouncements {
   }
 
   /**
-   * The async entry every announcement door calls ({@link BuildAnnouncements}). It validates, hands
-   * the event to the worker and returns — the sender is fire-and-forget and has nothing to do with
-   * the answer.
+   * The async entry every announcement door calls ({@link ReleaseAnnouncements}). It validates,
+   * hands the release to the worker and returns — the sender is fire-and-forget and has nothing to
+   * do with the answer.
    *
    * <p><b>The whole event runs on the worker, registration included</b>, and that placement is the
    * concurrency contract rather than a detail. Derived registration is a read-then-write — "what
@@ -760,23 +764,24 @@ public class DeployService implements BuildAnnouncements {
    * as the belt for every other caller.)
    *
    * <p>{@code runId} is optional and is recorded on every row this queues, verbatim: it is the only
-   * pointer from a deployment back to the build that caused it, and it is resolved against nothing
-   * — a reader takes it to qits-ci. The triple that actually drives the deployment is (repository,
-   * branch, commitSha).
+   * pointer from a deployment back to the run that produced it, and it is resolved against nothing
+   * — a reader takes it to qits-ci. A {@code SoftwareRelease} carries none, so the bus door passes
+   * null and the row honestly names no build. The pair that actually drives the deployment is
+   * (application, version).
    *
-   * <p><b>This is where the REPOSITORY's name is settled, once and for the whole event.</b> The
-   * repository arrives in two coordinate systems — an opaque storage id, and the public {@code
-   * (projectId, repoName)} pair when the announcement carried one — and {@link
-   * RepositoryRef#applicationName()} picks the name over the id. Everything below takes that string
-   * by value: the catalogue key, the {@link Target}, the health path, the provisioned database and
-   * role, the wire alias, the container name and the image reference. Only the spec read still
-   * needs the reference itself, because the git host addresses a blob by either coordinate. Passing
-   * a repository id where a name is meant is the regression to watch for — it would tag images
-   * {@code qits/<uuid>:<sha>} while every pipeline pushes {@code qits/<name>:<sha>}.
+   * <p><b>The application name arrives by VALUE and is not derived from the repository here.</b> A
+   * release names a package ({@code qits/qits-ci}) and no repository name at all, so the caller has
+   * already taken the image path out of it ({@link PackageNames}). Everything below takes that
+   * string: the catalogue key, the {@link Target}, the health path, the provisioned database and
+   * role, the wire alias, the container name and the image reference. The {@link RepositoryRef} is
+   * carried alongside for one purpose only — the spec read, which addresses the repository rather
+   * than the application. Passing a repository id where an application name is meant is the
+   * regression to watch for: it would tag images {@code qits/<uuid>:<version>} while every pipeline
+   * publishes {@code qits/<name>}.
    *
-   * <p><b>The APPLICATION name is settled one step later</b>, in {@link #deploy}, because a
-   * repository may declare {@code application:} in the file this has not read yet. Absent — every
-   * file today — the two are the same string and this paragraph describes both.
+   * <p><b>The application name can still be OVERRIDDEN one step later</b>, in {@link #deploy}, by
+   * {@code application:} in the file this has not read yet. Absent — every file today — the
+   * released package's name is the whole answer and this paragraph describes both.
    *
    * <p><b>{@code causationId} is carried by value from here on, and that is the whole reason it is
    * a parameter.</b> {@code CausationScope} is a ThreadLocal: the door's scope — the frame's for the
@@ -788,22 +793,26 @@ public class DeployService implements BuildAnnouncements {
    */
   @Override
   public void announce(
-      String runId, RepositoryRef repository, String branch, String commitSha, UUID causationId) {
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String version,
+      String packageName,
+      UUID causationId) {
     DeploymentIdentifiers.requireRunId(runId);
     RepositoryRef repo = repository.validated();
-    PdIdentifiers.requireBranch(branch);
-    DeploymentIdentifiers.requireSha(commitSha);
-    String applicationName = repo.applicationName();
+    String released = DeploymentIdentifiers.requireApplicationName(applicationName);
+    DeploymentIdentifiers.requireVersion(version);
     worker.submit(
         () -> {
           try {
-            deploy(runId, repo, applicationName, branch, commitSha, causationId);
+            deploy(runId, repo, released, version, packageName, causationId);
           } catch (RuntimeException e) {
             LOG.errorf(
                 e,
-                "The build-succeeded event for %s@%s could not be handled",
-                applicationName,
-                commitSha);
+                "The software-release event for %s@%s could not be handled",
+                released,
+                version);
           }
         });
   }
@@ -840,11 +849,12 @@ public class DeployService implements BuildAnnouncements {
       String apiDocs) {}
 
   /**
-   * One build-succeeded event, start to finish, on the worker thread: read what the repository
-   * declares, bring the catalogue up to date with it, and deploy each place it addresses.
+   * One software-release event, start to finish, on the worker thread: read what the repository
+   * declares at the released tag, bring the catalogue up to date with it, record what each place
+   * was asked for, and deploy it.
    *
    * <p>The spec read comes first because it decides <b>which places exist</b> — there is nothing to
-   * queue until it has answered. A read that fails (the git host is down, the file does not parse)
+   * request or queue until it has answered. A read that fails (the git host is down, the file does not parse)
    * does not guess: the places this repository is already registered in each get a recorded {@code
    * FAILED} deployment naming the cause, and a repository with nothing registered gets nothing,
    * exactly as an unknown repository always has.
@@ -869,64 +879,80 @@ public class DeployService implements BuildAnnouncements {
   private void deploy(
       String runId,
       RepositoryRef repository,
-      String repositoryName,
-      String branch,
-      String commitSha,
+      String releasedName,
+      String version,
+      String packageName,
       UUID causationId) {
     DeploymentSpec spec = null;
     String failure = null;
     try {
-      // The reference, not the name: the git host serves this blob name-addressed when the event
-      // carried the public pair and id-addressed when it did not. Everything after this line takes
-      // the application name instead.
-      spec = specs.read(repository, commitSha);
+      // The reference, not the application: the git host serves this blob under the repository's
+      // own address, and the released version is the REV it is read at — the tag the release
+      // pushed. Everything after this line takes the application name instead.
+      spec = specs.read(repository, version);
     } catch (RuntimeException e) {
       failure = "[deployment spec unreadable: " + e.getMessage() + "]";
       LOG.warnf(
           "Could not read the deployment spec of %s@%s: %s",
-          repositoryName, commitSha, e.getMessage());
+          releasedName, version, e.getMessage());
     }
 
-    String applicationName = applicationName(repositoryName, spec);
+    String applicationName = applicationName(releasedName, spec);
 
     List<Target> targets;
     if (spec == null) {
-      targets = alreadyRegistered(applicationName, branch);
+      targets = alreadyRegistered(applicationName);
     } else {
       try {
-        targets = register(runId, applicationName, branch, commitSha, spec, causationId);
+        targets = register(runId, applicationName, version, spec, causationId);
       } catch (RuntimeException e) {
         // Registration is a local transaction, so this is a bug rather than an outage — and a bug
         // here is exactly the shape that once cost an hour of silence: a fire-and-forget sender,
-        // no row, no signal. It is recorded where an operator looks, in the tiers this repository
+        // no row, no signal. It is recorded where an operator looks, in the tiers this application
         // is already registered in.
-        LOG.errorf(e, "Registration of %s@%s failed", applicationName, branch);
+        LOG.errorf(e, "Registration of %s@%s failed", applicationName, version);
         failure = "[registration failed: " + e.getMessage() + "]";
-        targets = alreadyRegistered(applicationName, branch);
+        targets = alreadyRegistered(applicationName);
       }
     }
 
-    List<String> queued = queue(runId, commitSha, targets, causationId);
+    List<Queued> queued =
+        queue(
+            new Release(runId, repository, applicationName, version, packageName, causationId),
+            targets);
     if (failure != null) {
-      for (int i = 0; i < queued.size(); i++) {
-        finish(queued.get(i), targets.get(i), PdDeploymentStatus.FAILED, failure);
+      for (Queued row : queued) {
+        finish(row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, failure);
       }
       return;
     }
-    for (int i = 0; i < queued.size(); i++) {
-      String deploymentId = queued.get(i);
+    for (Queued row : queued) {
       try {
-        execute(deploymentId, targets.get(i), commitSha);
+        execute(row.deploymentId(), row.target(), version);
       } catch (RuntimeException e) {
-        LOG.errorf(e, "Deployment %s failed unexpectedly", deploymentId);
-        finish(deploymentId, targets.get(i), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
+        LOG.errorf(e, "Deployment %s failed unexpectedly", row.deploymentId());
+        finish(
+            row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
       }
     }
   }
 
   /**
-   * The name this build deploys under: the repository's own, unless the file it carries says
-   * otherwise.
+   * One accepted release, as the values every row it writes needs. It exists so the request and the
+   * deployment are written from one description rather than from eight positional arguments — the
+   * {@link Plan} stance, applied one step earlier.
+   */
+  private record Release(
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String version,
+      String packageName,
+      UUID causationId) {}
+
+  /**
+   * The name this release deploys under: the released package's, unless the file the repository
+   * carries says otherwise.
    *
    * <p>One line, and it is the whole of the {@code application:} key. It sits here rather than in
    * the parser because the parser never knows which repository it is reading for — the {@code
@@ -940,13 +966,13 @@ public class DeployService implements BuildAnnouncements {
    * so what the key adds is the log line below, which puts the claim on the record of every
    * deployment that makes it.
    */
-  static String applicationName(String repositoryName, DeploymentSpec spec) {
-    if (spec == null || spec.application() == null || spec.application().equals(repositoryName)) {
-      return repositoryName;
+  static String applicationName(String releasedName, DeploymentSpec spec) {
+    if (spec == null || spec.application() == null || spec.application().equals(releasedName)) {
+      return releasedName;
     }
     LOG.infof(
-        "The repository %s declares `application: %s`, so it deploys as %s",
-        repositoryName, spec.application(), spec.application());
+        "The release of %s declares `application: %s`, so it deploys as %s",
+        releasedName, spec.application(), spec.application());
     return spec.application();
   }
 
@@ -966,10 +992,32 @@ public class DeployService implements BuildAnnouncements {
         CUTOVER_BUDGET);
   }
 
-  /** The tiers listening to a branch — the topology half of the same read. See {@link #findService}. */
-  private List<PdEnvironment> tiersOnBranch(String branch) {
+  /**
+   * <b>Where a release enters the platform</b> — the topology half of the same read, and the whole
+   * of what replaced branch matching.
+   *
+   * <p>A build used to name a branch, and the tiers listening to that branch were where it went. A
+   * release names no branch — it names a tag — so the tier a version lands in is a property of the
+   * PLATFORM rather than of the thing being deployed. The designated platform environment
+   * ({@code pd_environment.platform}, of which there is exactly one) is that tier: it is already
+   * the row that says which tier this install deploys from, and there is nothing else in this
+   * schema that could answer the question.
+   *
+   * <p><b>Empty is a real answer</b>, not only a fresh-database one: an install can be mid-bootstrap
+   * with no tier designated yet, and a release then registers nothing and deploys nothing rather
+   * than picking a tier at random. That is the same answer {@code registerPlatform} always gave.
+   *
+   * <p><b>A promotion ladder is the follow-up this shape is waiting for</b>, and it is deliberately
+   * not here: a version that entered dev is promoted to the next tier by a decision somebody makes,
+   * which is a deployment REQUEST of its own against another environment — the row this component
+   * now writes. What must not come back is a branch: {@code pd_environment.branch} still exists and
+   * nothing on this path reads it any more.
+   */
+  private List<PdEnvironment> entryTiers() {
     return DbRetry.call(
-        "The tier lookup for " + branch, () -> environments.onBranch(branch), CUTOVER_BUDGET);
+        "The entry-tier lookup",
+        () -> environments.platformEnvironment().map(List::of).orElseGet(List::of),
+        CUTOVER_BUDGET);
   }
 
   /**
@@ -979,8 +1027,7 @@ public class DeployService implements BuildAnnouncements {
   private List<Target> register(
       String runId,
       String applicationName,
-      String branch,
-      String commitSha,
+      String version,
       DeploymentSpec spec,
       UUID causationId) {
     if (!isDeployableName(applicationName)) {
@@ -992,9 +1039,8 @@ public class DeployService implements BuildAnnouncements {
     }
     Optional<LinkedService> known = findService(applicationName);
     return spec.target() == PdDeploymentTarget.PLATFORM
-        ? registerPlatform(applicationName, branch, spec, known, causationId)
-        : registerInEnvironments(
-            runId, applicationName, branch, commitSha, spec, known, causationId);
+        ? registerPlatform(applicationName, spec, known, causationId)
+        : registerInEnvironments(runId, applicationName, version, spec, known, causationId);
   }
 
   /**
@@ -1008,16 +1054,15 @@ public class DeployService implements BuildAnnouncements {
    * through the legacy network and remove — leaving a row that says {@code ACTIVE} about a
    * container that no longer exists. So this refuses, loudly and on the record.
    *
-   * <p>The link set written is the <b>union</b> of what the catalogue already holds and the
-   * environments this branch addresses. A green build on {@code environment/dev} says nothing about
-   * whether the service also belongs in preprod, and the upsert replaces the whole set — so sending
-   * only this branch's environments would silently unlink every other tier.
+   * <p>The link set written is the <b>union</b> of what the catalogue already holds and the entry
+   * tier this release lands in. A release entering dev says nothing about whether the service also
+   * belongs in preprod, and the upsert replaces the whole set — so sending only the entry tier
+   * would silently unlink every other tier a promotion has already reached.
    */
   private List<Target> registerInEnvironments(
       String runId,
       String applicationName,
-      String branch,
-      String commitSha,
+      String version,
       DeploymentSpec spec,
       Optional<LinkedService> known,
       UUID causationId) {
@@ -1030,7 +1075,7 @@ public class DeployService implements BuildAnnouncements {
       recordRejection(
           applicationName,
           runId,
-          commitSha,
+          version,
           "[refused: "
               + applicationName
               + " is a platform service and this commit asks for deployment_target: environment."
@@ -1042,10 +1087,10 @@ public class DeployService implements BuildAnnouncements {
       return List.of();
     }
 
-    List<PdEnvironment> matching = tiersOnBranch(branch);
+    List<PdEnvironment> matching = entryTiers();
     if (matching.isEmpty()) {
-      // No tier listens to this branch: the normal case for every green build on a branch without
-      // an environment. Nothing to link into, so nothing is written.
+      // No tier is designated as the platform's entry tier — a mid-bootstrap install. Nothing to
+      // link into, so nothing is written.
       return List.of();
     }
 
@@ -1129,11 +1174,10 @@ public class DeployService implements BuildAnnouncements {
    */
   private List<Target> registerPlatform(
       String applicationName,
-      String branch,
       DeploymentSpec spec,
       Optional<LinkedService> known,
       UUID causationId) {
-    if (tiersOnBranch(branch).stream().noneMatch(environment -> environment.platform)) {
+    if (entryTiers().isEmpty()) {
       return List.of();
     }
     if (known.isEmpty()) {
@@ -1239,7 +1283,7 @@ public class DeployService implements BuildAnnouncements {
    * intake is fire-and-forget, so the row is the only surface a refusal can surface on.
    */
   private void recordRejection(
-      String applicationName, String runId, String commitSha, String detail, UUID causationId) {
+      String applicationName, String runId, String version, String detail, UUID causationId) {
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
@@ -1249,7 +1293,7 @@ public class DeployService implements BuildAnnouncements {
               rejected.causationId = causationId;
               rejected.applicationName = applicationName;
               rejected.environmentId = null;
-              rejected.commitSha = commitSha;
+              rejected.commitSha = version;
               rejected.runId = runId;
               rejected.status = PdDeploymentStatus.FAILED;
               rejected.detail = detail;
@@ -1266,16 +1310,16 @@ public class DeployService implements BuildAnnouncements {
    * <p>Which is why every target here carries a null {@code healthCmd} and needs nothing better:
    * no container starts off one of them.
    */
-  private List<Target> alreadyRegistered(String applicationName, String branch) {
+  private List<Target> alreadyRegistered(String applicationName) {
     Optional<LinkedService> known = findService(applicationName);
     if (known.isEmpty()) {
       return List.of();
     }
     LinkedService linked = known.get();
     if (linked.service().deploymentTarget == PdDeploymentTarget.PLATFORM) {
-      // The same branch question the deploying path asks, so a spec read that failed records the
-      // failure exactly where a successful one would have deployed.
-      return tiersOnBranch(branch).isEmpty()
+      // The same entry-tier question the deploying path asks, so a spec read that failed records
+      // the failure exactly where a successful one would have deployed.
+      return entryTiers().isEmpty()
           ? List.of()
           : List.of(
               new Target(
@@ -1297,7 +1341,7 @@ public class DeployService implements BuildAnnouncements {
                   null));
     }
     List<Target> targets = new ArrayList<>();
-    for (PdEnvironment environment : tiersOnBranch(branch)) {
+    for (PdEnvironment environment : entryTiers()) {
       if (linked.environmentIds().contains(environment.id)) {
         targets.add(
             new Target(
@@ -1323,7 +1367,17 @@ public class DeployService implements BuildAnnouncements {
   }
 
   /**
-   * Write one {@code QUEUED} row per place this build deploys to.
+   * Write one deployment REQUEST per place this release addresses, answer the quality gate, and —
+   * where it is met — write the {@code QUEUED} deployment row the request hands off to.
+   *
+   * <p><b>The request and the deployment are written in ONE transaction, and the gate is answered
+   * between them.</b> That ordering is the model in miniature: the platform records what was asked
+   * for, something decides, and only a {@link PdQualityGate#MET} answer produces an execution row —
+   * which the request then points at. Today the decision is {@link #gate}, a placeholder that says
+   * yes to everything, so the two rows always come in pairs; the day a real gate says no, the
+   * request stands with no {@code deployment_id} and this loop simply queues nothing for it. One
+   * transaction rather than two because a request with a settled gate and no deployment must mean
+   * "refused", never "the process died in between".
    *
    * <p><b>Deliberately not retried</b>, and it is the same answer for {@link #recordRejection}, the
    * {@code STARTING} transition and the platform conversion. They INSERT or move rows, so a commit
@@ -1334,11 +1388,10 @@ public class DeployService implements BuildAnnouncements {
    * row that admits it.
    *
    * <p>Each created row is announced as {@code DeploymentQueued} <b>after the transaction
-   * commits</b>, so a consumer that reads the deployment back finds it. One event per row: a build
-   * addressing three tiers queues three deployments and says so three times.
+   * commits</b>, so a consumer that reads the deployment back finds it. One event per row: a
+   * release addressing three tiers queues three deployments and says so three times.
    */
-  private List<String> queue(
-      String runId, String commitSha, List<Target> targets, UUID causationId) {
+  private List<Queued> queue(Release release, List<Target> targets) {
     if (targets.isEmpty()) {
       return List.of();
     }
@@ -1348,21 +1401,87 @@ public class DeployService implements BuildAnnouncements {
                 () -> {
                   List<Queued> queued = new ArrayList<>();
                   for (Target target : targets) {
-                    queued.add(persistQueued(runId, commitSha, target, causationId));
+                    PdDeploymentRequest request = persistRequest(release, target);
+                    Gate verdict = gate(release, target);
+                    request.qualityGate = verdict.state();
+                    request.gateDetail = verdict.detail();
+                    request.gateSettledAt = Instant.now();
+                    if (verdict.state() != PdQualityGate.MET) {
+                      LOG.warnf(
+                          "The quality gate refused %s@%s for %s: %s",
+                          release.applicationName(),
+                          release.version(),
+                          target.environmentName() == null
+                              ? "the platform"
+                              : target.environmentName(),
+                          verdict.detail());
+                      continue;
+                    }
+                    Queued row = persistQueued(release, target);
+                    request.deploymentId = row.deploymentId();
+                    queued.add(row);
                   }
                   return queued;
                 });
     for (Queued row : rows) {
-      announceQueued(row, runId, commitSha, causationId);
+      announceQueued(row, release.runId(), release.version(), release.causationId());
     }
-    return rows.stream().map(Queued::deploymentId).toList();
+    return rows;
+  }
+
+  /**
+   * What the quality gate said. A record rather than a boolean because the detail is the whole
+   * value of a refusal — a request that says {@code UNMET} and nothing else tells an operator
+   * nothing.
+   */
+  private record Gate(PdQualityGate state, String detail) {}
+
+  /**
+   * <b>The placeholder quality gate: everything passes, immediately.</b>
+   *
+   * <p>It is a method rather than an absence on purpose. A released version has already been
+   * through qits-ci's pipeline and this component has nothing further to ask today, so the honest
+   * implementation is one line — but the SHAPE has to exist before a real gate does, or the first
+   * one arrives as a change to the transaction that queues deployments rather than as a change to
+   * this method. Whatever asks a question later (a userflow suite against the tier, a manual
+   * approval, a soak window on the version already there) answers here, and {@link #queue} already
+   * does the right thing with a no.
+   *
+   * <p>It takes the release and the target because a real gate is about a (version, place) pair —
+   * the same version may be waved into dev and held out of prod — and a signature that could not
+   * express that would have to change on the day it mattered.
+   */
+  private Gate gate(Release release, Target target) {
+    return new Gate(PdQualityGate.MET, null);
   }
 
   /** A queued row, and the facts its announcement needs, carried out of the transaction. */
   private record Queued(String deploymentId, Target target, Instant queuedAt) {}
 
+  /**
+   * One deployment request. Inside {@link #queue}'s transaction, never on its own — the gate's
+   * answer and the deployment it hands off to are written in the same bracket.
+   */
+  private PdDeploymentRequest persistRequest(Release release, Target target) {
+    PdDeploymentRequest request = new PdDeploymentRequest();
+    request.id = UUID.randomUUID().toString();
+    // Set EXPLICITLY, for the reason every row this component writes on the worker is: the
+    // CausationStamp listener reads a ThreadLocal the queue hop already left behind.
+    request.causationId = release.causationId();
+    request.applicationName = target.applicationName();
+    request.version = release.version();
+    request.environmentId = target.environmentId();
+    request.packageName = release.packageName();
+    request.repoId = release.repository() == null ? null : release.repository().repoId();
+    request.projectId = release.repository() == null ? null : release.repository().projectId();
+    request.qualityGate = PdQualityGate.UNMET;
+    request.createdAt = Instant.now();
+    requests.persist(request);
+    return request;
+  }
+
   /** One {@code QUEUED} row. Inside {@link #queue}'s transaction, never on its own. */
-  private Queued persistQueued(String runId, String commitSha, Target target, UUID causationId) {
+  private Queued persistQueued(Release release, Target target) {
     PdDeployment deployment = new PdDeployment();
     deployment.id = UUID.randomUUID().toString();
     // The generic causation column, set EXPLICITLY. This runs on pd-deploy-worker, behind the
@@ -1370,11 +1489,14 @@ public class DeployService implements BuildAnnouncements {
     // null here and record a decision nobody made. An author-set value is what the stamp yields to.
     // Every row of one event shares it — one build going green is one cause, however many tiers it
     // fans out over.
-    deployment.causationId = causationId;
+    deployment.causationId = release.causationId();
     deployment.applicationName = target.applicationName();
     deployment.environmentId = target.environmentId();
-    deployment.commitSha = commitSha;
-    deployment.runId = runId;
+    // The released coordinate. It is what the image is tagged with and what the deployment is
+    // identified by from here on; the column still carries the ancestor's name, which the version
+    // task moves off.
+    deployment.commitSha = release.version();
+    deployment.runId = release.runId();
     deployment.status = PdDeploymentStatus.QUEUED;
     deployment.createdAt = Instant.now();
     // The routing snapshot, written where the deployment is written. It is the spec's, and V3's

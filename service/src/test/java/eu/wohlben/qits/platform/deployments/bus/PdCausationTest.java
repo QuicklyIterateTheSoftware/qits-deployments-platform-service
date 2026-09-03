@@ -46,12 +46,12 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class PdCausationTest {
 
-  private static final String SHA = "c".repeat(40);
+  private static final String VERSION = "2026.903.193059";
 
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject DeployService deployService;
-  @Inject PdBuildSuccessfulSubscriber subscriber;
+  @Inject PdSoftwareReleaseSubscriber subscriber;
   @Inject PdDeploymentRepository deployments;
   @Inject PdServiceRepository services;
   @Inject PdEnvironmentRepository environments;
@@ -64,11 +64,10 @@ public class PdCausationTest {
 
   @Test
   public void aBusEventLeavesItsIdOnEveryRowItCaused() {
-    createEnvironment("cause-bus", "environment/cause-bus", null);
+    createEnvironment("cause-bus", null);
     String eventId = UUID.randomUUID().toString();
 
-    subscriber.onFrame(
-        frame(eventId, Instant.now(), "repo-cause-bus", "environment/cause-bus", SHA));
+    subscriber.onFrame(frame(eventId, "repo-cause-bus"));
     awaitApplied(1);
 
     assertEquals(
@@ -85,10 +84,9 @@ public class PdCausationTest {
   public void anEventIdThatIsNotAUuidCostsTheEdgeAndNothingElse() {
     // Causation is advisory. A frame whose id this component cannot read as a UUID still deploys —
     // refusing a green build over a trace column would be the one failure this must never cause.
-    createEnvironment("cause-odd", "environment/cause-odd", null);
+    createEnvironment("cause-odd", null);
 
-    subscriber.onFrame(
-        frame("not-a-uuid", Instant.now(), "repo-cause-odd", "environment/cause-odd", SHA));
+    subscriber.onFrame(frame("not-a-uuid", "repo-cause-odd"));
     awaitApplied(1);
 
     assertNull(causeOfDeployment("repo-cause-odd"));
@@ -98,7 +96,7 @@ public class PdCausationTest {
   public void theHttpIntakeRecordsTheCauseTheCallerWasActingUnder() {
     // The other door, and the only place the restored scope can be read: on the request thread,
     // before announce() hands the event to the worker.
-    createEnvironment("cause-http", "environment/cause-http", null);
+    createEnvironment("cause-http", null);
     String cause = UUID.randomUUID().toString();
 
     given()
@@ -106,16 +104,11 @@ public class PdCausationTest {
         .header(CausationHeader.NAME, cause)
         .body(
             Map.of(
-                "runId",
-                "run-cause",
-                "repoId",
-                "repo-cause-http",
-                "branch",
-                "environment/cause-http",
-                "commitSha",
-                SHA))
+                "runId", "run-cause",
+                "repoId", "repo-cause-http",
+                "version", VERSION))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
     awaitApplied(1);
@@ -126,22 +119,17 @@ public class PdCausationTest {
   @Test
   public void aBootstrapPostWithNoHeaderIsARootlessDeployment() {
     // Absent is a real answer, not a gap: nothing on the bus caused a hand-made POST.
-    createEnvironment("cause-none", "environment/cause-none", null);
+    createEnvironment("cause-none", null);
 
     given()
         .contentType(ContentType.JSON)
         .body(
             Map.of(
-                "runId",
-                "run-cause",
-                "repoId",
-                "repo-cause-none",
-                "branch",
-                "environment/cause-none",
-                "commitSha",
-                SHA))
+                "runId", "run-cause",
+                "repoId", "repo-cause-none",
+                "version", VERSION))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
     awaitApplied(1);
@@ -156,27 +144,26 @@ public class PdCausationTest {
     // CausationServerFilter restored out of the header.
     String cause = UUID.randomUUID().toString();
 
-    createEnvironment("cause-tier", "environment/cause-tier", cause);
+    createEnvironment("cause-tier", cause);
 
     assertEquals(UUID.fromString(cause), causeOfEnvironment("cause-tier"));
   }
 
   @Test
   public void aTierCreatedByHandIsRootless() {
-    createEnvironment("cause-bare", "environment/cause-bare", null);
+    createEnvironment("cause-bare", null);
 
     assertNull(causeOfEnvironment("cause-bare"));
   }
 
   // --- helpers ----------------------------------------------------------------------------------
 
-  private static EventFrame frame(
-      String id, Instant occurredAt, String repoId, String branch, String sha) {
+  private static EventFrame frame(String id, String application) {
     String payload =
-        ("{\"branch\":\"%s\",\"commitSha\":\"%s\",\"finishedAt\":\"%s\",\"repoId\":\"%s\","
-                + "\"runId\":\"run-cause\"}")
-            .formatted(branch, sha, occurredAt, repoId);
-    return new EventFrame(id, "BuildSuccessful", occurredAt, payload, null, null, null);
+        ("{\"packageName\":\"qits/%s\",\"packageType\":\"docker\",\"repoId\":\"repo-cause\","
+                + "\"repository\":\"repo-cause\",\"version\":\"%s\"}")
+            .formatted(application, VERSION);
+    return new EventFrame(id, "SoftwareRelease", Instant.now(), payload, null, null, null);
   }
 
   /** Null-safe on purpose: the assertion should read the column, not a NoSuchElement. */
@@ -213,9 +200,10 @@ public class PdCausationTest {
             });
   }
 
-  private void createEnvironment(String name, String branch, String cause) {
+  /** The entry tier: a release lands in the designated platform environment, so every tier here is one. */
+  private void createEnvironment(String name, String cause) {
     var request =
-        given().contentType(ContentType.JSON).body(Map.of("name", name, "branch", branch, "platform", false));
+        given().contentType(ContentType.JSON).body(Map.of("name", name, "platform", true));
     if (cause != null) {
       request = request.header(CausationHeader.NAME, cause);
     }

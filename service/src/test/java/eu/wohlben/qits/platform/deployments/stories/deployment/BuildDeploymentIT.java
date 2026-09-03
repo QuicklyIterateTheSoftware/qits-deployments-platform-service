@@ -91,9 +91,9 @@ public class BuildDeploymentIT {
   static final String UNPUBLISHED_REPO_ID = "story-unpublished-storage-id";
 
   /** Literal commits. A sha IS generated, so the labels carrying one are template-shaped. */
-  public static final String FIRST_SHA = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
-  public static final String SECOND_SHA = "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3";
-  static final String UNPUBLISHED_SHA = "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4";
+  public static final String FIRST_VERSION = "2026.903.104";
+  public static final String SECOND_VERSION = "2026.903.105";
+  static final String UNPUBLISHED_VERSION = "2026.903.106";
 
   /** What the orchestrator calls this application's service — and what peers dial it by. */
   static final String WEB_SERVICE = StoryTarget.wireAlias(WEB);
@@ -152,18 +152,18 @@ public class BuildDeploymentIT {
 
     StoryIdentities.bearer(given(), bearer)
         .contentType(ContentType.JSON)
-        .body(buildSucceeded("run-story-web-1", WEB_REPO_ID, WEB, FIRST_SHA))
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+        .body(softwareReleased("run-story-web-1", WEB_REPO_ID, WEB, FIRST_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(202);
     story
         .note(
-            "qits-ci announces one green build of " + WEB + " on " + StoryTarget.TIER_BRANCH
+            "qits-ci announces one release of " + WEB + " into " + StoryTarget.TIER
                 + " and gets 202 — the sender never learns what came of it, which is why every"
                 + " outcome below has to be a row")
         .as("build-announced");
 
-    JsonNode row = StoryPlatform.awaitSettled(WEB, FIRST_SHA);
+    JsonNode row = StoryPlatform.awaitSettled(WEB, FIRST_VERSION);
     assertEquals("ACTIVE", row.path("status").asText(), "the deployment did not go live: " + row);
     assertEquals(
         WEB_SERVICE,
@@ -191,7 +191,7 @@ public class BuildDeploymentIT {
         StorySwarm.flagValue(argv, "--update-order"),
         "the repository's update_order never reached the orchestrator: " + argv);
     assertEquals(
-        StoryTarget.imageRef(WEB, FIRST_SHA),
+        StoryTarget.imageRef(WEB, FIRST_VERSION),
         argv.getLast(),
         "the service was not created at the image this commit derives: " + argv);
     story
@@ -205,7 +205,7 @@ public class BuildDeploymentIT {
         .get(StoryTarget.DEPLOYMENTS_PATH + "?environmentId=" + StoryPlatform.tierId())
         .then()
         .statusCode(200)
-        .body("deployments.commitSha", hasItem(FIRST_SHA));
+        .body("deployments.commitSha", hasItem(FIRST_VERSION));
     story
         .note(
             "and an operator reads the whole attempt back on the tier's own listing — the only"
@@ -247,13 +247,13 @@ public class BuildDeploymentIT {
 
     StoryIdentities.bearer(given(), bearer)
         .contentType(ContentType.JSON)
-        .body(buildSucceeded("run-story-web-2", WEB_REPO_ID, WEB, SECOND_SHA))
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+        .body(softwareReleased("run-story-web-2", WEB_REPO_ID, WEB, SECOND_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(202);
     story.note("a second green build of " + WEB + ", at a different commit").as("second-build");
 
-    JsonNode row = StoryPlatform.awaitSettled(WEB, SECOND_SHA);
+    JsonNode row = StoryPlatform.awaitSettled(WEB, SECOND_VERSION);
     assertEquals("ACTIVE", row.path("status").asText(), "the replace did not go live: " + row);
     assertEquals(
         WEB_SERVICE,
@@ -275,7 +275,7 @@ public class BuildDeploymentIT {
 
     List<String> argv = StorySwarm.argvOf("service update " + WEB_SERVICE);
     assertEquals(
-        StoryTarget.imageRef(WEB, SECOND_SHA),
+        StoryTarget.imageRef(WEB, SECOND_VERSION),
         StorySwarm.flagValue(argv, "--image"),
         "the update did not carry this commit's image: " + argv);
     assertFalse(
@@ -328,16 +328,16 @@ public class BuildDeploymentIT {
     StoryIdentities.bearer(given(), bearer)
         .contentType(ContentType.JSON)
         .body(
-            buildSucceeded(
-                "run-story-unpublished-1", UNPUBLISHED_REPO_ID, UNPUBLISHED, UNPUBLISHED_SHA))
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+            softwareReleased(
+                "run-story-unpublished-1", UNPUBLISHED_REPO_ID, UNPUBLISHED, UNPUBLISHED_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(202);
     story
         .note("a green build of " + UNPUBLISHED + ", whose pipeline published no image")
         .as("build-announced");
 
-    JsonNode row = StoryPlatform.awaitSettled(UNPUBLISHED, UNPUBLISHED_SHA);
+    JsonNode row = StoryPlatform.awaitSettled(UNPUBLISHED, UNPUBLISHED_VERSION);
     assertEquals(
         "IMAGE_MISSING",
         row.path("status").asText(),
@@ -382,15 +382,14 @@ public class BuildDeploymentIT {
    * pin. {@code repoId} is the opaque storage key and travels beside them; it reaches only the
    * git host's id-addressed fallback, which is why it never appears in a label here.
    */
-  private static Map<String, Object> buildSucceeded(
-      String runId, String repoId, String repoName, String sha) {
+  private static Map<String, Object> softwareReleased(
+      String runId, String repoId, String repoName, String version) {
     return Map.of(
         "runId", runId,
         "repoId", repoId,
         "projectId", StoryTarget.PROJECT,
         "repoName", repoName,
-        "branch", StoryTarget.TIER_BRANCH,
-        "commitSha", sha);
+        "version", version);
   }
 
   @AfterAll
@@ -402,13 +401,13 @@ public class BuildDeploymentIT {
       ReportAssertions.assertStepId(CATEGORY, CREATED_SLUG, step);
     }
     intake(CREATED_SLUG);
-    peer(CREATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, FIRST_SHA, 200));
+    peer(CREATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, FIRST_VERSION, 200));
     // The configuration read, and NOT the mint that authorised it: quarkus-oidc-client caches the
     // token, so the POST /idp/token arrow belongs to whichever deployment found the cache cold —
     // stories.configuration's first, in a full run. See StoryPeers on why that is the deployer's own
     // property rather than the stand-in's.
     peer(CREATED_SLUG, StoryPeers.CONFIGURATION, StoryPeers.resolvedLabel(WEB, 200));
-    for (String call : StorySwarm.createCalls(WEB_SERVICE, WEB, FIRST_SHA)) {
+    for (String call : StorySwarm.createCalls(WEB_SERVICE, WEB, FIRST_VERSION)) {
       swarm(CREATED_SLUG, call);
     }
     operatorRead(CREATED_SLUG);
@@ -434,9 +433,9 @@ public class BuildDeploymentIT {
       ReportAssertions.assertStepId(CATEGORY, UPDATED_SLUG, step);
     }
     intake(UPDATED_SLUG);
-    peer(UPDATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, SECOND_SHA, 200));
+    peer(UPDATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, SECOND_VERSION, 200));
     peer(UPDATED_SLUG, StoryPeers.CONFIGURATION, StoryPeers.resolvedLabel(WEB, 200));
-    for (String call : StorySwarm.updateCalls(WEB_SERVICE, WEB, SECOND_SHA)) {
+    for (String call : StorySwarm.updateCalls(WEB_SERVICE, WEB, SECOND_VERSION)) {
       swarm(UPDATED_SLUG, call);
     }
     operatorRead(UPDATED_SLUG);
@@ -458,10 +457,10 @@ public class BuildDeploymentIT {
     peer(
         UNPUBLISHED_SLUG,
         StoryPeers.GIT_HOST,
-        StoryPeers.specLabel(UNPUBLISHED, UNPUBLISHED_SHA, 200));
+        StoryPeers.specLabel(UNPUBLISHED, UNPUBLISHED_VERSION, 200));
     swarm(
         UNPUBLISHED_SLUG,
-        StorySwarm.label("pull " + templated(UNPUBLISHED, UNPUBLISHED_SHA), "1"));
+        StorySwarm.label("pull " + templated(UNPUBLISHED, UNPUBLISHED_VERSION), "1"));
     operatorRead(UNPUBLISHED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, UNPUBLISHED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
@@ -495,7 +494,7 @@ public class BuildDeploymentIT {
         NetworkEdge.HTTP,
         StoryIdentities.CI,
         StoryTarget.SERVICE,
-        "POST " + StoryTarget.BUILD_SUCCEEDED_PATH + " -> 202");
+        "POST " + StoryTarget.SOFTWARE_RELEASED_PATH + " -> 202");
   }
 
   private static void operatorRead(String slug) {

@@ -40,7 +40,7 @@ import java.util.Set;
  *
  * <h2>Waiting is a poll of the read surface, never a sleep</h2>
  *
- * <p>A build-succeeded event is handled whole on {@code pd-deploy-worker} — spec read, registration,
+ * <p>A software-release event is handled whole on {@code pd-deploy-worker} — spec read, registration,
  * queueing, the orchestrator, the cutover — and the intake returns 202 the moment it is queued. So
  * "the deployment finished" is only observable through the rows, which is also how a caller
  * experiences this service. {@link #awaitSettled} polls until the row for one (application, commit)
@@ -98,9 +98,7 @@ public final class StoryPlatform {
                       HttpRequest.BodyPublishers.ofString(
                           "{\"name\":\""
                               + StoryTarget.TIER
-                              + "\",\"branch\":\""
-                              + StoryTarget.TIER_BRANCH
-                              + "\"}",
+                              + "\",\"platform\":true}",
                           StandardCharsets.UTF_8))
                   .build(),
               201,

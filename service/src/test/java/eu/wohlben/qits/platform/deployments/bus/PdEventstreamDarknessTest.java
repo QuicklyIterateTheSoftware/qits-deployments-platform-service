@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
  * and page a log nobody answers, once every thirty seconds — which reads as slowness rather than as
  * misconfiguration.
  *
- * <p><b>The subscriber bean survives ArC.</b> {@link PdBuildSuccessfulSubscriber} is injected
+ * <p><b>The subscriber bean survives ArC.</b> {@link PdSoftwareReleaseSubscriber} is injected
  * nowhere by name in the shipped code — it is reached only through {@code
  * Instance<QitsDurableEventListener>} — and unused-bean removal would leave a deployment that
  * subscribes to nothing, consumes nothing and says nothing to admit it. An {@code Instance}
@@ -68,9 +68,10 @@ public class PdEventstreamDarknessTest {
     EventFrame frame =
         new EventFrame(
             UUID.randomUUID().toString(),
-            "BuildSuccessful",
+            "SoftwareRelease",
             Instant.now(),
-            "{\"branch\":\"main\",\"commitSha\":\"" + "c".repeat(40) + "\",\"repoId\":\"repo-dark\"}",
+            "{\"packageName\":\"qits/repo-dark\",\"packageType\":\"docker\","
+                + "\"repoId\":\"repo-dark\",\"version\":\"2026.903.193059\"}",
             null,
             null, null);
 
@@ -85,13 +86,13 @@ public class PdEventstreamDarknessTest {
   public void theSubscriberIsARegisteredDurableBean() {
     assertTrue(
         StreamSupport.stream(durableListeners.spliterator(), false)
-            .anyMatch(PdBuildSuccessfulSubscriber.class::isInstance),
+            .anyMatch(PdSoftwareReleaseSubscriber.class::isInstance),
         "the subscriber must survive unused-bean removal, or nothing consumes the bus");
   }
 
   private QitsDurableEventListener theSubscriber() {
     return StreamSupport.stream(durableListeners.spliterator(), false)
-        .filter(PdBuildSuccessfulSubscriber.class::isInstance)
+        .filter(PdSoftwareReleaseSubscriber.class::isInstance)
         .findFirst()
         .orElseThrow();
   }

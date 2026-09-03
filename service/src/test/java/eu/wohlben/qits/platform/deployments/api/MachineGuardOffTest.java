@@ -25,11 +25,10 @@ class MachineGuardOffTest {
         .contentType(ContentType.JSON)
         .body(
             """
-            {"repoId":"unguarded-repo","branch":"main",
-             "commitSha":"b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"}
+            {"repoId":"unguarded-repo","version":"2026.903.193059"}
             """)
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }

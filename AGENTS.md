@@ -74,8 +74,9 @@ Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
   `RollbackPins`, `DeploymentSpecParser`, `DeploymentIdentifiers` (what only reaches an argv),
   `ImageRefs`, `ContainerNames`, `PdProcess`, `ResourceProvisioning` and `BootResourceRegistration`,
   and the four seams `DeploymentDriver` / `SpecSource` / `ResourceProvisioner` /
-  `DeploymentExtrasSource` plus the announcement port `BuildAnnouncements` and the ordering collapse
-  `BuildTips` behind it, and the outgoing port `DeployAnnouncer`.
+  `DeploymentExtrasSource` plus the announcement port `ReleaseAnnouncements` and the ordering
+  collapse `ReleaseTips` behind it (with `Versions` and `PackageNames`), and the outgoing port
+  `DeployAnnouncer`.
 - **`deployments-events/`** (`…deployments.events.*`) — the event VOCABULARY: four plain records
   over `qits-eventstream` and nothing else, not even quarkus-arc. It is a module rather than a
   package because a vocabulary is what a *consumer* needs: the day another service listens for
@@ -85,7 +86,7 @@ Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
 - **`service/`** (`…api`, `…bus`, `…swarmhost`, `…githost`, `…pghost`, `…confighost`) — the
   adapters. `confighost` is the youngest and is the one that presents a credential: it reads
   qits-configuration's resolved extras and holds the named oidc client that does it. `bus` is the
-  event-bus half: the durable `BuildSuccessful` subscriber, the `DeployEventAnnouncer` that
+  event-bus half: the durable `SoftwareRelease` subscriber, the `DeployEventAnnouncer` that
   publishes this component's own four events, and the native-image registration for what the
   library's own `ObjectMapper` binds. Identity is not a package here: the forward-auth pair
   lives in the published `qits-auth-core`.
@@ -155,7 +156,7 @@ request context hides it. `PdDeploymentFlowTest` is what catches it.
 
 ## The worker
 
-`DeployService` runs **the whole of a build-succeeded event** on a single-threaded daemon worker
+`DeployService` runs **the whole of a software-release event** on a single-threaded daemon worker
 (`pd-deploy-worker`), the `CiRunService` shape: the intake validates and returns, each DB transition
 sits in its own `QuarkusTransaction.requiringNew()` bracket, and everything the docker calls need is
 copied out of the entities into a plain `Plan` record first.
@@ -244,8 +245,8 @@ commit that adds it; no write ever joins it** — a write's patience lives one l
 It is a bean the controllers call rather than a wrap inside `ServiceCatalog`/`EnvironmentService`,
 and the reason is that those reads have callers that must not sleep. `ServiceCatalog.delete` calls
 `require`, `allApplications` calls `list`, `EnvironmentService`'s `update`/`delete` call `require`,
-and `BuildTips` calls `onBranch` from inside two `requiringNew` brackets — one of them under
-`claim`'s `synchronized`. A retry inside the read would sleep holding a transaction, and there
+and `ReleaseTips` reads the request rows from inside a `requiringNew` bracket under `claim`'s
+`synchronized`. A retry inside the read would sleep holding a transaction, and there
 holding a monitor. The worker's own reads are already wrapped at `CUTOVER_BUDGET`, so a wrap inside
 would nest one budget in the other. (`ServiceCatalog.upsert` is `synchronized` as well, but it is a
 write and no read shares its monitor.) `PdReadPatienceTest` holds both halves — recovered after one
@@ -906,7 +907,7 @@ carries a `@RolesAllowed`, and there are exactly two roles:
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
 | `qits-platform:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
-| `qits-platform:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the build-succeeded intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all |
+| `qits-platform:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all |
 
 The two sets do not overlap and must not. A machine token never carries `qits-platform:admin`, so
 the read surface is a person's; a browser session never carries `qits-platform:system`, so the
@@ -933,7 +934,8 @@ minted by a client with no `.roles` line authenticates and is refused **403** by
 call with no credential at all is 401. `MachineGuardEnforcedTest` pins all three.
 
 The intake path is a **cross-repo contract**: qits-ci POSTs
-`/platform-deployments/api/events/build-succeeded` fire-and-forget. A mismatch raises no error
+`/platform-deployments/api/events/software-released` fire-and-forget (and the bus is the ordinary
+door). A mismatch raises no error
 anywhere. Move one, move both.
 
 **A new machine surface outside `/platform-deployments` needs a line in
@@ -958,51 +960,95 @@ The segment is spelled in four places that move together, all of them in this re
 `PdPackagedSurfaceIT` probes the served base href, the scoped deep link, and `/platform-deployments/`
 answering 404 rather than a second copy of the client.
 
-## The event side: two doors, one seam
+## The event side: a RELEASE is the only trigger
 
-`BuildAnnouncements` in `deployments/control` is the seam for what comes IN, and **wave 3 has
-landed**, so there are two ways in. (What goes OUT is `DeployAnnouncer`, below.) Neither wins: both call `announce`, and everything after it — the spec read, derived
-registration, the queue, the health-gated cutover — cannot tell them apart.
+**A green build deploys nothing any more.** `ReleaseAnnouncements` in `deployments/control` is the
+seam for what comes IN, and what comes in is a released version: qits-ci minted a CalVer stamp,
+pushed the tag, published `qits/<app>:<version>`, and announced it. `BuildAnnouncements`, `BuildTips`
+and `bus/PdBuildSuccessfulSubscriber` are **deleted**, not dormant — two doors keyed on two
+coordinates would deploy one application twice and race each other's cutover. (What goes OUT is
+`DeployAnnouncer`, below.)
 
-- **`POST /platform-deployments/api/events/build-succeeded`** (`api/PdEventController`), payload
-  shape the ancestor's, unchanged. It is the **manual and bootstrap** door: an operator replays a
-  lost event through it, and it is the only one that works before qits-events exists. Nobody retries
-  it.
-- **The bus** (`bus/PdBuildSuccessfulSubscriber`), a `QitsDurableEventListener` on qits-ci's
-  `BuildSuccessful`. The publisher retries it, the log replays it after a cutover, and the library
+- **The bus** (`bus/PdSoftwareReleaseSubscriber`), a `QitsDurableEventListener` on qits-ci's
+  `SoftwareRelease`. The publisher retries it, the log replays it after a cutover, and the library
   hands it over exactly once per event whichever channel delivered it.
+- **`POST /platform-deployments/api/events/software-released`** (`api/PdEventController`). The
+  **manual and bootstrap** door: a bootstrap replays a lost release, an operator redeploys a version
+  or deliberately goes back one, and it is the only one that works before qits-events exists. Nobody
+  retries it. `/events/build-succeeded` is **gone** and 404s.
 
-Three things about the subscriber that are the whole of what a durable consumer owes:
+Five things about the subscriber that are the whole of what a durable consumer owes:
 
-- **`consumerId()` is `pd-build-succeeded`, and it is storage.** It keys `consumed_event` and
-  `consumer_watermark`. Changing it makes a brand-new consumer: the old claims are orphaned and the
-  new id initializes at the head of the log, silently skipping everything in between. It is a string
-  a person chose so it survives the class being renamed. `PdBusBuildIntakeTest` pins it.
-- **Ordering is ours and is not optional.** Catch-up delivers late, so a *different, older* build can
-  arrive after a newer one is deployed — a rollback nobody asked for. `BuildTips` collapses to the
-  tip and the class javadoc argues the two answers it takes: what THIS PROCESS announced (a build's
-  own finish time against a build's own finish time, exact, and what lets two builds seconds apart
-  both deploy), and, only when that knows nothing, the **newest deployment row** for the tiers
-  listening to that branch (the cross-restart floor). Combining them the other way round is the
-  mistake: a row is stamped when it is written, minutes after the build it describes, so comparing
-  an arriving build against one skips builds that are genuinely newer. Duplicates need nothing —
-  the library already makes the same event id impossible twice.
+- **Only `packageType: "docker"` is even looked at.** One release publishes a jar, an npm package, a
+  docs bundle and an image as four events; only the image names something this component can put
+  live, so `selects` answers false to the rest and they are stored nowhere at all.
+- **The application name comes out of `packageName`, not out of a repository.** A `SoftwareRelease`
+  carries `repoId`, `repository` (the same string) and an optional `projectId`, and **no repository
+  name at all**. What it carries is the package, registry-unqualified — `qits/qits-ci` — and
+  `PackageNames.applicationOf` takes the last segment. The repository travels beside it
+  **id-addressed** (`RepositoryRef(repoId, projectId, null)`), for the spec read alone. `projectId`
+  is identity enrichment and never a key: absent is tolerated and deploys identically.
+- **`consumerId()` is `pd-software-released`, and it is storage.** Deliberately a NEW id rather than
+  the retired `pd-build-succeeded` renamed — the old ledger is a watermark measured in
+  `BuildSuccessful` rows and says nothing about this consumer's work — and **`replayFromEpoch()`
+  returns `false` explicitly**, so the consumer initializes at the HEAD of the log. That override is
+  a statement rather than a change: replaying from the epoch would, on the first boot after this
+  ships, redeploy the platform's whole release history in log order. `PdBusReleaseIntakeTest` pins
+  both.
+- **Ordering is ours and is not optional.** Catch-up delivers late, so a *different, older* release
+  can arrive after a newer one is live — a rollback nobody asked for. `ReleaseTips` collapses to the
+  tip, per application, and takes two answers: what THIS PROCESS announced (a map, exact), and, only
+  when that knows nothing, the **newest deployment REQUEST row** for that application (the
+  cross-restart floor). The request rather than the deployment, because a request is written the
+  moment a release is accepted — there is no minutes-later skew to reason about, and both sides of
+  the comparison are version strings. **`Versions` compares them segment by segment, numerically**,
+  and that is load-bearing: the stamp is unpadded, so `2026.731.193059` (19:30) sorts BEFORE
+  `2026.731.93059` (09:30) as text and a lexical comparison would read the later release as the
+  older one. Duplicates need nothing — the library already makes the same event id impossible twice.
 - **A throw leaves the event owed forever.** It is offered again on every sweep and the watermark
   stays behind it, so one poison event stops this consumer's catch-up. So the handler **swallows
-  what retrying cannot fix** — an unreadable payload, a payload with no triple, an identifier
+  what retrying cannot fix** — an unreadable payload, a package naming no application, an identifier
   `DeploymentIdentifiers` refuses — each with a WARN, and throws only what a next attempt could
   succeed at.
 
 **Two facts about the transaction the handler runs in.** It is the library's claim transaction, on
 the `eventstream` datasource — so every read of *this* component's database inside it takes a
 `QuarkusTransaction.requiringNew()` of its own (two non-XA resources in one transaction is a thing
-Narayana refuses), which is what `BuildTips` does. And `announce` returns as soon as the event is
-queued, which it must: the handler is holding that transaction open while it runs.
+Narayana refuses), which is what `ReleaseTips` does. And `announce` returns as soon as the release
+is queued, which it must: the handler is holding that transaction open while it runs.
 
-**qits-ci's direct POST is still live and is meant to be retired** once the subscriber is proven on
-a real platform (the superproject's `event-delivery-guarantees-plan.md`, work package 6). Until then
-both doors deliver every green build, which is two deployments of one commit — the same thing two
-POSTs always were, and the cutover absorbs it.
+### The deployment REQUEST, and the gate in front of the queue
+
+`pd_deployment_request` (V6) is the row a release writes **before** anything is queued: application,
+version, environment (null is the platform plane), the package and repository it came from, the
+quality gate and its detail, and — once the gate is met — the `deployment_id` it handed off to.
+
+- **The request points at the deployment, never the reverse.** The request is the cause and is
+  written first, so it cannot hold a key to a row that does not exist yet, and `pd_deployment` keeps
+  the exact shape every existing reader of it has.
+- **Both rows are written in ONE transaction, with the gate answered between them.** A request with
+  a settled gate and no `deployment_id` therefore means *refused*, never "the process died in
+  between".
+- **`DeployService.gate` is a placeholder that says yes to everything**, and `PdQualityGate.UNMET`
+  is unwritten today. That is the point of both existing now: the shape has to be in the schema and
+  in the queueing transaction before a real gate has an opinion, or the first one arrives as a
+  migration over live history. Whatever asks a question later answers in that one method — it takes
+  the release AND the target, because a real gate is about a (version, place) pair.
+
+### Where a release lands: the ENTRY TIER, not a branch
+
+**Branch matching is gone from the intake path.** A release names a tag, not a branch, so the tier a
+version enters is a property of the platform: `DeployService.entryTiers()` answers with the
+**designated platform environment** (`pd_environment.platform`, of which there is exactly one), and
+that is the whole of what replaced `tiersOnBranch`. Empty is a real answer — a mid-bootstrap install
+registers nothing and deploys nothing rather than picking a tier at random, which is the answer
+`registerPlatform` always gave. The link set written is still the **union** of what the catalogue
+holds and the entry tier, so a tier a promotion already reached is never unlinked.
+
+`pd_environment.branch` still exists and **nothing on this path reads it** — removing the column is
+a later task. A promotion ladder is the follow-up this shape waits for: a version promoted to the
+next tier is a deployment request of its own against another environment, which is the row that now
+exists. What must not come back is a branch.
 
 ### The application name is the repository's NAME, never its storage id (2026-08-21)
 
@@ -1142,7 +1188,7 @@ every row this component writes would record null — measured in qits-ci on the
 trigger id beside an empty causation column. So each door reads the answer where it exists and
 states it:
 
-- `bus/PdBuildSuccessfulSubscriber` passes `frame.id()`, parsed leniently — an id that is not a UUID
+- `bus/PdSoftwareReleaseSubscriber` passes `frame.id()`, parsed leniently — an id that is not a UUID
   costs the trace edge and nothing else. **Causation must never be able to refuse a green build.**
 - `api/PdEventController` passes `CausationScope.current()`, which `CausationServerFilter` restored
   from the caller's `X-Qits-Causation-Id`. Null is a hand-made bootstrap POST: a rootless deployment,
@@ -1230,8 +1276,8 @@ and should not grow one. Things arrive as an HTTP payload on the intake, as an e
 not at all. Never add a JPA relation to another context's entity.
 
 **The bus does not change that, and the subscriber is written to keep it true.** qits-ci's
-`BuildSuccessful` reaches this component as four strings decoded from a payload, against a signature
-spelled as the literal `"BuildSuccessful"` — there is no dependency on `qits-ci-events` and there
+`SoftwareRelease` reaches this component as five strings decoded from a payload, against a signature
+spelled as the literal `"SoftwareRelease"` — there is no dependency on `qits-ci-events` and there
 must not be one. The cost is that a rename over there is silent here, which is the cost the intake
 path already carries.
 
@@ -1572,34 +1618,30 @@ removes nothing. `docker service rm <env>-qits-deployments` once the new one is 
 *The plane flip is one deploy, and it needs one hand step* has the whole sequence, including the
 one-time password rotation that comes with it.
 
-**`environment/<name>` is the only deploy ref, on both planes.** A green build deploys wherever an
-*environment* listens to its branch, and what comes out on the platform plane is still
-platform-shaped (no environment id, one instance, no links). `platform/main` and
-`SpecSource.DEFAULT_PLATFORM_BRANCH` are gone, and so is the spec's `branch:` key. `main` stays the
-integration trunk: a push to it builds and ships nothing.
+**There is no deploy ref any more, on either plane.** A RELEASE deploys — see *The event side* —
+and it lands in the platform's entry tier. `platform/main`, `SpecSource.DEFAULT_PLATFORM_BRANCH`,
+the spec's `branch:` key and, now, `environment/<name>` as a trigger are all gone. `main` stays the
+integration trunk, and a push to it still builds and ships nothing; so does a push to anything else.
 
-**Which environment is the platform one is a column now** — `pd_environment.platform`, true on
-exactly one row. `DeployService.registerPlatform` asks whether the *platform* environment is
-among the tiers listening to the built branch; the environment arm still fans out over all of them.
-That closes what used to be recorded here as the thing gating environment #2: under the old gate any
-tier's branch rolled the one platform instance, which was never a fan-out — it was several tiers
-taking turns overwriting one container. A second environment is an ordinary thing to create.
+**Which environment is the entry one is the same column it always was** — `pd_environment.platform`,
+true on exactly one row. What it decides has widened rather than moved: it used to say which
+tier's branch may roll the platform plane, and it now says which tier a release ENTERS at, on both
+planes. `DeployService.entryTiers()` is the one reader.
 
 The flag is a designation, not a link. A platform service still belongs to no tier, still keeps the
-bare wire alias, and is still reachable from every environment; what the column decides is which
-branch may roll it. **`EnvironmentService.designate` moves it** — clearing the old holder and
-setting the new one in one transaction — because that is where the invariant belongs. Postgres does
-have a partial unique index and V1 deliberately declines it: an index would also forbid the
-intermediate state of the very two statements that move the flag. Clearing the flag outright is a 409, and so
-is deleting the environment holding it; both would leave the plane running with no branch able to
-replace it. `PdEnvironmentApiTest` holds those claims, and
-`PdDeploymentFlowTest.onlyThePlatformEnvironmentsBranchRollsThePlatformPlane` holds the gate.
+bare wire alias, and is still reachable from every environment. **`EnvironmentService.designate`
+moves it** — clearing the old holder and setting the new one in one transaction — because that is
+where the invariant belongs. Postgres does have a partial unique index and V1 deliberately declines
+it: an index would also forbid the intermediate state of the very two statements that move the flag.
+Clearing the flag outright is a 409, and so is deleting the environment holding it; both would leave
+the platform with nowhere for a release to land. `PdEnvironmentApiTest` holds those claims, and
+`PdDeploymentFlowTest.thePlatformPlaneIsRolledOnceByTheTierTheReleaseEntersAt` holds the gate.
 
 **`deploy_branches:` is retired: accepted, validated, acted on by nobody.** Its one reader was
 qits-workspaces' release flow, which pushed a release onto *every* branch the list named — a
 fan-out rather than a ladder, and with three tiers it would have shipped into all three at once. A
 release lands on one entry branch from that component's own configuration now, and no repository
 states it. The parser still tolerates the key, and the reason is sharper than the `singleton`
-alias's: **a spec is fetched at the BUILT sha**, so a rollback pin or a redeploy of an older commit
-still presents a file carrying it, and an unknown key fails a deployment. Do not write it into a new
-file; do not remove the tolerance.
+alias's: **a spec is fetched at the RELEASED tag**, so a redeploy of an older version still presents
+a file carrying it, and an unknown key fails a deployment. Do not write it into a new file; do not
+remove the tolerance.

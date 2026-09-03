@@ -55,7 +55,7 @@ import org.junit.jupiter.api.Test;
 @TestProfile(PdDeployPublishTest.BusEnabled.class)
 public class PdDeployPublishTest {
 
-  private static final String SHA = "e".repeat(40);
+  private static final String VERSION = "2026.903.193059";
 
   public static class BusEnabled implements QuarkusTestProfile {
     @Override
@@ -99,7 +99,7 @@ public class PdDeployPublishTest {
     String environmentId = createEnvironment("pub-green");
     String cause = UUID.randomUUID().toString();
 
-    postBuildSucceeded("run-pub-green", "repo-pub-green", "environment/pub-green", cause);
+    postRelease("run-pub-green", "repo-pub-green", cause);
     awaitSettled(environmentId, 1);
 
     OutboxEvent queued = only("DeploymentQueued");
@@ -117,7 +117,7 @@ public class PdDeployPublishTest {
       assertTrue(event.payload.contains("\"environmentId\":\"" + environmentId + "\""),
           event.payload);
       assertTrue(event.payload.contains("\"environmentName\":\"pub-green\""), event.payload);
-      assertTrue(event.payload.contains("\"commitSha\":\"" + SHA + "\""), event.payload);
+      assertTrue(event.payload.contains("\"commitSha\":\"" + VERSION + "\""), event.payload);
       assertTrue(event.payload.contains("\"runId\":\"run-pub-green\""), event.payload);
       assertNotNull(event.occurredAt);
       assertEquals(cause, event.parentId, "every event of one deployment names the same cause");
@@ -145,7 +145,7 @@ public class PdDeployPublishTest {
         new DeploymentDriver.PullResult(
             DeploymentDriver.PullOutcome.IMAGE_MISSING, "manifest unknown"));
 
-    postBuildSucceeded("run-pub-noimage", "repo-pub-noimage", "environment/pub-noimage", null);
+    postRelease("run-pub-noimage", "repo-pub-noimage", null);
     awaitSettled(environmentId, 1);
 
     OutboxEvent failed = only("DeploymentFailed");
@@ -174,7 +174,7 @@ public class PdDeployPublishTest {
                 new NavigationEntry("services.details", "Refinement", 9),
                 new NavigationEntry("platform", "Refinement", 1))));
 
-    postBuildSucceeded("run-pub-routes", "repo-pub-routes", "environment/pub-routes", null);
+    postRelease("run-pub-routes", "repo-pub-routes", null);
     awaitSettled(environmentId, 1);
 
     String payload = only("DeploymentActive").payload;
@@ -207,8 +207,7 @@ public class PdDeployPublishTest {
             null,
             List.of(new NavigationEntry("platform", "Derived", 4))));
 
-    postBuildSucceeded(
-        "run-pub-derived", "qits-platform-pub-derived", "environment/pub-derived", null);
+    postRelease("run-pub-derived", "qits-platform-pub-derived", null);
     awaitSettled(environmentId, 1);
 
     assertTrue(
@@ -240,7 +239,7 @@ public class PdDeployPublishTest {
             null,
             null));
 
-    postBuildSucceeded("run-pub-nohost", "repo-pub-nohost", "environment/pub-nohost", null);
+    postRelease("run-pub-nohost", "repo-pub-nohost", null);
     awaitSettled(environmentId, 1);
 
     String payload = only("DeploymentActive").payload;
@@ -276,7 +275,7 @@ public class PdDeployPublishTest {
         DeploymentDriver.Convergence.failed(
             "service pub-sick-repo-pub-sick was still updating after 60s"));
 
-    postBuildSucceeded("run-pub-sick", "repo-pub-sick", "environment/pub-sick", null);
+    postRelease("run-pub-sick", "repo-pub-sick", null);
     awaitSettled(environmentId, 1);
 
     OutboxEvent failed = only("DeploymentFailed");
@@ -296,7 +295,8 @@ public class PdDeployPublishTest {
   private String createEnvironment(String name) {
     return given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", name, "branch", "environment/" + name, "platform", false))
+        // The entry tier: a release lands in the designated platform environment.
+        .body(Map.of("name", name, "platform", true))
         .when()
         .post("/platform-deployments/api/environments")
         .then()
@@ -305,18 +305,17 @@ public class PdDeployPublishTest {
         .path("environment.id");
   }
 
-  private void postBuildSucceeded(String runId, String repoId, String branch, String cause) {
+  private void postRelease(String runId, String repoId, String cause) {
     var request =
         given()
             .contentType(ContentType.JSON)
-            .body(
-                Map.of("runId", runId, "repoId", repoId, "branch", branch, "commitSha", SHA));
+            .body(Map.of("runId", runId, "repoId", repoId, "version", VERSION));
     if (cause != null) {
       request = request.header(CausationHeader.NAME, cause);
     }
     request
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }

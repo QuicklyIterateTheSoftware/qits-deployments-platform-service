@@ -215,10 +215,10 @@ public class PlatformOverviewIT {
 
     List<String> shas = pins.getList("pins.find { it.applicationName == '" + BuildDeploymentIT.WEB + "' }.shas");
     assertTrue(
-        shas.contains(BuildDeploymentIT.SECOND_SHA),
+        shas.contains(BuildDeploymentIT.SECOND_VERSION),
         "the sha that is serving is not pinned: " + shas);
     assertTrue(
-        shas.contains(BuildDeploymentIT.FIRST_SHA),
+        shas.contains(BuildDeploymentIT.FIRST_VERSION),
         "the sha a rollback would put back is not pinned: " + shas);
     story
         .note(
