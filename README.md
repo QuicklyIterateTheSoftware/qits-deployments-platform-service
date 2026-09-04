@@ -84,7 +84,7 @@ up to date from what it found there.
 application: qits-ci                 # optional; what this deploys AS, when it is not the repo's name
 deployment_target: environment       # default when the key or the file is absent | platform
 available_on_env: false              # default; true = public node (bundle + hub joins)
-deploy_branches: environment/prod    # comma-separated refs; read here, used by the release flow
+deploy_branches: environment/prod    # RETIRED; still parsed for old tags, acted on by nobody
 health_path: /q/health/ready         # default: /<name without the qits- prefix>/q/health/ready
 health_cmd: pg_isready -U postgres   # instead of health_path; runs inside the container
 resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
