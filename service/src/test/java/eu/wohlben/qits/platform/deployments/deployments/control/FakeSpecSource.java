@@ -30,6 +30,18 @@ public class FakeSpecSource implements SpecSource {
   private final Map<String, String> failures = new ConcurrentHashMap<>();
   private final Map<String, String> revs = new ConcurrentHashMap<>();
 
+  /**
+   * The whole {@link RepositoryRef} each read was made with, so a test can hold WHICH ADDRESS a
+   * door produced rather than only what came back.
+   *
+   * <p>It is the ref and not a derived string on purpose: which of githost's two routes a read takes
+   * is {@link RepositoryRef#nameAddressed()}'s answer and the real source composes the path from
+   * exactly these fields ({@code GitHostSpecSource.address}). Recording the ref lets a door's suite
+   * assert the choice without a socket, while {@code GitHostSpecSourceTest} keeps holding the other
+   * half — that the choice really becomes that URL — against a real HTTP server.
+   */
+  private final Map<String, RepositoryRef> refs = new ConcurrentHashMap<>();
+
   /** Which scripted failures say "read me again" — see {@link #scriptRetryableFailure}. */
   private final Set<String> retryable = ConcurrentHashMap.newKeySet();
 
@@ -40,6 +52,7 @@ public class FakeSpecSource implements SpecSource {
     specs.clear();
     failures.clear();
     revs.clear();
+    refs.clear();
     retryable.clear();
     reads.clear();
   }
@@ -96,6 +109,18 @@ public class FakeSpecSource implements SpecSource {
     retryable.remove(applicationName);
   }
 
+  /**
+   * The reference this application's spec was last read WITH — the address the announcing door
+   * produced, not the one this fake would have chosen.
+   *
+   * <p>Keyed like everything else here, by {@link RepositoryRef#applicationName()}: a read carrying
+   * the name pair is filed under the repository NAME and one carrying an id alone under the id, so
+   * a test looks up whichever coordinate its frame announced.
+   */
+  public RepositoryRef refOf(String applicationName) {
+    return refs.get(applicationName);
+  }
+
   /** How many reads this application's spec has been asked for, retries included. */
   public int readsOf(String applicationName) {
     return reads.getOrDefault(applicationName, 0);
@@ -104,6 +129,7 @@ public class FakeSpecSource implements SpecSource {
   @Override
   public SpecRead read(RepositoryRef repository, String rev) {
     revs.put(repository.applicationName(), rev);
+    refs.put(repository.applicationName(), repository);
     reads.merge(repository.applicationName(), 1, Integer::sum);
     String failure = failures.get(repository.applicationName());
     if (failure != null) {

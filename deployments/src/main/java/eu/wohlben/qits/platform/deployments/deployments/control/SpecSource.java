@@ -38,8 +38,9 @@ public interface SpecSource {
    * <p><b>It takes the whole {@link RepositoryRef} rather than one id</b>, because the git host
    * serves the same blob under two addresses and only the caller knows which one this release has:
    * the public {@code /git/<projectId>/<repoName>} when the announcement carried the name pair, and
-   * the internal {@code /git/<repoId>} when it did not — which is every release event, since a
-   * {@code SoftwareRelease} carries no repository name.
+   * the internal {@code /git/<repoId>} when it did not. Both arms are live on the release path: a
+   * {@code SoftwareRelease} has carried {@code repoName} since 2026-09-04, and one published or
+   * replayed from before it still carries none.
    *
    * <p><b>{@code rev} is a git rev and not a sha</b>, and the ordinary caller passes {@link
    * #tagRev}. The startup sweep's one legacy path passes a sha, because that is what the row it is

@@ -65,8 +65,11 @@ public interface ReleaseAnnouncements {
    *     A {@code SoftwareRelease} does not carry one, so the bus door passes null and the row
    *     honestly names no build; the manual door may supply one.
    * @param repository which repository was released, in whatever coordinate the door had. A release
-   *     event carries the storage id and the project but no repository name, so it is id-addressed
-   *     and the spec is read through {@code /git/<repoId>}.
+   *     event has carried the storage id, the project and the repository NAME since 2026-09-04, so
+   *     the spec is read through the public {@code /git/<projectId>/<repoName>}; an event from
+   *     before that — or one replayed from before it — carries no name, and the ref falls back to
+   *     the id route it always used. Both doors state both coordinates and neither chooses; {@link
+   *     RepositoryRef#nameAddressed()} is where the choice lives.
    * @param applicationName what this release deploys under, taken from the released package rather
    *     than from the repository. Never null and never a storage id.
    * @param version the released CalVer stamp — the git tag, and the image tag

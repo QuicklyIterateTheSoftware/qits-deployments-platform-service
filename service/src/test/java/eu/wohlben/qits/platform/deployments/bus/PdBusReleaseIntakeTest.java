@@ -12,6 +12,7 @@ import eu.wohlben.qits.eventstream.control.EventFrame;
 import eu.wohlben.qits.platform.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
+import eu.wohlben.qits.platform.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentRequest;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdQualityGate;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRequestRepository;
@@ -131,6 +132,58 @@ public class PdBusReleaseIntakeTest {
     awaitApplied(1);
     assertEquals("bus-noproject-app", driver.applied().get(0).applicationName());
     assertNull(newestRequest("bus-noproject-app").projectId, "absent, not invented");
+  }
+
+  @Test
+  public void repoNameTakesThePublicRouteAndItsAbsenceKeepsTheIdOne() {
+    // repoName landed on SoftwareRelease on 2026-09-04 and this door was still dropping it on the
+    // floor, so every release read its spec through /git/<repoId> — the internal route, the one
+    // qits-projects alone speaks. Both arms in one case, because the claim is a CHOICE and half of
+    // it proves nothing: the same subscriber, two frames, two addresses.
+    //
+    // What is asserted is the RepositoryRef the spec read was made with. That is where the choice
+    // lives (RepositoryRef.nameAddressed), and GitHostSpecSourceTest holds the other half against a
+    // real HTTP server — that a name-addressed ref really becomes /git/<projectId>/<repoName> and an
+    // id-addressed one /git/<repoId>. Asserting the URL again here would re-prove that source's job
+    // and would still not say whether this door filled the fields in.
+    createEntryTier("bus-named");
+
+    subscriber.onFrame(
+        frame(
+            ("{\"packageName\":\"qits/bus-named-app\",\"packageType\":\"docker\","
+                    + "\"projectId\":\"qits\",\"repoName\":\"bus-named-repo\",\"repoId\":\"%s\","
+                    + "\"repository\":\"%s\",\"version\":\"%s\"}")
+                .formatted(STORAGE_UUID, STORAGE_UUID, NEWER)));
+
+    awaitApplied(1);
+    // Keyed by the ref's own applicationName, which is the repository NAME once the pair is there.
+    RepositoryRef named = specs.refOf("bus-named-repo");
+    assertNotNull(named, "the deployment read a spec, so it made an address to read it at");
+    assertTrue(
+        named.nameAddressed(),
+        "both halves present, so the public /git/<projectId>/<repoName> route is the one taken");
+    assertEquals("qits", named.projectId());
+    assertEquals("bus-named-repo", named.repoName());
+    assertEquals(STORAGE_UUID, named.repoId(), "the storage id still travels, as the fallback");
+    assertEquals(
+        "bus-named-app",
+        driver.applied().get(0).applicationName(),
+        "and the application still comes out of packageName — repoName addresses, it never names");
+
+    // The other arm: an event from before the field existed, or replayed from before it. Same
+    // subscriber, same frame shape minus one key.
+    createEntryTier("bus-unnamed");
+
+    subscriber.onFrame(dockerFrame(STORAGE_UUID, "qits", "qits/bus-unnamed-app", NEWER));
+
+    awaitApplied(2);
+    RepositoryRef byId = specs.refOf(STORAGE_UUID);
+    assertNotNull(byId, "the id-addressed read files itself under the id");
+    assertFalse(
+        byId.nameAddressed(),
+        "no repoName, so the internal /git/<repoId> route — exactly what this door always did");
+    assertNull(byId.repoName());
+    assertEquals(STORAGE_UUID, byId.repoId());
   }
 
   @Test

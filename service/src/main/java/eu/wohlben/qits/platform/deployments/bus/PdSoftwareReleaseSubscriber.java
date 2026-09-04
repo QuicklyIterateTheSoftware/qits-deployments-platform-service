@@ -34,17 +34,27 @@ import org.jboss.logging.Logger;
  *
  * <p><b>The application name comes out of {@code packageName}, not out of the repository.</b> A
  * {@code SoftwareRelease} carries {@code repoId}, {@code repository} (the same string under the
- * platform's newer name for it) and an optional {@code projectId} — and <b>no repository name at
- * all</b>. What it does carry is the package it published, registry-unqualified: {@code
- * qits/qits-ci}. {@link PackageNames} takes the image path out of it, and that string is the
- * application everywhere below. The repository travels beside it, id-addressed, for the spec read
- * alone.
+ * platform's newer name for it), an optional {@code projectId} and, since 2026-09-04, an optional
+ * {@code repoName}. What it also carries is the package it published, registry-unqualified: {@code
+ * qits/qits-ci}. {@link PackageNames} takes the image path out of it, and <b>that</b> string is the
+ * application everywhere below — never {@code repoName}. The two are genuinely different facts: a
+ * repository may declare an {@code application} of its own and a repository may be renamed without
+ * moving the service that runs from it, so deriving the deployed identity from the repository's
+ * name would be exactly the coupling {@code packageName} exists to avoid.
  *
- * <p><b>{@code projectId} may be absent and that is tolerated rather than handled.</b> It is
- * identity enrichment — it makes a request row say which project a release came from — and it is
- * never a key here: the spec is read through {@code /git/<repoId>}, which needs no project, and the
- * application name comes from the package. A release with no project deploys byte for byte like one
- * with a project.
+ * <p><b>{@code repoName} is for the ADDRESS, and for nothing else.</b> qits-githost serves the same
+ * blob under two routes — the public {@code /git/<projectId>/<repoName>} and the internal {@code
+ * /git/<repoId>} — and only the second needs no resolver. The event carried no name until
+ * 2026-09-04, so this door could only ever build the id-addressed reference; it binds the field now
+ * and hands the whole pair to {@link RepositoryRef}, which takes the public route when both halves
+ * are present and the id route when either is missing. Nothing downstream had to change: the choice
+ * has always been the ref's, this door was simply never able to give it anything to choose from.
+ *
+ * <p><b>{@code projectId} and {@code repoName} may both be absent and that is tolerated rather than
+ * handled.</b> An older publisher — anything that fired before the field landed, and any event
+ * replayed from before it — carries neither, binds both to null, and takes the id route byte for
+ * byte as it always did. Half a pair takes it too: {@code /git/<projectId>/} names no repository and
+ * {@link RepositoryRef#nameAddressed()} says so itself.
  *
  * <h2>What the library gives, and what it does not</h2>
  *
@@ -114,12 +124,20 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
    * deliberately not bound: two names for one value invite a reader to compare them. Unknown fields
    * are ignored by the library's mapper, which is what lets qits-ci add another.
    *
-   * <p><b>{@code projectId} is NULLABLE and its absence is spelled as a missing key</b>: qits-ci
-   * publishes with {@code NON_NULL}, so a release from a run with no project carries no {@code
-   * projectId} at all. It binds to null and nothing here needs it.
+   * <p><b>{@code projectId} and {@code repoName} are NULLABLE and their absence is spelled as a
+   * missing key</b>: qits-ci publishes with {@code NON_NULL}, so a release from a run with no
+   * project carries no {@code projectId} at all, and an event published before {@code repoName}
+   * existed — or replayed from before it — carries no {@code repoName}. Both bind to null, and null
+   * is a complete answer: {@link RepositoryRef} falls back to the id route, which is what this door
+   * did for every release it has ever handled.
    */
   public record SoftwareReleasePayload(
-      String repoId, String projectId, String version, String packageType, String packageName) {}
+      String repoId,
+      String projectId,
+      String repoName,
+      String version,
+      String packageType,
+      String packageName) {}
 
   @Inject ReleaseAnnouncements announcements;
 
@@ -205,10 +223,12 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
     try {
       announcements.announce(
           null,
-          // Id-addressed: a release carries no repository NAME, so the spec is read through
-          // /git/<repoId>. The project travels for the record and is not part of the address —
-          // half a pair is no pair, and RepositoryRef says so itself.
-          new RepositoryRef(release.repoId(), release.projectId(), null),
+          // Both coordinates, and the ref picks. A release that carries (projectId, repoName) is
+          // read through the public /git/<projectId>/<repoName>; one that carries either half or
+          // neither falls back to /git/<repoId>, which needs no resolver and is what every release
+          // took before the name was published. Half a pair is no pair, and RepositoryRef says so
+          // itself — this door states both fields and decides nothing.
+          new RepositoryRef(release.repoId(), release.projectId(), release.repoName()),
           applicationName,
           release.version(),
           release.packageName(),
