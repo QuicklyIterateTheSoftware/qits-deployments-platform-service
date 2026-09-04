@@ -293,11 +293,25 @@ public class ApplicationScaling {
   }
 
   /**
+   * The opening words of every operator stamp this component writes — the three levers' own, and
+   * the whole of what {@link #withoutLeadingStamp} drops.
+   *
+   * <p>{@code [decommissioned by } is {@code ApplicationRetirement}'s and belongs on this list for
+   * the reason the other two are: a door called twice must not grow a text column. It lives here
+   * rather than there because there is exactly one stamp format on a deployment row and one place
+   * that knows it.
+   */
+  private static final String[] STAMP_PREFIXES = {
+    "[scaled to ", "[restarted by ", "[decommissioned by "
+  };
+
+  /**
    * The new stamp over whatever the row already said, with a previous operator stamp dropped.
    *
-   * <p>Package-private for its own test. The deployment's diagnosis is everything under the stamp
-   * and is kept whole — eaa34fbc is the row where that text was the reason a bug was findable at
-   * all — while a stamp is a statement about now and there is no reason to keep yesterday's.
+   * <p>Package-private for its own test, and for {@code ApplicationRetirement}, which writes the
+   * third kind. The deployment's diagnosis is everything under the stamp and is kept whole —
+   * eaa34fbc is the row where that text was the reason a bug was findable at all — while a stamp is
+   * a statement about now and there is no reason to keep yesterday's.
    */
   static String stamped(String stamp, String detail) {
     String previous = withoutLeadingStamp(detail);
@@ -309,7 +323,11 @@ public class ApplicationScaling {
       return "";
     }
     String trimmed = detail.stripLeading();
-    if (!trimmed.startsWith("[scaled to ") && !trimmed.startsWith("[restarted by ")) {
+    boolean stamped = false;
+    for (String prefix : STAMP_PREFIXES) {
+      stamped |= trimmed.startsWith(prefix);
+    }
+    if (!stamped) {
       return detail;
     }
     int newline = trimmed.indexOf('\n');

@@ -1,5 +1,6 @@
 package eu.wohlben.qits.platform.deployments.api;
 
+import eu.wohlben.qits.platform.deployments.deployments.control.ApplicationRetirement;
 import eu.wohlben.qits.platform.deployments.deployments.control.ApplicationScaling;
 import eu.wohlben.qits.platform.deployments.environments.control.ServiceCatalog;
 import eu.wohlben.qits.platform.deployments.environments.dto.PdApplicationDto;
@@ -22,7 +23,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
  * Every application this component deploys, in one flat list — the environments' and the platform's
- * together — and the two levers an operator has over one of them.
+ * together — and the three levers an operator has over one of them.
  *
  * <p>It is flat because a platform service carries no LINK into an environment: reading through the
  * environments would leave qits-platform-idp and this component out of it, which are the two a
@@ -34,17 +35,20 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  *
  * <p><b>The listing is read-only and the catalogue still is</b>: rows here are derived from each
  * repository's own {@code .config/qits/deployments.yml} on every green build, and nothing on this
- * surface creates, renames or removes one. What the two POSTs below write is not the catalogue and
- * not a deployment — they act on the <b>running service</b> an application's newest deployment left
- * behind. See {@link ApplicationScaling}, which argues the whole shape; the short version is that a
- * restart used to cost a same-sha push and fifteen minutes of rebuild.
+ * surface creates, renames or removes one. What the three POSTs below write is not the catalogue —
+ * the first two act on the <b>running service</b> an application's newest deployment left behind,
+ * and the third writes a word on the <b>deployment row</b> of an application that has none. See
+ * {@link ApplicationScaling} and {@link ApplicationRetirement}, which argue the two shapes; the
+ * short version is that a restart used to cost a same-sha push and fifteen minutes of rebuild, and
+ * that a retired name used to keep a red row for ever.
  *
- * <p><b>Both are 202, and that is the component's own idiom rather than a hedge.</b> Every docker
- * call here happens on the single deploy worker, so an operator's action queues behind whatever is
- * deploying — the same place a build-succeeded event goes, for the same reason. The deployment
- * listing is where the result is read.
+ * <p><b>The first two are 202, and that is the component's own idiom rather than a hedge.</b> Every
+ * docker call here happens on the single deploy worker, so an operator's action queues behind
+ * whatever is deploying — the same place a build-succeeded event goes, for the same reason. The
+ * deployment listing is where the result is read. <b>The third is 200</b>: it issues no docker call
+ * at all, so there is nothing for it to queue behind and nothing to promise.
  *
- * <p><b>Both take {@code qits-platform:admin}, the reader's role, and that is a decision.</b> This
+ * <p><b>All three take {@code qits-platform:admin}, the reader's role, and that is a decision.</b> This
  * is a person's operational action, driven from this component's own web client through the
  * platform edge's forwarded {@code X-Qits-Roles} header — the same caller every read on this surface
  * has. The machine role {@code qits-platform:system} is deliberately NOT granted: the two sets do
@@ -65,6 +69,7 @@ public class PdApplicationController {
   @Inject EnvironmentMapper mapper;
   @Inject PdReadPatience reads;
   @Inject ApplicationScaling scaling;
+  @Inject ApplicationRetirement retirement;
 
   public record ListApplicationsResponse(List<PdApplicationDto> applications) {}
 
@@ -87,6 +92,22 @@ public class PdApplicationController {
       String serviceName,
       String deploymentId,
       Integer replicas) {}
+
+  /**
+   * What a retirement settled. {@code previousStatus} is the word the current row carried before —
+   * the stale one the door exists to replace — and it is reported rather than looked up afterwards
+   * because it is the only place that word survives at all.
+   *
+   * <p>{@code decommissionedIds} is every row this call wrote, newest first: the current one, and
+   * any {@code SPEC_UNREADABLE} row whose retry it stopped.
+   */
+  public record RetirementResponse(
+      String applicationId,
+      String applicationName,
+      String environmentId,
+      String currentDeploymentId,
+      String previousStatus,
+      List<String> decommissionedIds) {}
 
   /** Held through a short database outage rather than answering 500 — see {@link PdReadPatience}. */
   @GET
@@ -145,6 +166,46 @@ public class PdApplicationController {
   public Response restart(
       @PathParam("applicationId") String applicationId, @Context SecurityContext security) {
     return accepted(scaling.restart(applicationId, actor(security)));
+  }
+
+  /**
+   * Retire an application: nothing deploys under this name any more, and its current row says so.
+   *
+   * <p>This is the door the {@code application:} key's own note said did not exist — "CHANGING the
+   * value later is a decommission and a new application, and nothing here helps". A repository that
+   * is renamed, or that starts overriding its deployed identity, leaves the old name behind with
+   * whatever its last attempt wrote; three such names sat on this install with a {@code FAILED} row
+   * apiece, from August, beside successors that were plainly serving.
+   *
+   * <p><b>200 rather than 202, alone on this class</b>, and the difference is real: the two levers
+   * above issue a {@code docker service update} and must queue behind whatever the deploy worker is
+   * cutting over. This one calls no orchestrator — there is nothing running to act on, which is the
+   * precondition rather than an assumption — so the write has happened by the time the caller reads
+   * the answer.
+   *
+   * <p><b>It deletes nothing.</b> The rows keep their shas, their timestamps and the failure text
+   * that explains them; what changes is the word on the current one and a stamp above that text.
+   * See {@link ApplicationRetirement}, which argues the whole shape, including why the catalogue row
+   * is left to {@code DELETE /services/{name}}.
+   */
+  @POST
+  @Path("/{applicationId}/decommission")
+  @Operation(summary = "Retire an application — its current row becomes DECOMMISSIONED, nothing is deleted")
+  @APIResponse(responseCode = "200", description = "Retired; the rows it settled are named")
+  @APIResponse(responseCode = "400", description = "Not an application id")
+  @APIResponse(responseCode = "404", description = "Nothing has ever been deployed for this application")
+  @APIResponse(responseCode = "409", description = "It is still deployed, or the deploy worker still has work for it")
+  public RetirementResponse decommission(
+      @PathParam("applicationId") String applicationId, @Context SecurityContext security) {
+    ApplicationRetirement.Retired retired =
+        retirement.decommission(applicationId, actor(security));
+    return new RetirementResponse(
+        retired.applicationId(),
+        retired.applicationName(),
+        retired.environmentId(),
+        retired.currentDeploymentId(),
+        retired.previousStatus(),
+        retired.decommissionedIds());
   }
 
   private static Response accepted(ApplicationScaling.Accepted queued) {

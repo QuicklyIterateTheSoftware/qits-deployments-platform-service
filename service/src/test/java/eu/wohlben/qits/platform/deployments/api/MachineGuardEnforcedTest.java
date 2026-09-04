@@ -48,11 +48,12 @@ class MachineGuardEnforcedTest {
   private static final String INTAKE = "/platform-deployments/api/events/software-released";
   private static final String PINS = "/platform-deployments/api/pins";
 
-  /** An application nothing here ever deployed — the operator levers' own two paths. */
+  /** An application nothing here ever deployed — the operator levers' own three paths. */
   private static final String APPLICATION = "/platform-deployments/api/applications/platform:guarded-app";
 
   private static final String SCALE = APPLICATION + "/scale";
   private static final String RESTART = APPLICATION + "/restart";
+  private static final String DECOMMISSION = APPLICATION + "/decommission";
 
   private static final String ENVIRONMENT_BODY = "{\"name\":\"guarded-env\"}";
   private static final String SERVICE_BODY =
@@ -330,6 +331,16 @@ class MachineGuardEnforcedTest {
         .then()
         .statusCode(404);
     admin().when().post(RESTART).then().statusCode(404);
+  }
+
+  @Test
+  void theDecommissionDoorIsAPersonsToo() {
+    // It writes no docker call, but it writes the word an operator reads as an application's state
+    // — and a service bearer must no more be able to declare an application retired than to stop
+    // one. Same grant, same asymmetry, asserted in both directions.
+    given().when().post(DECOMMISSION).then().statusCode(401);
+    machine().when().post(DECOMMISSION).then().statusCode(403);
+    admin().when().post(DECOMMISSION).then().statusCode(404);
   }
 
   /** A caller with a fresh token minted for this service, carrying the machine roles the idp grants. */
