@@ -12,19 +12,22 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One environment — a <b>tier</b>: dev, preprod, prod. A name, the branch whose green builds deploy
- * into it, and the docker network its public nodes share.
+ * One environment — a <b>tier</b>: dev, preprod, prod. A name and the docker network its public
+ * nodes share.
  *
  * <p>A tier is created deliberately. Nothing derives one, and creating one here is what makes it
- * exist for the whole platform: deployment resolution fans a green build out over the tiers whose
- * branch matches, qits-idp will grant per-environment claims against it, and a future qits-dns will
- * name it.
+ * exist for the whole platform: a release enters the platform at the designated one, qits-idp will
+ * grant per-environment claims against it, and a future qits-dns will name it.
+ *
+ * <p><b>It has no branch, and V8 is where that left.</b> A tier used to listen to {@code
+ * environment/<name>} and a green build's branch decided where it went; a release names a tag, so
+ * where a version lands is {@link #platform} and nothing else. What must not come back is a branch.
  *
  * <p>An environment holds no list of applications, and the absence is the model rather than an
  * omission. What runs in a tier is expressed the other way round — every service is a {@link
  * PdService} with N {@link PdServiceLink}s, and a link is what puts a service in this environment. A
  * platform service has no links at all and is therefore in every environment, including the ones
- * created after it.
+ * created after it — and it deploys into <b>this</b> one when this is the platform environment.
  *
  * <p><b>A {@link CausedRow}, and the one entity here the stamp itself fills.</b> A tier is created
  * deliberately, over {@code POST /platform-deployments/api/environments}, and there is no hop
@@ -60,14 +63,6 @@ public class PdEnvironment extends PanacheEntityBase implements CausedRow {
   public String name;
 
   /**
-   * The branch this environment listens to. A green build deploys here exactly when its branch
-   * equals this value — convention fills it as {@code environment/<name>} when the creator names
-   * none.
-   */
-  @Column(nullable = false)
-  public String branch;
-
-  /**
    * This environment's <b>bundle</b> network: the one its public nodes ({@code availableOnEnv})
    * share. It is not where an ordinary service runs — each service gets its own derived {@code
    * qits-env-<env>-<service>} network. Derived networks are never persisted; docker's own labels
@@ -77,14 +72,15 @@ public class PdEnvironment extends PanacheEntityBase implements CausedRow {
   public String network;
 
   /**
-   * <b>The platform environment</b>, of which there is exactly one: the tier whose branch deploys
-   * the platform plane. A green build of a {@link PdDeploymentTarget#PLATFORM} service ships only
-   * when this environment listens to the built branch — every other tier's branch leaves the one
-   * platform instance alone.
+   * <b>The platform environment</b>, of which there is exactly one: the tier a release ENTERS the
+   * platform at, and — since V8 — the tier the platform plane itself is deployed into.
    *
-   * <p>It is not a link and it does not put anything in this tier. A platform service still belongs
-   * to no environment, still keeps the bare wire alias, and is still reachable from every tier. What
-   * this flag decides is which branch is allowed to roll it.
+   * <p>It is not a link, and a {@link PdDeploymentTarget#PLATFORM} service still carries none. What
+   * it now decides is a real place: a platform deployment's row, labels, injected {@code
+   * QITS_ENVIRONMENT} and lifecycle events all name this environment. What stays different about
+   * the plane is stated rather than inferred from a missing tier — the <b>bare</b> wire alias
+   * ({@code qits-ci}, so a peer in any tier reaches it without knowing which one it lives in) and a
+   * membership in every environment's networks.
    *
    * <p><b>At most one row is true, and the schema does not enforce it</b> — H2 has no partial unique
    * index, so {@link

@@ -87,8 +87,8 @@ public class DeploymentConfigurationIT {
 
   static final String MISCONFIGURED_REPO_ID = "story-misconfigured-storage-id";
 
-  static final String CONFIGURED_SHA = "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5";
-  static final String MISCONFIGURED_SHA = "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6";
+  static final String CONFIGURED_VERSION = "2026.903.101";
+  static final String MISCONFIGURED_VERSION = "2026.903.102";
 
   static final String CONFIGURED_SERVICE = StoryTarget.wireAlias(CONFIGURED);
 
@@ -140,16 +140,16 @@ public class DeploymentConfigurationIT {
     StoryIdentities.bearer(given(), bearer)
         .contentType(ContentType.JSON)
         .body(
-            buildSucceeded(
-                "run-story-configured-1", CONFIGURED_REPO_ID, CONFIGURED, CONFIGURED_SHA))
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+            softwareReleased(
+                "run-story-configured-1", CONFIGURED_REPO_ID, CONFIGURED, CONFIGURED_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(202);
     story
         .note("a green build of " + CONFIGURED + ", an application qits-configuration has an entry for")
         .as("build-announced");
 
-    JsonNode row = StoryPlatform.awaitSettled(CONFIGURED, CONFIGURED_SHA);
+    JsonNode row = StoryPlatform.awaitSettled(CONFIGURED, CONFIGURED_VERSION);
     assertEquals("ACTIVE", row.path("status").asText(), "the deployment did not go live: " + row);
     story
         .note(
@@ -215,19 +215,19 @@ public class DeploymentConfigurationIT {
     StoryIdentities.bearer(given(), bearer)
         .contentType(ContentType.JSON)
         .body(
-            buildSucceeded(
+            softwareReleased(
                 "run-story-misconfigured-1",
                 MISCONFIGURED_REPO_ID,
                 MISCONFIGURED,
-                MISCONFIGURED_SHA))
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+                MISCONFIGURED_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(202);
     story
         .note("a green build of " + MISCONFIGURED + ", whose configuration this platform cannot read")
         .as("build-announced");
 
-    JsonNode row = StoryPlatform.awaitSettled(MISCONFIGURED, MISCONFIGURED_SHA);
+    JsonNode row = StoryPlatform.awaitSettled(MISCONFIGURED, MISCONFIGURED_VERSION);
     assertEquals(
         "FAILED",
         row.path("status").asText(),
@@ -268,15 +268,14 @@ public class DeploymentConfigurationIT {
     network.declare(NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
   }
 
-  private static Map<String, Object> buildSucceeded(
-      String runId, String repoId, String repoName, String sha) {
+  private static Map<String, Object> softwareReleased(
+      String runId, String repoId, String repoName, String version) {
     return Map.of(
         "runId", runId,
         "repoId", repoId,
         "projectId", StoryTarget.PROJECT,
         "repoName", repoName,
-        "branch", StoryTarget.TIER_BRANCH,
-        "commitSha", sha);
+        "version", version);
   }
 
   @AfterAll
@@ -292,12 +291,12 @@ public class DeploymentConfigurationIT {
       ReportAssertions.assertStepId(CATEGORY, READ_SLUG, step);
     }
     intake(READ_SLUG);
-    peer(READ_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(CONFIGURED, CONFIGURED_SHA, 200));
+    peer(READ_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(CONFIGURED, CONFIGURED_VERSION, 200));
     // The credential, and then the read that presents it. Two arrows rather than one, because they
     // are two peers — and the mint is what makes the read fail-closed rather than anonymous.
     peer(READ_SLUG, StoryPeers.IDP, StoryPeers.tokenLabel());
     peer(READ_SLUG, StoryPeers.CONFIGURATION, StoryPeers.resolvedLabel(CONFIGURED, 200));
-    for (String call : StorySwarm.createCalls(CONFIGURED_SERVICE, CONFIGURED, CONFIGURED_SHA)) {
+    for (String call : StorySwarm.createCalls(CONFIGURED_SERVICE, CONFIGURED, CONFIGURED_VERSION)) {
       swarm(READ_SLUG, call);
     }
     ReportAssertions.assertDeclaredEdge(
@@ -319,7 +318,7 @@ public class DeploymentConfigurationIT {
     peer(
         REFUSED_SLUG,
         StoryPeers.GIT_HOST,
-        StoryPeers.specLabel(MISCONFIGURED, MISCONFIGURED_SHA, 200));
+        StoryPeers.specLabel(MISCONFIGURED, MISCONFIGURED_VERSION, 200));
     // No mint here, and the absence is the deployer's rather than the stand-in's: the token the
     // story above acquired is still cached, so this deployment presents it without asking for a new
     // one. See StoryPeers.
@@ -330,7 +329,7 @@ public class DeploymentConfigurationIT {
         REFUSED_SLUG,
         StoryPeers.CONFIGURATION,
         StoryPeers.resolvedLabel(MISCONFIGURED, StoryPeers.REFUSED_STATUS));
-    for (String call : refusedCalls(MISCONFIGURED_SERVICE, MISCONFIGURED, MISCONFIGURED_SHA)) {
+    for (String call : refusedCalls(MISCONFIGURED_SERVICE, MISCONFIGURED, MISCONFIGURED_VERSION)) {
       swarm(REFUSED_SLUG, call);
     }
     operatorRead(REFUSED_SLUG);
@@ -373,7 +372,7 @@ public class DeploymentConfigurationIT {
         NetworkEdge.HTTP,
         StoryIdentities.CI,
         StoryTarget.SERVICE,
-        "POST " + StoryTarget.BUILD_SUCCEEDED_PATH + " -> 202");
+        "POST " + StoryTarget.SOFTWARE_RELEASED_PATH + " -> 202");
   }
 
   private static void operatorRead(String slug) {

@@ -165,26 +165,45 @@ public class ResourceProvisioningTest {
   }
 
   @Test
-  public void aPlatformPlaneResourceTakesThePlatformEnvironmentsPostgres() {
-    // A platform-plane application has no tier to derive an address from, so it takes the platform
-    // environment's — the same answer its own deployments already hang off. Designating moves the
-    // flag, so this class names its own tier rather than depending on whichever one another class
-    // left designated in the shared database.
+  public void aPlatformPlaneResourceIsKeyedByTheTierItIsDeployedInto() {
+    // A platform service is deployed INTO the designated environment since V8, so it arrives here
+    // with that tier's name like every other application — and this method used to be the one that
+    // reached for the designation on its behalf, off a null.
+    //
+    // BOTH HALVES MATTER AND ONLY ONE OF THEM IS VISIBLE. The address is the same string it always
+    // was, because the null arm resolved to exactly this tier's postgres. What changed is the
+    // registry KEY: the row is written under the tier's name, which is what the next deployment
+    // will look it up by. Written under null while the deployment reads the tier, the lookup would
+    // miss on every deploy, the provisioner would take its reconcile arm, and a working password
+    // would be rotated under a running container's open pools.
     QuarkusTransaction.requiringNew()
-        .run(
-            () ->
-                environments.create(
-                    "prov-plane-tier", "environment/prov-plane-tier", "qits-net", true));
-    String platformEnvironment = "prov-plane-tier";
+        .run(() -> environments.create("prov-plane-tier", "qits-net", true));
 
     List<DeploymentDriver.ResourceBinding> bindings =
-        provisioning.ensureAll("prov-plane", null, one("db", "qits_prov_plane"));
+        provisioning.ensureAll("prov-plane", "prov-plane-tier", one("db", "qits_prov_plane"));
 
     assertEquals(
-        "jdbc:postgresql://" + platformEnvironment + "-qits-oci-postgresql:5432/qits_prov_plane",
+        "jdbc:postgresql://prov-plane-tier-qits-oci-postgresql:5432/qits_prov_plane",
         bindings.get(0).url());
-    // Null is stored as null, and found again as null — the nulls-not-distinct half of the key.
-    assertTrue(row("prov-plane", null, "db").isPresent());
+    assertTrue(
+        row("prov-plane", "prov-plane-tier", "db").isPresent(),
+        "the row is keyed by the tier, which is the key the next deployment looks it up by");
+    assertTrue(
+        row("prov-plane", null, "db").isEmpty(),
+        "and nothing is left under the key the plane used to write");
+  }
+
+  @Test
+  public void aDeploymentWithNoTierAtAllIsRefusedRatherThanGuessedAt() {
+    // The guard that survived the branch above. Both register arms come from entryTiers(), so a
+    // queued deployment always carries a tier; a call that does not is a mid-bootstrap install with
+    // no environment designated, and there is no postgres to name.
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () -> provisioning.ensureAll("prov-tierless", null, one("db", "qits_prov_tierless")));
+    assertTrue(refused.getMessage().contains("platform environment"), refused.getMessage());
+    assertEquals(List.of(), provisioner.requests(), "the seam was never even called");
   }
 
   @Test

@@ -30,6 +30,20 @@ public final class DeploymentIdentifiers {
   /** A hex object id (abbreviated ids are accepted; the registry resolves the tag either way). */
   private static final String SHA = "[0-9a-f]{7,64}";
 
+  /**
+   * A released version, which is also a git tag name and an OCI tag. The charset is <b>docker's own
+   * tag charset</b> narrowed to what this column holds: the value is written into an image
+   * reference, into a git rev in a URL path, and into a {@code varchar(64)}.
+   *
+   * <p>The platform's stamp is {@code YYYY.MMDD.HHMMSS} and would fit a far tighter pattern, and
+   * this deliberately does not use one: the manual door exists so an operator can redeploy or roll
+   * back a version, and a tag this component refuses is a version it can never put back. What is
+   * excluded is what cannot be a tag — a leading dash or dot (which docker refuses and which would
+   * read as an option on an argv), a slash (which would move the image path), and anything that
+   * needs quoting.
+   */
+  private static final String VERSION = "[A-Za-z0-9_][A-Za-z0-9._-]{0,63}";
+
   /** A foreign opaque id: qits-ci's run ids are UUIDs, and this is wide enough to stay so. */
   private static final String RUN_ID = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}";
 
@@ -98,6 +112,41 @@ public final class DeploymentIdentifiers {
       throw new BadRequestException("Invalid commit sha");
     }
     return sha;
+  }
+
+  /**
+   * The released version — the CalVer stamp, the git tag the release pushed, and the tag the image
+   * carries. <b>Required</b>, because it is the whole coordinate a release deployment has: there is
+   * no sha to fall back on and no {@code latest} this component would ever deploy.
+   *
+   * @throws BadRequestException if the version could escape an image reference, a git rev in a URL
+   *     path, or its column
+   */
+  public static String requireVersion(String version) {
+    if (version == null || !version.matches(VERSION)) {
+      throw new BadRequestException("Invalid release version");
+    }
+    return version;
+  }
+
+  /**
+   * The name a release deploys under, taken from the released package rather than from a repository
+   * ({@code qits/qits-ci} → {@code qits-ci}). Required, and checked with the same slug discipline
+   * as a repository name because it lands in exactly the same places — the image path segment, the
+   * wire alias, the container name, the provisioned role.
+   *
+   * <p>It is deliberately NOT the dns-label check: {@code PdIdentifiers.requireName} is what the
+   * topology stores and it is asked one layer down ({@code DeployService.isDeployableName}), where
+   * a name that cannot be a network alias is a log line rather than a refusal. This one only says
+   * the string cannot escape what it is written into.
+   *
+   * @throws BadRequestException if the application name is absent or could escape an argv
+   */
+  public static String requireApplicationName(String applicationName) {
+    if (applicationName == null || !applicationName.matches(REPO_ID)) {
+      throw new BadRequestException("Invalid application name");
+    }
+    return applicationName;
   }
 
   /**

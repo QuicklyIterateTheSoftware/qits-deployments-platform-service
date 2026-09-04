@@ -41,8 +41,8 @@ public final class StoryTarget {
   /** {@code /platform-deployments/api} — {@code quarkus.rest.path}. A resource's {@code @Path} is relative. */
   public static final String API_PATH = "/platform-deployments/api";
 
-  /** The build intake: the cross-repo contract qits-ci POSTs a green pipeline to. */
-  public static final String BUILD_SUCCEEDED_PATH = API_PATH + "/events/build-succeeded";
+  /** The release intake: the manual and bootstrap door a released version is announced through. */
+  public static final String SOFTWARE_RELEASED_PATH = API_PATH + "/events/software-released";
 
   /** The tiers. A write is a machine's; the listing is a person's. */
   public static final String ENVIRONMENTS_PATH = API_PATH + "/environments";
@@ -60,15 +60,15 @@ public final class StoryTarget {
   public static final String PINS_PATH = API_PATH + "/pins";
 
   /**
-   * The tier every story in this catalogue deploys into, and the branch it listens to.
+   * The tier every story in this catalogue deploys into — the platform's <b>entry tier</b>, which
+   * is what branch matching was replaced by: a release lands in the designated platform
+   * environment.
    *
    * <p>One tier for the whole catalogue rather than one per class: the launched process is one, its
    * database is one, and a story about "what is deployed here" is more honest against a platform
    * that has several applications on one tier than against four tiers holding one each.
    */
   public static final String TIER = "story-tier";
-
-  public static final String TIER_BRANCH = "environment/" + TIER;
 
   /** The project every story repository belongs to — half of the public {@code (project, repo)} pair. */
   public static final String PROJECT = "qits";
@@ -80,8 +80,8 @@ public final class StoryTarget {
     return TIER + "-" + applicationName;
   }
 
-  /** The image reference this component derives for one application at one commit. */
-  public static String imageRef(String applicationName, String sha) {
-    return "qits-platform-artifacts:8080/qits/" + applicationName + ":" + sha;
+  /** The image reference this component derives for one application at one released version. */
+  public static String imageRef(String applicationName, String version) {
+    return "qits-platform-artifacts:8080/qits/" + applicationName + ":" + version;
   }
 }

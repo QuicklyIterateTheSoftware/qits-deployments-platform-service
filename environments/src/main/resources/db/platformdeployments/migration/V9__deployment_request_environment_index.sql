@@ -1,0 +1,13 @@
+-- The tier's own index on pd_deployment_request, because the requests became a READ SURFACE.
+--
+-- V6 indexed the two questions the writer asks — "what has this application been asked for" (the
+-- monotonic collapse's floor) and "which request produced this deployment" — and that was the whole
+-- set of callers at the time. `GET /platform-deployments/api/deployment-requests?environmentId=`
+-- adds a third: one tier's requests, newest-first, asked on every expansion of the deployments view
+-- and again on every poll while something is in flight. Without this it is a sequential scan of the
+-- whole table per read, and the table grows by one row per (release, tier) forever.
+--
+-- The column is nullable and this index covers the nulls too, which costs nothing here: a null
+-- environment_id is a request written before V8 on an install with no designated tier, and the
+-- listing never matches one (`environment_id = null` matches nothing in SQL).
+create index idx_pd_deployment_request_environment on pd_deployment_request (environment_id);

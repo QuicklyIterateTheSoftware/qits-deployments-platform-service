@@ -31,7 +31,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  *       is package-private in the library (no consumer holds one; the sweeper does). Without it the
  *       stream works in the binary and <b>catch-up alone</b> fails — the half that only matters
  *       after a cutover, which is the half nobody would be watching.
- *   <li>{@link PdBuildSuccessfulSubscriber.BuildSuccessfulPayload} — the payload this component
+ *   <li>{@link PdSoftwareReleaseSubscriber.SoftwareReleasePayload} — the payload this component
  *       reads out of the frame.
  * </ul>
  *
@@ -53,7 +53,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
 @RegisterForReflection(
     targets = {
       EventFrame.class,
-      PdBuildSuccessfulSubscriber.BuildSuccessfulPayload.class,
+      PdSoftwareReleaseSubscriber.SoftwareReleasePayload.class,
       EventEnvelope.class,
       DeploymentQueued.class,
       DeploymentStarted.class,

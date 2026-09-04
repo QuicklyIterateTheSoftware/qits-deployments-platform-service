@@ -3,6 +3,7 @@ package eu.wohlben.qits.platform.deployments.environments.control;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
 import org.junit.jupiter.api.Test;
 
@@ -156,10 +157,29 @@ class PdIdentifiersTest {
   @Test
   void anApplicationKeyIsJoinableFromBothSides() {
     // The client joins the applications listing against a deployment's applicationId, and neither
-    // side has a row to take an id from — so both derive it from (tier, name) through this one
-    // definition. `platform` is where an environment id would be, and no environment can take that
-    // place: the name is not a dns label, so PdIdentifiers refuses it.
-    assertEquals("env-1:qits-workspaces", ApplicationKeys.of("env-1", "qits-workspaces"));
-    assertEquals("platform:qits-idp", ApplicationKeys.of(null, "qits-idp"));
+    // side has a row to take an id from — so both derive it from (plane, tier, name) through this
+    // one definition. `platform` is where an environment id would be, and no environment can take
+    // that place: the name is not a dns label, so PdIdentifiers refuses it.
+    assertEquals(
+        "env-1:qits-workspaces",
+        ApplicationKeys.of(PdDeploymentTarget.ENVIRONMENT, "env-1", "qits-workspaces"));
+    assertEquals(
+        "platform:qits-idp", ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "qits-idp"));
+  }
+
+  @Test
+  void aPlatformServiceKeepsItsKeyAfterItGainsATier() {
+    // The one claim V8 added, and the regression it exists against. A platform service is deployed
+    // into the designated environment now, so its deployment rows carry that tier — while the
+    // catalogue side still has no link and would go on saying `platform:`. A key taken from the
+    // tier would therefore have broken the join one application at a time, as each was redeployed.
+    assertEquals(
+        "platform:qits-ci",
+        ApplicationKeys.of(PdDeploymentTarget.PLATFORM, "env-dev", "qits-ci"),
+        "the PLANE decides the key, whatever tier the plane is deployed into");
+    assertEquals(
+        ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "qits-ci"),
+        ApplicationKeys.of(PdDeploymentTarget.PLATFORM, "env-dev", "qits-ci"),
+        "so a row written before the tier and one written after it join to each other");
   }
 }

@@ -29,6 +29,7 @@ public record DeploymentStarted(
     String applicationName,
     String environmentId,
     String environmentName,
+    String version,
     String commitSha,
     String runId,
     Instant startedAt)
@@ -46,6 +47,7 @@ public record DeploymentStarted(
       String applicationName,
       String environmentId,
       String environmentName,
+      String version,
       String commitSha,
       String runId,
       Instant startedAt) {
@@ -55,6 +57,7 @@ public record DeploymentStarted(
         applicationName,
         environmentId,
         environmentName,
+        version,
         commitSha,
         runId,
         startedAt);

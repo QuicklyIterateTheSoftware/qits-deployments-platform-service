@@ -37,8 +37,9 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class PdRegistrationTest {
 
-  private static final String SHA_A = "a".repeat(40);
-  private static final String SHA_B = "b".repeat(40);
+  // Released versions, not commit shas: a deployment is created from the image the release tagged.
+  private static final String V_A = "2026.903.1";
+  private static final String V_B = "2026.903.2";
 
   /** What a githost repository key looks like since the identity rollback: opaque, and internal. */
   private static final String STORAGE_UUID = "6d0c2b1e-3a44-4b0e-9a5b-2b1c0d9e4f88";
@@ -56,44 +57,46 @@ public class PdRegistrationTest {
   }
 
   @Test
-  public void aGreenBuildRegistersTheServiceAndLinksItIntoEveryMatchingTier() {
-    // Two tiers on one branch is legitimate, and the link set written has to carry both: the upsert
-    // replaces the whole set, so one link at a time would unlink the other.
-    String one = createEnvironment("reg-one", "environment/reg-shared");
-    String two = createEnvironment("reg-two", "environment/reg-shared");
-    postBuildSucceeded("repo-reg", "environment/reg-shared", SHA_A);
-    awaitApplied(2);
+  public void aReleaseRegistersTheServiceAndLinksItIntoTheTierItEntersAt() {
+    // Branch matching is gone: a release lands in the designated platform environment, which is
+    // where this platform enters. What the row records is a link into that tier and no branch of
+    // its own.
+    String entry = createEnvironment("reg-one");
+    postRelease("repo-reg", V_A);
+    awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg");
     assertEquals("ENVIRONMENT", service.get("target"));
     assertNull(service.get("branch"), "an environment service takes its branch from its tier");
-    assertEquals(List.of(one, two), service.get("environmentIds"));
+    assertEquals(List.of(entry), service.get("environmentIds"));
   }
 
   @Test
-  public void aBuildOnOneBranchKeepsTheLinksAnotherTierAlreadyHad() {
-    // The regression this guards: the upsert replaces the link set, so a build on environment/dev
-    // that sent only dev's id would silently unlink preprod.
-    String dev = createEnvironment("reg-dev", "environment/reg-dev");
-    String preprod = createEnvironment("reg-preprod", "environment/reg-preprod");
-    postBuildSucceeded("repo-both", "environment/reg-preprod", SHA_A);
+  public void aReleaseKeepsTheLinksAnotherTierAlreadyHad() {
+    // The regression this guards, and it outlives branch matching: the upsert replaces the link
+    // set, so a release that sent only the tier it entered would silently unlink every tier a
+    // promotion had already reached. Staged by moving the designation, which is what creating a
+    // platform environment does.
+    String preprod = createEnvironment("reg-preprod");
+    postRelease("repo-both", V_A);
     awaitApplied(1);
-    postBuildSucceeded("repo-both", "environment/reg-dev", SHA_B);
+    String dev = createEnvironment("reg-dev");
+    postRelease("repo-both", V_B);
     awaitApplied(2);
 
     assertEquals(
         List.of(preprod, dev),
         service("repo-both").get("environmentIds"),
-        "the preprod link survived the dev build");
+        "the preprod link survived the release that entered at dev");
   }
 
   @Test
   public void aPublicNodeIsRegisteredWithAvailableOnEnv() {
-    String environmentId = createEnvironment("reg-hub", "environment/reg-hub");
+    String environmentId = createEnvironment("reg-hub");
     specs.script(
         "repo-reg-gw",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, true, null, null, null, null));
-    postBuildSucceeded("repo-reg-gw", "environment/reg-hub", SHA_A);
+    postRelease("repo-reg-gw", V_A);
     awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg-gw");
@@ -107,11 +110,11 @@ public class PdRegistrationTest {
     // everywhere, which is what makes a new environment pick it up without anyone editing it. It
     // carries no branch either, and that is the newer half: the plane has no deploy ref of its own,
     // so there is nothing to write down.
-    createPlatformEnvironment("reg-platform", "environment/reg-platform");
+    createEnvironment("reg-platform");
     specs.script(
         "repo-reg-idp",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-reg-idp", "environment/reg-platform", SHA_A);
+    postRelease("repo-reg-idp", V_A);
     awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg-idp");
@@ -121,53 +124,45 @@ public class PdRegistrationTest {
   }
 
   @Test
-  public void aPlatformServiceDeploysFromAnEnvironmentsBranch() {
-    // The deploy refs are `environment/<name>` and nothing else — one set for the whole platform,
-    // asked the same way on both planes. What it deploys is still platform-shaped: one instance,
-    // no environment, no links.
-    createPlatformEnvironment("reg-trunk", "environment/reg-trunk");
+  public void aPlatformServiceShipsIntoTheDesignatedEntryTier() {
+    // The entry tier is one question, asked the same way on both planes: is a platform environment
+    // designated. What it deploys is one instance with no LINKS — and, since V8, one instance IN
+    // that tier: the plane's deployments carry the environment on the row, in the labels, in
+    // QITS_ENVIRONMENT and on all four events, because "no environment" was a fact the plane could
+    // not state about itself rather than a fact about the plane.
+    String environmentId = createEnvironment("reg-trunk");
     specs.script(
         "repo-reg-trunk",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-reg-trunk", "environment/reg-trunk", SHA_A);
+    postRelease("repo-reg-trunk", V_A);
     awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg-trunk");
     assertEquals("PLATFORM", service.get("target"));
-    assertEquals(List.of(), service.get("environmentIds"));
-    assertNull(driver.applied().get(0).environmentId(), "one instance, on no tier");
-  }
-
-  @Test
-  public void aPlatformServiceBuiltOnMainDeploysNothingAtAll() {
-    // `main` is the integration trunk and no environment listens to it: it builds and ships
-    // nothing. A release reaches an environment by fast-forwarding `environment/<name>` onto it,
-    // and until that push the event on the trunk must leave no row and start no container.
-    createPlatformEnvironment("reg-mainonly", "environment/reg-mainonly");
-    specs.script(
-        "repo-reg-mainonly",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-reg-mainonly", "main", SHA_A);
-    awaitWorkerIdle();
-
-    assertNull(service("repo-reg-mainonly"), "nothing was registered");
-    assertEquals(List.of(), driver.applied());
-    assertEquals(List.of(), driver.pulled());
+    assertEquals(
+        List.of(), service.get("environmentIds"), "still no link: it is present everywhere");
+    DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
+    assertEquals(environmentId, spec.environmentId(), "and deployed into the designated tier");
+    assertEquals("reg-trunk", spec.environmentName());
+    assertEquals(PdDeploymentTarget.PLATFORM, spec.target(), "the plane is stated, not inferred");
+    // ...and the one thing that does NOT take the tier: the address.
+    assertEquals("repo-reg-trunk", spec.wireAlias(), "the bare alias is what makes it reachable"
+        + " from every tier without knowing which one the plane runs in");
   }
 
   @Test
   public void theRetiredSingletonSpellingStillRegistersAPlatformService() {
     // The alias is not a parser curiosity: a repository still carrying the word must keep deploying
     // across the cutover, and what it gets has to be the platform plane in every respect.
-    createPlatformEnvironment("reg-alias", "environment/reg-alias");
+    createEnvironment("reg-alias");
     specs.script(
         "repo-alias", DeploymentSpecParserAlias.parse("deployment_target: singleton\n"));
-    postBuildSucceeded("repo-alias", "environment/reg-alias", SHA_A);
+    postRelease("repo-alias", V_A);
     awaitApplied(1);
 
     assertEquals("PLATFORM", service("repo-alias").get("target"));
-    // No environment segment in the derived name: a platform service belongs to no tier, and the
-    // word that used to fill the gap is in the repository names now.
+    // No environment segment in the derived name: the plane's names are unqualified even now that
+    // it has a tier, and the word that used to fill the gap is in the repository names.
     assertTrue(
         driver.applied().get(0).deploymentName().startsWith("qits-pd-repo-alias-"),
         driver.applied().get(0).deploymentName());
@@ -175,15 +170,19 @@ public class PdRegistrationTest {
 
   @Test
   public void aPlatformDeploymentIsReadBackByAskingForThePlaneByName() {
-    // The gap this closes: the deployment listing's filter is required, so the plane that has no
-    // environment id could not be asked for at all — every platform row was recorded and then
-    // unreadable, and a client drawing "what is deployed" showed the tiers and nothing else.
-    // `platform` is the stand-in the application id already carries, reused as the filter value.
-    createPlatformEnvironment("reg-plane", "environment/reg-plane");
+    // The gap this closes: the deployment listing's filter is required, so the plane could not be
+    // asked for at all — every platform row was recorded and then unreadable, and a client drawing
+    // "what is deployed" showed the tiers and nothing else. `platform` is the stand-in the
+    // application id already carries, reused as the filter value.
+    //
+    // IT IS A PLANE QUESTION AND NOT A NULL SCAN NOW. The rows carry the designated tier, so both
+    // the listing and the `platform:` id come off pd_deployment.deployment_target — the id most of
+    // all, since the catalogue side has no link to derive a tier from and the two have to join.
+    createEnvironment("reg-plane");
     specs.script(
         "repo-reg-plane",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-reg-plane", "environment/reg-plane", SHA_A);
+    postRelease("repo-reg-plane", V_A);
     awaitApplied(1);
     awaitWorkerIdle();
 
@@ -203,14 +202,15 @@ public class PdRegistrationTest {
   public void thePlatformPlaneCarriesNoTieredDeployment() {
     // The filter is a filter, not a widening: asking for the plane must not answer with the rows of
     // every tier as well. An environment deployment and a platform one, and only the latter comes
-    // back.
-    createPlatformEnvironment("reg-planes", "environment/reg-planes");
-    postBuildSucceeded("repo-reg-tiered", "environment/reg-planes", SHA_A);
+    // back — which is a sharper claim than it was, because both rows now name the same tier and
+    // only the plane column tells them apart.
+    createEnvironment("reg-planes");
+    postRelease("repo-reg-tiered", V_A);
     awaitApplied(1);
     specs.script(
         "repo-reg-crossplane",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-reg-crossplane", "environment/reg-planes", SHA_A);
+    postRelease("repo-reg-crossplane", V_A);
     awaitApplied(2);
     awaitWorkerIdle();
 
@@ -223,8 +223,8 @@ public class PdRegistrationTest {
   public void aRepositoryThatNamesNoHealthPathGetsTheConventionOne() {
     // The debt this closes: registration once had no source for the path, so every row was written
     // null and every service mounted under its own prefix failed a gate against a URL that 404s.
-    createEnvironment("reg-health", "environment/reg-health");
-    postBuildSucceeded("qits-observability", "environment/reg-health", SHA_A);
+    createEnvironment("reg-health");
+    postRelease("qits-observability", V_A);
     awaitApplied(1);
 
     assertEquals(
@@ -237,12 +237,12 @@ public class PdRegistrationTest {
   @Test
   public void theRepositorysOwnHealthPathWinsOverTheConvention() {
     // The gateway owns the root path space, so the convention would send its gate to a 404.
-    createEnvironment("reg-health-gw", "environment/reg-health-gw");
+    createEnvironment("reg-health-gw");
     specs.script(
         "qits-gateway",
         new SpecSource.DeploymentSpec(
             PdDeploymentTarget.ENVIRONMENT, true, null, "/q/health/ready", null, null));
-    postBuildSucceeded("qits-gateway", "environment/reg-health-gw", SHA_A);
+    postRelease("qits-gateway", V_A);
     awaitApplied(1);
 
     assertEquals("/q/health/ready", service("qits-gateway").get("healthPath"));
@@ -253,7 +253,7 @@ public class PdRegistrationTest {
     // The deployable-image case end to end: a plain image names its own probe, the driver is
     // handed it, and nothing is written down — the spec is read again before every
     // deployment, so a column would only be a second copy to keep right.
-    createEnvironment("reg-health-cmd", "environment/reg-health-cmd");
+    createEnvironment("reg-health-cmd");
     specs.script(
         "qits-db",
         new SpecSource.DeploymentSpec(
@@ -263,7 +263,7 @@ public class PdRegistrationTest {
             null,
             "pg_isready -U postgres || exit 1",
             null));
-    postBuildSucceeded("qits-db", "environment/reg-health-cmd", SHA_A);
+    postRelease("qits-db", V_A);
     awaitApplied(1);
 
     assertEquals("pg_isready -U postgres || exit 1", driver.applied().get(0).healthCmd());
@@ -276,7 +276,7 @@ public class PdRegistrationTest {
   public void anOperatorsHealthPathSurvivesAReRegistration() {
     // A path already on the row is somebody's fix for a service the convention could not guess. A
     // later green build that says nothing about the path must leave it alone.
-    String environmentId = createEnvironment("reg-health-keep", "environment/reg-health-keep");
+    String environmentId = createEnvironment("reg-health-keep");
     given()
         .contentType(ContentType.JSON)
         .body(
@@ -290,7 +290,7 @@ public class PdRegistrationTest {
         .then()
         .statusCode(201);
 
-    postBuildSucceeded("qits-odd", "environment/reg-health-keep", SHA_A);
+    postRelease("qits-odd", V_A);
     awaitApplied(1);
 
     assertEquals("/hand/placed/health", service("qits-odd").get("healthPath"));
@@ -300,11 +300,11 @@ public class PdRegistrationTest {
   public void aPlatformServiceGetsTheSameHealthPathResolution() {
     // The platform plane is not a different rule: the convention, the spec and an existing value
     // rank the same way there.
-    createPlatformEnvironment("reg-health-plane", "environment/reg-health-plane");
+    createEnvironment("reg-health-plane");
     specs.script(
         "qits-idp",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("qits-idp", "environment/reg-health-plane", SHA_A);
+    postRelease("qits-idp", V_A);
     awaitApplied(1);
 
     assertEquals("/idp/q/health/ready", service("qits-idp").get("healthPath"));
@@ -312,24 +312,12 @@ public class PdRegistrationTest {
   }
 
   @Test
-  public void aBranchNoTierTracksWritesNothingAtAll() {
-    // 202 and silence is the normal answer for a green build on a branch without an environment,
-    // and it must not leave a service row behind that later looks like a registration.
-    createEnvironment("reg-quiet", "environment/reg-quiet");
-    postBuildSucceeded("repo-quiet", "main", SHA_A);
-    awaitWorkerIdle();
-
-    assertNull(service("repo-quiet"), "nothing was registered");
-    assertEquals(List.of(), driver.applied());
-  }
-
-  @Test
   public void aRepositoryWhoseIdIsNotADnsLabelRegistersNothing() {
     // The name is the image path segment and the network alias, so a repository that cannot be one
     // cannot be deployed by convention at all. The intake is fire-and-forget, so this is a log line
     // and a silence rather than a row nobody can act on.
-    createEnvironment("reg-badname", "environment/reg-badname");
-    postBuildSucceeded("Repo-Bad", "environment/reg-badname", SHA_A);
+    createEnvironment("reg-badname");
+    postRelease("Repo-Bad", V_A);
     awaitWorkerIdle();
 
     assertEquals(List.of(), driver.applied());
@@ -343,12 +331,12 @@ public class PdRegistrationTest {
     // orchestrator's garbage collector would delete the images that are live. The name wins, and
     // it wins in all five derived places at once: the catalogue key, the image reference, the wire
     // alias, the container name and the row the pins are read off.
-    String environmentId = createEnvironment("reg-named", "environment/reg-named");
+    String environmentId = createEnvironment("reg-named");
     specs.script(
         "repo-reg-named",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, true, null, null, null, null));
 
-    postBuildSucceeded(STORAGE_UUID, "qits", "repo-reg-named", "environment/reg-named", SHA_A);
+    postRelease(STORAGE_UUID, "qits", "repo-reg-named", V_A);
     awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg-named");
@@ -360,7 +348,7 @@ public class PdRegistrationTest {
     assertEquals("repo-reg-named", applied.applicationName());
     assertEquals("reg-named-repo-reg-named", applied.wireAlias());
     assertTrue(
-        applied.imageRef().endsWith("/repo-reg-named:" + SHA_A), "image ref: " + applied.imageRef());
+        applied.imageRef().endsWith("/repo-reg-named:" + V_A), "image ref: " + applied.imageRef());
     assertTrue(
         applied.deploymentName().startsWith("qits-pd-reg-named-repo-reg-named-"),
         applied.deploymentName());
@@ -372,16 +360,16 @@ public class PdRegistrationTest {
   public void aBuildWithNoNamesIsNamedAfterItsRepositoryIdExactlyAsBefore() {
     // The compatibility arm, byte for byte: before the rollback the storage id WAS the name, so an
     // announcement carrying neither field derives every identifier from the id, as it always did.
-    createEnvironment("reg-unnamed", "environment/reg-unnamed");
+    createEnvironment("reg-unnamed");
 
-    postBuildSucceeded("repo-reg-unnamed", "environment/reg-unnamed", SHA_A);
+    postRelease("repo-reg-unnamed", V_A);
     awaitApplied(1);
 
     DeploymentDriver.ServiceSpec applied = driver.applied().get(0);
     assertEquals("repo-reg-unnamed", applied.applicationName());
     assertEquals("reg-unnamed-repo-reg-unnamed", applied.wireAlias());
     assertTrue(
-        applied.imageRef().endsWith("/repo-reg-unnamed:" + SHA_A),
+        applied.imageRef().endsWith("/repo-reg-unnamed:" + V_A),
         "image ref: " + applied.imageRef());
     assertEquals(
         List.of("repo-reg-unnamed"),
@@ -396,13 +384,13 @@ public class PdRegistrationTest {
     // catalogue key, the health path, the wire alias, the container name, the image the pipeline
     // still pushes, and the database this deployment provisions. Nothing about the running platform
     // moves when a repository is renamed — that is the whole point of the key.
-    String environmentId = createEnvironment("reg-app", "environment/reg-app");
+    String environmentId = createEnvironment("reg-app");
     specs.script(
         "qits-reg-ci-service",
         DeploymentSpecParserAlias.parse(
             "application: qits-reg-ci\nresources: postgresql:db\n"));
 
-    postBuildSucceeded(STORAGE_UUID, "qits", "qits-reg-ci-service", "environment/reg-app", SHA_A);
+    postRelease(STORAGE_UUID, "qits", "qits-reg-ci-service", V_A);
     awaitApplied(1);
 
     assertNull(service("qits-reg-ci-service"), "the repository's own name registered nothing");
@@ -416,7 +404,7 @@ public class PdRegistrationTest {
     DeploymentDriver.ServiceSpec applied = driver.applied().get(0);
     assertEquals("qits-reg-ci", applied.applicationName());
     assertEquals("reg-app-qits-reg-ci", applied.wireAlias());
-    assertTrue(applied.imageRef().endsWith("/qits-reg-ci:" + SHA_A), "image: " + applied.imageRef());
+    assertTrue(applied.imageRef().endsWith("/qits-reg-ci:" + V_A), "image: " + applied.imageRef());
     assertTrue(
         applied.deploymentName().startsWith("qits-pd-reg-app-qits-reg-ci-"),
         applied.deploymentName());
@@ -431,18 +419,18 @@ public class PdRegistrationTest {
   public void aRepositoryThatStatesNoApplicationIsNamedAfterItselfExactlyAsBefore() {
     // The other arm, and it is the one that has to stay byte-identical: a file that says nothing
     // about the key — which is every file that exists — deploys under the repository's own name.
-    createEnvironment("reg-noapp", "environment/reg-noapp");
+    createEnvironment("reg-noapp");
     specs.script(
         "qits-reg-plain",
         DeploymentSpecParserAlias.parse("resources: postgresql:db\nroutes: /reg-plain\n"));
 
-    postBuildSucceeded(STORAGE_UUID, "qits", "qits-reg-plain", "environment/reg-noapp", SHA_A);
+    postRelease(STORAGE_UUID, "qits", "qits-reg-plain", V_A);
     awaitApplied(1);
 
     DeploymentDriver.ServiceSpec applied = driver.applied().get(0);
     assertEquals("qits-reg-plain", applied.applicationName());
     assertEquals("reg-noapp-qits-reg-plain", applied.wireAlias());
-    assertTrue(applied.imageRef().endsWith("/qits-reg-plain:" + SHA_A), applied.imageRef());
+    assertTrue(applied.imageRef().endsWith("/qits-reg-plain:" + V_A), applied.imageRef());
     assertEquals("/reg-plain/q/health/ready", service("qits-reg-plain").get("healthPath"));
     assertEquals("qits_reg_plain", provisioner.requests().get(0).databaseName());
   }
@@ -451,7 +439,7 @@ public class PdRegistrationTest {
   public void anUnreadableSpecResolvesFromTheLinksTheServiceAlreadyHas() {
     // The spec read is the one remote call left, so it is the one that can still fail. When it
     // does, the failure is recorded where the service is already registered — never guessed at.
-    String environmentId = createEnvironment("reg-fallback", "environment/reg-fallback");
+    String environmentId = createEnvironment("reg-fallback");
     given()
         .contentType(ContentType.JSON)
         .body(
@@ -465,7 +453,7 @@ public class PdRegistrationTest {
         .statusCode(201);
     specs.scriptFailure("repo-fallback", "the git host answered 500");
 
-    postBuildSucceeded("repo-fallback", "environment/reg-fallback", SHA_A);
+    postRelease("repo-fallback", V_A);
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     assertEquals("FAILED", deployments.get(0).get("status"));
     assertTrue(
@@ -484,23 +472,15 @@ public class PdRegistrationTest {
     }
   }
 
-  private String createEnvironment(String name, String branch) {
-    return createEnvironment(name, branch, false);
-  }
-
   /**
-   * The tier the platform plane deploys from. A platform build ships only when THIS environment
-   * listens to the built branch, so every platform-plane test here designates its own — and
-   * designating moves the flag, so the suite's shared database never holds two.
+   * The tier a release enters at — the designated platform environment, of which there is exactly
+   * one. Creating one MOVES the designation, so every method here makes its own the entry tier and
+   * the suite's shared database never holds two.
    */
-  private String createPlatformEnvironment(String name, String branch) {
-    return createEnvironment(name, branch, true);
-  }
-
-  private String createEnvironment(String name, String branch, boolean platform) {
+  private String createEnvironment(String name) {
     return given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", name, "branch", branch, "platform", platform))
+        .body(Map.of("name", name, "platform", true))
         .when()
         .post("/platform-deployments/api/environments")
         .then()
@@ -509,19 +489,18 @@ public class PdRegistrationTest {
         .path("environment.id");
   }
 
-  private void postBuildSucceeded(String repoId, String branch, String sha) {
+  private void postRelease(String repoId, String version) {
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("runId", "run-reg", "repoId", repoId, "branch", branch, "commitSha", sha))
+        .body(Map.of("runId", "run-reg", "repoId", repoId, "version", version))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
 
-  /** The post-rollback payload: the storage id, plus the public address qits-ci fills in. */
-  private void postBuildSucceeded(
-      String repoId, String projectId, String repoName, String branch, String sha) {
+  /** The storage id, plus the repository's public address — which is what names the application. */
+  private void postRelease(String repoId, String projectId, String repoName, String version) {
     given()
         .contentType(ContentType.JSON)
         .body(
@@ -530,10 +509,9 @@ public class PdRegistrationTest {
                 "repoId", repoId,
                 "projectId", projectId,
                 "repoName", repoName,
-                "branch", branch,
-                "commitSha", sha))
+                "version", version))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }

@@ -40,7 +40,7 @@ import org.junit.jupiter.api.Test;
 @TestProfile(PdSwarmDeployFlowTest.SwarmOrchestrator.class)
 public class PdSwarmDeployFlowTest {
 
-  private static final String SHA = "5".repeat(40);
+  private static final String VERSION = "2026.903.193059";
 
   public static class SwarmOrchestrator implements QuarkusTestProfile {
     @Override
@@ -77,17 +77,17 @@ public class PdSwarmDeployFlowTest {
   public void aGreenBuildAppliesOneServiceAndRecordsItActive() {
     String environmentId = createEnvironment("swarm-green");
 
-    postBuildSucceeded("run-swarm", "repo-swarm-green", "environment/swarm-green");
+    postRelease("run-swarm", "repo-swarm-green");
     List<Map<String, Object>> deployments = awaitSettled(environmentId, 1);
 
     assertEquals("ACTIVE", deployments.get(0).get("status"));
-    assertEquals(SHA, deployments.get(0).get("commitSha"));
+    assertEquals(VERSION, deployments.get(0).get("version"));
     // The row records the name the ORCHESTRATOR gave it, which under swarm is the wire alias: the
     // service name is the address, and a replace is an update of that same service.
     assertEquals("swarm-green-repo-swarm-green", deployments.get(0).get("containerName"));
 
     assertEquals(
-        List.of("qits-platform-artifacts:8080/qits/repo-swarm-green:" + SHA),
+        List.of("qits-platform-artifacts:8080/qits/repo-swarm-green:" + VERSION),
         fake.pulled(),
         "the missing-image classification is ours, not the orchestrator's");
     assertEquals(1, fake.applied().size());
@@ -109,7 +109,7 @@ public class PdSwarmDeployFlowTest {
     OutboxEvent active = only("DeploymentActive");
     for (OutboxEvent event : List.of(queued, started, active)) {
       assertTrue(event.payload.contains("\"applicationName\":\"repo-swarm-green\""), event.payload);
-      assertTrue(event.payload.contains("\"commitSha\":\"" + SHA + "\""), event.payload);
+      assertTrue(event.payload.contains("\"version\":\"" + VERSION + "\""), event.payload);
     }
     assertTrue(
         active.payload.contains("\"containerName\":\"swarm-green-repo-swarm-green\""),
@@ -137,7 +137,7 @@ public class PdSwarmDeployFlowTest {
             null,
             DeploymentDriver.PublishMode.INGRESS));
 
-    postBuildSucceeded("run-ingress", "repo-swarm-ingress", "environment/swarm-ingress");
+    postRelease("run-ingress", "repo-swarm-ingress");
     awaitSettled(environmentId, 1);
 
     DeploymentDriver.ServiceSpec applied = fake.applied().get(0);
@@ -154,10 +154,10 @@ public class PdSwarmDeployFlowTest {
     // the predecessor and the successor are one service, so removing "the old one" would remove
     // the deployment that just went live.
     String environmentId = createEnvironment("swarm-cutover");
-    postBuildSucceeded("run-a", "repo-swarm-cutover", "environment/swarm-cutover");
+    postRelease("run-a", "repo-swarm-cutover");
     awaitSettled(environmentId, 1);
 
-    postBuildSucceeded("run-b", "repo-swarm-cutover", "environment/swarm-cutover");
+    postRelease("run-b", "repo-swarm-cutover");
     List<Map<String, Object>> deployments = awaitSettled(environmentId, 2);
 
     assertEquals("ACTIVE", deployments.get(0).get("status"));
@@ -181,7 +181,7 @@ public class PdSwarmDeployFlowTest {
             "swarm rolled dev-repo-swarm-sick back to its predecessor: rollback completed"));
     String environmentId = createEnvironment("swarm-sick");
 
-    postBuildSucceeded("run-sick", "repo-swarm-sick", "environment/swarm-sick");
+    postRelease("run-sick", "repo-swarm-sick");
     List<Map<String, Object>> deployments = awaitSettled(environmentId, 1);
 
     assertEquals("ROLLED_BACK", deployments.get(0).get("status"));
@@ -206,7 +206,7 @@ public class PdSwarmDeployFlowTest {
             DeploymentDriver.ApplyOutcome.HANDED_OFF, "the swarm manager arbitrates"));
     String environmentId = createEnvironment("swarm-self");
 
-    postBuildSucceeded("run-self", "repo-swarm-self", "environment/swarm-self");
+    postRelease("run-self", "repo-swarm-self");
     awaitStarting(environmentId);
 
     assertEquals(List.of(), fake.awaited(), "nothing waits on a succession it is not part of");
@@ -219,7 +219,8 @@ public class PdSwarmDeployFlowTest {
   private String createEnvironment(String name) {
     return given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", name, "platform", false))
+        // The entry tier: a release lands in the designated platform environment.
+        .body(Map.of("name", name, "platform", true))
         .when()
         .post("/platform-deployments/api/environments")
         .then()
@@ -228,12 +229,12 @@ public class PdSwarmDeployFlowTest {
         .path("environment.id");
   }
 
-  private void postBuildSucceeded(String runId, String repoId, String branch) {
+  private void postRelease(String runId, String repoId) {
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("runId", runId, "repoId", repoId, "branch", branch, "commitSha", SHA))
+        .body(Map.of("runId", runId, "repoId", repoId, "version", VERSION))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }

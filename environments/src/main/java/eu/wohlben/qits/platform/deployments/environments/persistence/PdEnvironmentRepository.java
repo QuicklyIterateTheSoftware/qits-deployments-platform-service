@@ -20,17 +20,13 @@ public class PdEnvironmentRepository implements PanacheRepositoryBase<PdEnvironm
   }
 
   /**
-   * Every environment listening to exactly this branch — what a green build fans out over. Usually
-   * one; two tiers may legitimately track the same ref.
-   */
-  public List<PdEnvironment> listByBranch(String branch) {
-    return list("branch = ?1 order by createdAt, id", branch);
-  }
-
-  /**
-   * The platform environment. A list rather than an optional because the schema does not enforce
-   * the "at most one" — H2 has no partial unique index, so {@code EnvironmentService.designate}
-   * does, and a query that threw on a second row would turn a repairable state into an outage.
+   * The platform environment — the tier a release enters at, and the tier the platform plane is
+   * deployed into.
+   *
+   * <p>A list rather than an optional because the schema does not enforce the "at most one" (V1's
+   * header declines the partial unique index, because {@code EnvironmentService.designate} moves
+   * the flag in one transaction and an index would forbid that statement order's own intermediate
+   * state), and a query that threw on a second row would turn a repairable state into an outage.
    * Ordered, so the answer is at least stable if one ever appears.
    */
   public List<PdEnvironment> listPlatform() {

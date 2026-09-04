@@ -10,14 +10,23 @@ import java.time.Instant;
  * definition the applications listing uses on its side — because a deployment row points at no
  * service row and a client joins the two listings on that id.
  *
- * <p>{@code runId} is the qits-ci run that caused this deployment, and it may be null: a sender is
- * free to omit it. A client renders the commit as a link to {@code /ci/runs/<runId>} when it is set
- * and as plain text when it is not; there is no other way to reach the build from here.
+ * <p><b>{@code version} is the released coordinate and {@code commitSha} is the commit behind it.</b>
+ * The version is what the image is tagged with and what a reader identifies the deployment by; the
+ * sha is the commit the released tag resolved to, and it is NULLABLE — a repository carrying no
+ * deployments.yml answers the spec read with a 404, which says nothing about where the tag points.
+ * On rows written before releases became the trigger it is the other way round: {@code version} is
+ * null and the sha was the whole coordinate.
+ *
+ * <p>{@code runId} is the qits-ci run that caused this deployment, and it may be null: a {@code
+ * SoftwareRelease} carries none at all, so only a manual replay supplies one. A client renders it as
+ * a link to {@code /ci/runs/<runId>} when it is set and omits it when it is not; there is no other
+ * way to reach the run from here.
  */
 public record PdDeploymentDto(
     String id,
     String applicationId,
     String applicationName,
+    String version,
     String commitSha,
     String runId,
     PdDeploymentStatus status,

@@ -75,7 +75,7 @@ public class AccessRefusalIT {
    * before anything validates it — a 403 that depended on the payload being well-formed would be a
    * 403 the intake had already thought about.
    */
-  static final String REFUSED_SHA = "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1";
+  static final String REFUSED_VERSION = "2026.903.103";
 
   private static final List<String> MINTED = new ArrayList<>();
 
@@ -163,16 +163,14 @@ public class AccessRefusalIT {
                 StoryTarget.PROJECT,
                 "repoName",
                 UNREGISTERED,
-                "branch",
-                StoryTarget.TIER_BRANCH,
-                "commitSha",
-                REFUSED_SHA))
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+                "version",
+                REFUSED_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(403);
     story
         .note(
-            "an admin session cannot announce a build: the intake is qits-ci's door, and what comes"
+            "an admin session cannot announce a release: the intake is qits-ci's door, and what comes"
                 + " through it deploys whatever commit it names")
         .as("intake-refused");
 
@@ -213,7 +211,7 @@ public class AccessRefusalIT {
     given()
         .contentType(ContentType.JSON)
         .body(payload())
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(401);
     story
@@ -225,7 +223,7 @@ public class AccessRefusalIT {
     StoryIdentities.bearer(given(), foreign)
         .contentType(ContentType.JSON)
         .body(payload())
-        .post(StoryTarget.BUILD_SUCCEEDED_PATH)
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
         .then()
         .statusCode(401);
     // Both refusals are the same edge — same actor, same route, same status — so the diagram draws
@@ -244,8 +242,7 @@ public class AccessRefusalIT {
         "repoId", UNREGISTERED,
         "projectId", StoryTarget.PROJECT,
         "repoName", UNREGISTERED,
-        "branch", StoryTarget.TIER_BRANCH,
-        "commitSha", REFUSED_SHA);
+        "version", REFUSED_VERSION);
   }
 
   @AfterAll
@@ -265,7 +262,7 @@ public class AccessRefusalIT {
     refused(
         PERSON_SLUG,
         StoryIdentities.OPERATOR,
-        "POST " + StoryTarget.BUILD_SUCCEEDED_PATH + " -> 403");
+        "POST " + StoryTarget.SOFTWARE_RELEASED_PATH + " -> 403");
     refused(
         PERSON_SLUG,
         StoryIdentities.OPERATOR,
@@ -280,7 +277,7 @@ public class AccessRefusalIT {
     refused(
         ANONYMOUS_SLUG,
         StoryIdentities.IMPOSTOR,
-        "POST " + StoryTarget.BUILD_SUCCEEDED_PATH + " -> 401");
+        "POST " + StoryTarget.SOFTWARE_RELEASED_PATH + " -> 401");
     // ONE, for two credentials: the diagram says which dependencies exist and what answered, and
     // the two refusals are the same dependency answering the same way.
     ReportAssertions.assertEdgeCount(CATEGORY, ANONYMOUS_SLUG, 1);

@@ -26,6 +26,10 @@ import org.junit.jupiter.api.Test;
  */
 class DeployEventsTest {
 
+  /** The released coordinate — the tag the image carries, and what a deployment is identified by. */
+  private static final String VERSION = "2026.812.90042";
+
+  /** The commit the released tag resolved to: the trace edge, and nullable on the wire. */
   private static final String SHA = "a".repeat(40);
   private static final Instant QUEUED = Instant.parse("2026-08-12T09:00:00Z");
   private static final Instant STARTED = Instant.parse("2026-08-12T09:00:01Z");
@@ -33,23 +37,24 @@ class DeployEventsTest {
 
   private static DeploymentQueued aQueued() {
     return new DeploymentQueued(
-        "d-1", "qits-gateway", "env-1", "dev", SHA, "run-1", QUEUED);
+        "d-1", "qits-gateway", "env-1", "dev", VERSION, SHA, "run-1", QUEUED);
   }
 
   private static DeploymentStarted aStarted() {
     return new DeploymentStarted(
-        "d-1", "qits-gateway", "env-1", "dev", SHA, "run-1", STARTED);
+        "d-1", "qits-gateway", "env-1", "dev", VERSION, SHA, "run-1", STARTED);
   }
 
   private static DeploymentActive anActive() {
     return new DeploymentActive(
-        "d-1", "qits-gateway", "env-1", "dev", SHA, "run-1", "qits-pd-dev-qits-gateway-d1", FINISHED);
+        "d-1", "qits-gateway", "env-1", "dev", VERSION, SHA, "run-1",
+        "qits-pd-dev-qits-gateway-d1", FINISHED);
   }
 
   private static DeploymentFailed aFailed() {
     return new DeploymentFailed(
-        "d-1", "qits-gateway", "env-1", "dev", SHA, "run-1", "FAILED", "container exited 1",
-        FINISHED);
+        "d-1", "qits-gateway", "env-1", "dev", VERSION, SHA, "run-1", "FAILED",
+        "container exited 1", FINISHED);
   }
 
   @Test
@@ -94,7 +99,9 @@ class DeployEventsTest {
             + SHA
             + "\",\"deploymentId\":\"d-1\",\"environmentId\":\"env-1\","
             + "\"environmentName\":\"dev\",\"queuedAt\":\"2026-08-12T09:00:00Z\","
-            + "\"runId\":\"run-1\"}",
+            + "\"runId\":\"run-1\",\"version\":\""
+            + VERSION
+            + "\"}",
         json.get("payload").asText());
   }
 
@@ -116,8 +123,8 @@ class DeployEventsTest {
     // an explicit null.
     DeploymentActive platform =
         new DeploymentActive(
-            "d-2", "qits-platform-idp", null, null, SHA, "run-2", "qits-pd-qits-platform-idp-d2",
-            FINISHED);
+            "d-2", "qits-platform-idp", null, null, VERSION, SHA, "run-2",
+            "qits-pd-qits-platform-idp-d2", FINISHED);
 
     String payload = CanonicalJson.payload(platform);
 
@@ -131,7 +138,8 @@ class DeployEventsTest {
   void aFailureWithNoDetailOmitsIt() {
     DeploymentFailed bare =
         new DeploymentFailed(
-            "d-3", "qits-gateway", "env-1", "dev", SHA, null, "IMAGE_MISSING", null, FINISHED);
+            "d-3", "qits-gateway", "env-1", "dev", VERSION, SHA, null, "IMAGE_MISSING", null,
+            FINISHED);
 
     String payload = CanonicalJson.payload(bare);
 
@@ -156,6 +164,7 @@ class DeployEventsTest {
     DeploymentActive active =
         CanonicalJson.payloadTo(CanonicalJson.payload(anActive()), DeploymentActive.class);
     assertEquals("qits-pd-dev-qits-gateway-d1", active.containerName());
+    assertEquals(VERSION, active.version());
     assertEquals(SHA, active.commitSha());
 
     DeploymentFailed failed =
@@ -173,6 +182,7 @@ class DeployEventsTest {
             "qits-refinement",
             "env-1",
             "dev",
+            VERSION,
             SHA,
             "run-1",
             "dev-qits-refinement",
@@ -216,6 +226,7 @@ class DeployEventsTest {
             "qits-refinement",
             "env-1",
             "dev",
+            VERSION,
             SHA,
             "run-1",
             "dev-qits-refinement",
@@ -253,6 +264,22 @@ class DeployEventsTest {
 
     assertFalse(payload.contains("browserHost"), payload);
     assertTrue(payload.contains("\"navigation\":[]"), payload);
+  }
+
+  @Test
+  void aReleaseWithNoResolvedCommitOmitsTheShaAndStillCarriesItsVersion() {
+    // The 404 case: a repository that carries no deployments.yml gets the defaults and no commit,
+    // because a missing blob says nothing about where the tag points. The VERSION is the
+    // coordinate and is always there; the sha is a trace edge and is absent rather than null.
+    DeploymentActive noCommit =
+        new DeploymentActive(
+            "d-4", "qits-oci-postgresql", "env-1", "dev", VERSION, null, "run-4",
+            "qits-pd-dev-qits-oci-postgresql-d4", FINISHED);
+
+    String payload = CanonicalJson.payload(noCommit);
+
+    assertFalse(payload.contains("commitSha"), payload);
+    assertTrue(payload.contains("\"version\":\"" + VERSION + "\""), payload);
   }
 
   @Test

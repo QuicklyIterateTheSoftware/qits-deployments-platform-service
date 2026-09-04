@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
@@ -34,6 +35,9 @@ public class PdDeploymentObservationTest {
 
   private static final String SHA_A = "a".repeat(40);
   private static final String SHA_B = "b".repeat(40);
+
+  /** The released coordinate a deployment carries now — the CalVer stamp, not a commit sha. */
+  private static final String VERSION_B = "2026.903.193059";
 
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
@@ -63,6 +67,10 @@ public class PdDeploymentObservationTest {
               row.id = id;
               row.applicationName = applicationName;
               row.environmentId = environmentId;
+              row.deploymentTarget =
+                  environmentId == null
+                      ? PdDeploymentTarget.PLATFORM
+                      : PdDeploymentTarget.ENVIRONMENT;
               row.commitSha = SHA_A;
               row.status = status;
               row.containerName = containerName;
@@ -329,7 +337,7 @@ public class PdDeploymentObservationTest {
     // has to land AFTER the deployment's last driver call, not between two of them.
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", "obs-serial", "platform", false))
+        .body(Map.of("name", "obs-serial", "platform", true))
         .when()
         .post("/platform-deployments/api/environments")
         .then()
@@ -349,10 +357,9 @@ public class PdDeploymentObservationTest {
             Map.of(
                 "runId", "run-obs-serial",
                 "repoId", "repo-obs-serial",
-                "branch", "environment/obs-serial",
-                "commitSha", SHA_B))
+                "version", VERSION_B))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
     // The intake has already submitted the event, so this lands strictly behind it in the queue.

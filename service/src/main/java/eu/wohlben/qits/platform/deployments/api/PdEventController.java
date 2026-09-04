@@ -2,7 +2,7 @@ package eu.wohlben.qits.platform.deployments.api;
 
 import eu.wohlben.qits.auth.MachineAuth;
 import eu.wohlben.qits.eventstream.CausationScope;
-import eu.wohlben.qits.platform.deployments.deployments.control.BuildAnnouncements;
+import eu.wohlben.qits.platform.deployments.deployments.control.ReleaseAnnouncements;
 import eu.wohlben.qits.platform.deployments.deployments.control.RepositoryRef;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
@@ -16,27 +16,29 @@ import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 
 /**
- * The build event intake — the wire contract with qits-ci. {@code POST
- * /platform-deployments/api/events/build-succeeded} is a cross-repo contract: qits-ci's notifier
- * POSTs exactly this path via its configured intake url, and it is fire-and-forget — a delivery
- * failure is logged at debug and nothing else. A mismatch here therefore raises no error anywhere;
- * deployments just stop happening. The path carries no segment of its own because {@code
+ * The release intake — the <b>manual and bootstrap</b> door. {@code POST
+ * /platform-deployments/api/events/software-released} announces one released version of one
+ * application, exactly as {@code bus/PdSoftwareReleaseSubscriber} does off qits-ci's {@code
+ * SoftwareRelease}. The path carries no segment of its own because {@code
  * quarkus.rest.path=/platform-deployments/api} already says it.
  *
- * <p><b>The payload shape is unchanged from the ancestor's</b>, deliberately: the bootstrap replays
- * lost events through it by hand and qits-ci sends it today, so the body a caller writes is the one
- * it always wrote. Only the path moved with the component's name.
+ * <p><b>It replaces {@code /events/build-succeeded}, which is gone.</b> A green build is no longer a
+ * reason to deploy anything, so a door that took {@code (branch, commitSha)} would be a second
+ * coordinate system for the same cutover — and the one thing this epic must not leave behind is two
+ * ways to put an application live. The old path now 404s; qits-ci's fire-and-forget POST to it was
+ * already scheduled for retirement and this is that retirement.
  *
- * <p><b>This is the transitional and manual door.</b> The target model is bus-driven — qits-ci
- * already publishes the events, and a deployment should follow from one that can be retried and
- * replayed rather than from a POST nobody retries. {@link BuildAnnouncements} is the seam that
- * lands takes; nothing here changes when it does.
+ * <p><b>What it is FOR, now that the bus is the ordinary door.</b> A bootstrap replays a release
+ * nobody was listening for; an operator redeploys a version, or deliberately goes back one. That
+ * last case is why this door is unguarded by the monotonic collapse the subscriber runs through:
+ * an operator posting a version is choosing that version, and refusing a lower one would be
+ * refusing the choice.
  *
  * <p>Hidden from the OpenAPI document (a wire/system API).
  *
  * <p><b>{@code qits-platform:system} and {@link MachineAuth#require()} are both here because
- * nothing human reaches this path</b> — qits-ci is its only sender, so a bearer is the only
- * credential its caller could ever hold, and the role is the one an idp-minted token carries. The
+ * nothing human reaches this path</b> — its callers are machines and bootstraps, so a bearer is the
+ * only credential one could ever hold, and the role is the one an idp-minted token carries. The
  * reads next door take the admin role no token has. That split is the rule, not a phasing.
  */
 @Path("/events")
@@ -45,48 +47,64 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 @jakarta.annotation.security.RolesAllowed("qits-platform:system")
 public class PdEventController {
 
-  @Inject BuildAnnouncements announcements;
+  @Inject ReleaseAnnouncements announcements;
   @Inject MachineAuth machineAuth;
 
   /**
-   * One green pipeline for one commit. The triple that matters is (repository, branch, commitSha) —
-   * the image is resolved from it by convention and everything after that is this component's.
-   * {@code runId} is optional and drives nothing: it is recorded on each deployment this queues so
-   * a reader can walk from a deployment row to {@code /ci/runs/<runId>}, the only edge between the
-   * two services' histories. A sender that omits it still deploys; the row simply names no build.
+   * One released version of one application. The pair that matters is {@code (application,
+   * version)} — the image is resolved from it by convention, the spec is read at the tag, and
+   * everything after that is this component's.
    *
-   * <p><b>{@code projectId} and {@code repoName} are the repository's public address and both are
-   * OPTIONAL</b> — the payload shape stays what it was, so a bootstrap replaying an event by hand
-   * and any sender written before the identity rollback keep working byte for byte. Present, the
-   * name is what this build deploys under and what the spec is read by; absent, the {@code repoId}
-   * is, which is the pre-rollback behaviour and correct there because the id WAS the name.
+   * <p><b>{@code application} is optional and the fallback chain is the point.</b> The bus door
+   * takes the application out of the released package ({@code qits/qits-ci} → {@code qits-ci});
+   * this door lets a caller state it outright, and falls back to the repository's name and then to
+   * its id — which is what a bootstrap that knows a repository and nothing else has to hand.
+   *
+   * <p><b>{@code projectId} and {@code repoName} are the repository's public address and both stay
+   * OPTIONAL</b>: with both, the spec is read name-addressed; with either missing, through {@code
+   * /git/<repoId>}, which is the route a release event itself takes.
+   *
+   * <p>{@code runId} is optional and drives nothing: it is recorded on each deployment this queues
+   * so a reader can walk from a deployment row to {@code /ci/runs/<runId>}. A release event carries
+   * none, so the ordinary path records null and this door exists to let a replay supply one.
    */
-  public record BuildSucceededEvent(
+  public record SoftwareReleasedEvent(
       String runId,
       @NotBlank String repoId,
       String projectId,
       String repoName,
-      @NotBlank String branch,
-      @NotBlank String commitSha) {}
+      String application,
+      @NotBlank String version) {
+
+    /**
+     * What this release deploys under: what the caller stated, else the repository's name, else its
+     * id — the pre-release fallback, byte for byte, for a bootstrap that has only a storage key.
+     */
+    String applicationName() {
+      if (application != null && !application.isBlank()) {
+        return application;
+      }
+      return repoName != null && !repoName.isBlank() ? repoName : repoId;
+    }
+  }
 
   /**
-   * Accepts the event and returns immediately — deployments execute on the worker. 202 also when no
-   * environment listens to the branch: that is the normal case for every green build on a branch
-   * without an environment, not an error the fire-and-forget sender could act on.
+   * Accepts the release and returns immediately — deployments execute on the worker. 202 also when
+   * no tier is designated to enter: that is a mid-bootstrap install rather than an error the
+   * fire-and-forget sender could act on.
    *
    * <p>{@code require()} and not {@code requireProject(...)}: the event names a {@code repoId}, and
    * a repository is not a project. Holding a token minted for this component is the whole claim
-   * this intake needs — it queues a deployment onto whichever environment already listens to the
-   * branch, and which environments exist is this component's own topology, not the caller's to
-   * name.
+   * this intake needs — it queues a deployment onto the tier this platform enters at, and which
+   * tier that is is this component's own topology, not the caller's to name.
    *
    * <p>With the gate off this line returns at once and the endpoint accepts credential-free calls
    * from the platform's networks exactly as it did before.
    */
   @POST
-  @Path("/build-succeeded")
+  @Path("/software-released")
   @Operation(hidden = true)
-  public Response buildSucceeded(@Valid BuildSucceededEvent event) {
+  public Response softwareReleased(@Valid SoftwareReleasedEvent event) {
     machineAuth.require();
     // The cause is read HERE, on the request thread, because that is the only place it exists:
     // CausationServerFilter restored it from the caller's X-Qits-Causation-Id before this method
@@ -95,8 +113,9 @@ public class PdEventController {
     announcements.announce(
         event.runId(),
         new RepositoryRef(event.repoId(), event.projectId(), event.repoName()),
-        event.branch(),
-        event.commitSha(),
+        event.applicationName(),
+        event.version(),
+        null,
         CausationScope.current());
     return Response.accepted().build();
   }

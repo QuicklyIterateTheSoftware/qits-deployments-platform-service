@@ -16,8 +16,16 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
- * Which image shas are rollback-relevant right now: per application, the sha it is serving and the
- * sha a rollback would put back.
+ * Which image tags are rollback-relevant right now: per application, the tag it is serving and the
+ * tag a rollback would put back.
+ *
+ * <p><b>A tag is a released VERSION now</b> ({@code 2026.903.113443}), because that is what a
+ * deployment pulls — {@code qits/<application>:<version>}. It is read through {@link
+ * PdDeployment#imageTag()}, so a row written before releases became the trigger still pins the sha
+ * its image really carries. The wire field is still called {@code shas} and must stay so: it is
+ * qits-artifacts' garbage collector's parse key, the match against a tag is a plain string
+ * equality, and renaming the field would abort every sweep on the platform (that reader is
+ * fail-closed). The values inside it changed; the contract did not.
  *
  * <p><b>Why this exists.</b> qits-artifacts' OCI garbage collector deletes an image tag only when no
  * pin names it, and this component is the only thing that knows what is running. The policy lives
@@ -80,12 +88,18 @@ public class RollbackPins {
   /**
    * One deployment row reduced to what the rule reads. Grouped by {@code applicationId} and
    * reported by {@code applicationName}: the id is what makes a tier's history its own, the name is
-   * what a pin addresses. The id is derived from the row's own {@code (environmentId,
-   * applicationName)} pair ({@link ApplicationKeys}) rather than read off a service row — same
-   * grouping, and nothing to join.
+   * what a pin addresses. The id is derived from the row's own {@code (deploymentTarget,
+   * environmentId, applicationName)} ({@link ApplicationKeys}) rather than read off a service row —
+   * same grouping, and nothing to join.
+   *
+   * <p><b>The plane is part of that grouping since V8</b>, and it has to be: a platform deployment
+   * names the main environment now, so a key without it would have split one application's history
+   * across the deployment that introduced the tier — the rows before it under {@code platform:} and
+   * the rows after it under the tier — and the pin rule reads "the previous distinct tag" straight
+   * off one such group.
    */
   public record Row(
-      String applicationId, String applicationName, String commitSha, PdDeploymentStatus status) {}
+      String applicationId, String applicationName, String imageTag, PdDeploymentStatus status) {}
 
   /**
    * The pins over every environment this instance knows, <b>from the deployment rows alone</b>.
@@ -100,9 +114,12 @@ public class RollbackPins {
     for (PdDeployment deployment : deployments.listAllNewestFirst()) {
       rows.add(
           new Row(
-              ApplicationKeys.of(deployment.environmentId, deployment.applicationName),
+              ApplicationKeys.of(
+                  deployment.deploymentTarget,
+                  deployment.environmentId,
+                  deployment.applicationName),
               deployment.applicationName,
-              deployment.commitSha,
+              deployment.imageTag(),
               deployment.status));
     }
     return of(rows);
@@ -147,12 +164,12 @@ public class RollbackPins {
     Row active = rows.get(at);
     serving
         .computeIfAbsent(active.applicationName(), name -> new TreeSet<>())
-        .add(active.commitSha());
+        .add(active.imageTag());
     for (Row older : rows.subList(at + 1, rows.size())) {
-      if (SERVED.contains(older.status()) && !older.commitSha().equals(active.commitSha())) {
+      if (SERVED.contains(older.status()) && !older.imageTag().equals(active.imageTag())) {
         rollback
             .computeIfAbsent(active.applicationName(), name -> new TreeSet<>())
-            .add(older.commitSha());
+            .add(older.imageTag());
         return;
       }
     }

@@ -31,10 +31,12 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class PdPinApiTest {
 
-  private static final String SHA_A = "a".repeat(40);
-  private static final String SHA_B = "b".repeat(40);
-  private static final String SHA_C = "c".repeat(40);
-  private static final String SHA_D = "d".repeat(40);
+  // Released versions, not commit shas: what a deployment is created from — and therefore what the
+  // GC must keep — is the image tagged with the CalVer stamp the release minted.
+  private static final String V_A = "2026.903.1";
+  private static final String V_B = "2026.903.2";
+  private static final String V_C = "2026.903.3";
+  private static final String V_D = "2026.903.4";
 
   @Inject FakeDeploymentDriver driver;
 
@@ -48,17 +50,19 @@ public class PdPinApiTest {
     // Two environments running one application name, each a rollback step deep: the entry carries
     // all four shas, because either environment's next restart pulls its own serving sha and either
     // rollback pulls its own predecessor.
+    // Creating a tier designates it as the entry one, so each half of this runs against its own:
+    // staging takes the first two releases, live the next two. That is what a promotion will look
+    // like once there is one, and it is what makes the union below two histories rather than one.
     String staging = createEnvironment("pins-staging");
+    deploy("repo-pins", V_A, staging, 1);
+    deploy("repo-pins", V_B, staging, 2);
     String live = createEnvironment("pins-live");
-
-    deploy("repo-pins", "environment/pins-staging", SHA_A, staging, 1);
-    deploy("repo-pins", "environment/pins-staging", SHA_B, staging, 2);
-    deploy("repo-pins", "environment/pins-live", SHA_C, live, 1);
-    deploy("repo-pins", "environment/pins-live", SHA_D, live, 2);
+    deploy("repo-pins", V_C, live, 1);
+    deploy("repo-pins", V_D, live, 2);
 
     // Serving shas sorted, then rollback shas sorted — a union over environments has no recency to
     // order by, so the answer is stable rather than pretending to be a sequence.
-    assertEquals(List.of(SHA_B, SHA_D, SHA_A, SHA_C), shasOf("repo-pins"));
+    assertEquals(List.of(V_B, V_D, V_A, V_C), shasOf("repo-pins"));
   }
 
   @Test
@@ -69,13 +73,13 @@ public class PdPinApiTest {
     // say exactly that — the serving sha, and no rollback target, because nothing ever served
     // before it. The failed sha is pinned by nothing: nothing was ever created from it.
     String environmentId = createEnvironment("pins-gate");
-    deploy("repo-pins-gate", "environment/pins-gate", SHA_A, environmentId, 1);
+    deploy("repo-pins-gate", V_A, environmentId, 1);
 
     driver.scriptConvergence(
         DeploymentDriver.Convergence.rolledBack("the successor never went healthy"));
-    deploy("repo-pins-gate", "environment/pins-gate", SHA_B, environmentId, 2);
+    deploy("repo-pins-gate", V_B, environmentId, 2);
 
-    assertEquals(List.of(SHA_A), shasOf("repo-pins-gate"));
+    assertEquals(List.of(V_A), shasOf("repo-pins-gate"));
   }
 
   @Test
@@ -83,14 +87,14 @@ public class PdPinApiTest {
     // Three green builds in a row: the newest serves, the one before it is the rollback target, and
     // the oldest is pinned by nothing — one rollback step is what cd can actually perform.
     String environmentId = createEnvironment("pins-steps");
-    deploy("repo-pins-steps", "environment/pins-steps", SHA_A, environmentId, 1);
-    deploy("repo-pins-steps", "environment/pins-steps", SHA_B, environmentId, 2);
+    deploy("repo-pins-steps", V_A, environmentId, 1);
+    deploy("repo-pins-steps", V_B, environmentId, 2);
 
-    assertEquals(List.of(SHA_B, SHA_A), shasOf("repo-pins-steps"));
+    assertEquals(List.of(V_B, V_A), shasOf("repo-pins-steps"));
 
-    deploy("repo-pins-steps", "environment/pins-steps", SHA_C, environmentId, 3);
+    deploy("repo-pins-steps", V_C, environmentId, 3);
 
-    assertEquals(List.of(SHA_C, SHA_B), shasOf("repo-pins-steps"));
+    assertEquals(List.of(V_C, V_B), shasOf("repo-pins-steps"));
   }
 
   @Test
@@ -101,21 +105,11 @@ public class PdPinApiTest {
     // tag at all, so the collector would delete the image the running container was created from.
     String environmentId = createEnvironment("pins-uuid");
     deployNamed(
-        "6d0c2b1e-3a44-4b0e-9a5b-2b1c0d9e4f88",
-        "repo-pins-named",
-        "environment/pins-uuid",
-        SHA_A,
-        environmentId,
-        1);
+        "6d0c2b1e-3a44-4b0e-9a5b-2b1c0d9e4f88", "repo-pins-named", V_A, environmentId, 1);
     deployNamed(
-        "6d0c2b1e-3a44-4b0e-9a5b-2b1c0d9e4f88",
-        "repo-pins-named",
-        "environment/pins-uuid",
-        SHA_B,
-        environmentId,
-        2);
+        "6d0c2b1e-3a44-4b0e-9a5b-2b1c0d9e4f88", "repo-pins-named", V_B, environmentId, 2);
 
-    assertEquals(List.of(SHA_B, SHA_A), shasOf("repo-pins-named"));
+    assertEquals(List.of(V_B, V_A), shasOf("repo-pins-named"));
     assertEquals(
         List.of(),
         pins().stream()
@@ -153,7 +147,8 @@ public class PdPinApiTest {
   private String createEnvironment(String name) {
     return given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", name))
+        // The entry tier: creating one moves the designation, and a release lands there.
+        .body(Map.of("name", name, "platform", true))
         .when()
         .post("/platform-deployments/api/environments")
         .then()
@@ -162,26 +157,21 @@ public class PdPinApiTest {
         .path("environment.id");
   }
 
-  /** One green build, awaited to a settled row — the pins are read off finished deployments. */
-  private void deploy(String repoId, String branch, String sha, String environmentId, int expected) {
+  /** One release, awaited to a settled row — the pins are read off finished deployments. */
+  private void deploy(String repoId, String version, String environmentId, int expected) {
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("runId", "run-pins", "repoId", repoId, "branch", branch, "commitSha", sha))
+        .body(Map.of("runId", "run-pins", "repoId", repoId, "version", version))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
     settle(environmentId, expected);
   }
 
-  /** The same, with the post-rollback payload: an opaque storage id and the public address. */
+  /** The same, with an opaque storage id and the repository's public name beside it. */
   private void deployNamed(
-      String repoId,
-      String repoName,
-      String branch,
-      String sha,
-      String environmentId,
-      int expected) {
+      String repoId, String repoName, String version, String environmentId, int expected) {
     given()
         .contentType(ContentType.JSON)
         .body(
@@ -190,10 +180,9 @@ public class PdPinApiTest {
                 "repoId", repoId,
                 "projectId", "qits",
                 "repoName", repoName,
-                "branch", branch,
-                "commitSha", sha))
+                "version", version))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
     settle(environmentId, expected);

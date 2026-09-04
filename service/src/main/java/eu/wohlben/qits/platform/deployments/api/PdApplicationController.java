@@ -16,10 +16,13 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * Every application this component deploys, in one flat list — the environments' and the platform's
  * together.
  *
- * <p>It is flat because a platform service belongs to no environment: reading through the
+ * <p>It is flat because a platform service carries no LINK into an environment: reading through the
  * environments would leave qits-platform-idp and this component out of it, which are the two a
  * reader most wants to find. Each row says which plane it is on ({@code target}) and, for an
- * environment application, which tier ({@code environmentId}/{@code environmentName}).
+ * environment application, which tier it is linked into ({@code environmentId}/{@code
+ * environmentName}). A platform service is nonetheless deployed into the designated environment —
+ * the tier it runs in is on its deployment rows, not here, because "no link" is what makes a tier
+ * created tomorrow pick it up.
  *
  * <p>Read-only, and that is the model rather than a phase: rows here are derived from each
  * repository's own {@code .config/qits/deployments.yml} on every green build.

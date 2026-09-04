@@ -24,12 +24,18 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * with an empty list.
  *
  * <p><b>The platform plane is asked for by name:</b> {@code ?environmentId=platform} returns the
- * deployments that belong to no tier. That is the {@code platform:} stand-in from {@link
- * ApplicationKeys}, reused rather than respelled, so the word a client already reads at the front of
- * a platform application's id is the word it filters with. It cannot be mistaken for a tier — an
- * environment id is a random UUID — and it is a named plane rather than a widening: dropping the
- * filter altogether still answers 400, because an unscoped listing would return every deployment on
- * the instance.
+ * deployments on that PLANE. That is the {@code platform:} stand-in from {@link ApplicationKeys},
+ * reused rather than respelled, so the word a client already reads at the front of a platform
+ * application's id is the word it filters with. It cannot be mistaken for a tier — an environment
+ * id is a random UUID — and it is a named plane rather than a widening: dropping the filter
+ * altogether still answers 400, because an unscoped listing would return every deployment on the
+ * instance.
+ *
+ * <p><b>The two filters overlap now, and that is the honest answer rather than a leak.</b> A
+ * platform service is deployed INTO the designated environment, so its rows carry that tier and a
+ * tier's listing shows them — which is what an operator asking "what is running in dev" means. The
+ * plane's own listing is the same rows asked for by plane, off {@code pd_deployment}'s own column
+ * rather than off a missing tier, which is what it was before V8 and could not stay.
  */
 @Path("/deployments")
 @Produces(MediaType.APPLICATION_JSON)

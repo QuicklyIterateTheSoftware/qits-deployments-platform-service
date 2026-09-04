@@ -40,9 +40,13 @@ import org.junit.jupiter.api.Test;
  *       and nulls are distinct to {@code =} — so it is written with an explicit null test and
  *       pinned here;
  *   <li>and the same fact from the other side on {@code pd_resource}: its uniqueness is declared
- *       {@code nulls not distinct}, so the platform plane — whose {@code environment_name} is null
- *       — gets one row per resource rather than one per deployment.
+ *       {@code nulls not distinct}, so a row with no {@code environment_name} — which is what the
+ *       platform plane wrote before V8 — gets one row per resource rather than one per deployment.
  * </ul>
+ *
+ * <p><b>Two of them migrate halfway</b>, and they are the only tests here that do: V8 carries this
+ * lineage's one backfill, and a backfill is invisible to a suite that always starts from an empty
+ * schema. They stop at V7, write the rows the old code wrote, and migrate the rest of the way.
  */
 public class PdSchemaTest {
 
@@ -120,8 +124,8 @@ public class PdSchemaTest {
       // Named columns, not positional: a later migration that adds one must not become a change to
       // this file.
       sql.execute(
-          "insert into pd_environment (id, name, branch, network, platform, created_at) values"
-              + " ('env-1', 'dev', 'environment/dev', 'qits-net', true, timestamp with time zone"
+          "insert into pd_environment (id, name, network, platform, created_at) values"
+              + " ('env-1', 'dev', 'qits-net', true, timestamp with time zone"
               + " '2026-08-06 10:00:00Z')");
       sql.execute(
           "insert into pd_service (id, name, deployment_target, branch, available_on_env,"
@@ -221,30 +225,167 @@ public class PdSchemaTest {
     }
   }
 
+  @Test
+  public void theV8BackfillMovesThePlatformPlaneOntoTheDesignatedTier() throws Exception {
+    // THE ONE BACKFILL IN THIS LINEAGE, and the only test that migrates halfway. Everything else
+    // here runs against an empty schema, so a backfill would be untested by them: this stops at V7,
+    // writes the rows the old code wrote, and migrates the rest of the way.
+    //
+    // What the old code wrote is the statement being translated: a platform deployment had no
+    // environment_id, and that null was the whole of how anything knew which plane a row was on.
+    String url = EmbeddedPg.url("pd_deployments_" + UUID.randomUUID().toString().replace("-", ""));
+    migrate(url, "7");
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      sql.execute(
+          "insert into pd_environment (id, name, branch, network, platform, created_at) values"
+              + " ('env-dev', 'dev', 'environment/dev', 'qits-net', true, timestamp with time zone"
+              + " '2026-08-06 10:00:00Z'),"
+              + " ('env-prod', 'prod', 'environment/prod', 'qits-env-prod', false, timestamp with"
+              + " time zone '2026-08-06 10:00:00Z')");
+      // A platform deployment, as V7 spelled one: no tier at all.
+      sql.execute(
+          "insert into pd_deployment (id, application_name, environment_id, version, status,"
+              + " container_name, created_at) values ('d-plat', 'qits-ci', null, '2026.901.1',"
+              + " 'ACTIVE', 'qits-ci', timestamp with time zone '2026-08-06 12:00:00Z')");
+      sql.execute(
+          "insert into pd_deployment (id, application_name, environment_id, version, status,"
+              + " container_name, created_at) values ('d-env', 'qits-gateway', 'env-prod',"
+              + " '2026.901.2', 'ACTIVE', 'prod-qits-gateway', timestamp with time zone"
+              + " '2026-08-06 12:00:00Z')");
+      sql.execute(
+          "insert into pd_deployment_request (id, application_name, version, environment_id,"
+              + " quality_gate, created_at) values ('rq-plat', 'qits-ci', '2026.901.1', null,"
+              + " 'MET', timestamp with time zone '2026-08-06 12:00:00Z')");
+      // The plane's own resource row, and the leftover from the era when the plane ran per tier.
+      resource(sql, "r-plane", "qits-ci", "null", "db", "qits_ci");
+      resource(sql, "r-stale", "qits-ci", "'dev'", "db", "qits_ci");
+    }
+
+    migrate(url, null);
+
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      assertEquals(
+          List.of("d-env|ENVIRONMENT|env-prod", "d-plat|PLATFORM|env-dev"),
+          rows(
+              sql,
+              "select id || '|' || deployment_target || '|' || environment_id from pd_deployment"
+                  + " order by id"),
+          "the null meant the platform plane, and it is now the plane plus the tier it deploys into");
+
+      assertEquals(
+          List.of("env-dev"),
+          rows(sql, "select environment_id from pd_deployment_request where id = 'rq-plat'"),
+          "the request names the place its deployment names");
+
+      assertEquals(
+          List.of("r-plane|dev"),
+          rows(
+              sql,
+              "select id || '|' || environment_name from pd_resource"
+                  + " where application_name = 'qits-ci'"),
+          "the plane's credential row moves onto the tier's key, and the leftover it would have"
+              + " collided with is dropped — a lookup that missed would rotate a live password");
+
+      assertEquals(
+          List.of(),
+          rows(
+              sql,
+              "select column_name from information_schema.columns where table_name ="
+                  + " 'pd_environment' and column_name = 'branch'"),
+          "and the branch semantics have left the component");
+    }
+  }
+
+  @Test
+  public void theBackfillLeavesAnUndesignatedInstallAlone() throws Exception {
+    // The other half of the same statement: an install mid-bootstrap has no platform environment,
+    // so the subselect answers null and nothing moves. Every database the suite migrates is this
+    // case, which is why it is worth pinning rather than assuming.
+    String url = EmbeddedPg.url("pd_deployments_" + UUID.randomUUID().toString().replace("-", ""));
+    migrate(url, "7");
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      sql.execute(
+          "insert into pd_deployment (id, application_name, environment_id, version, status,"
+              + " container_name, created_at) values ('d-plat', 'qits-ci', null, '2026.901.1',"
+              + " 'ACTIVE', 'qits-ci', timestamp with time zone '2026-08-06 12:00:00Z')");
+      resource(sql, "r-plane", "qits-ci", "null", "db", "qits_ci");
+    }
+
+    migrate(url, null);
+
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      assertEquals(
+          List.of("PLATFORM|"),
+          rows(
+              sql,
+              "select deployment_target || '|' || coalesce(environment_id, '') from pd_deployment"),
+          "the plane is still stated; there is simply no tier to name");
+      assertEquals(
+          List.of(""),
+          rows(sql, "select coalesce(environment_name, '') from pd_resource"),
+          "and the credential row keeps the key its writer will keep using");
+    }
+  }
+
   /** A freshly created, freshly migrated database — one per test, so no test inherits rows. */
   private static Connection migrated() throws Exception {
-    String database = "pd_deployments_" + UUID.randomUUID().toString().replace("-", "");
-    String url = EmbeddedPg.url(database);
-    Flyway.configure()
-        .dataSource(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD)
-        .locations("classpath:db/platformdeployments/migration")
-        .load()
-        .migrate();
+    String url = EmbeddedPg.url("pd_deployments_" + UUID.randomUUID().toString().replace("-", ""));
+    migrate(url, null);
     return DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+  }
+
+  /** @param target the version to stop at, or null for the whole lineage. */
+  private static void migrate(String url, String target) {
+    var configured =
+        Flyway.configure()
+            .dataSource(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD)
+            .locations("classpath:db/platformdeployments/migration");
+    if (target != null) {
+      configured = configured.target(target);
+    }
+    configured.load().migrate();
   }
 
   private static void deployment(
       Statement sql, String id, String applicationName, String environmentId, String sha, String status)
       throws Exception {
+    // The plane is stated, because V8's column is not null and carries no default — pd_service's
+    // rule, applied to the execution row. A row with a tier is an environment deployment here; the
+    // platform-plane cases below say so explicitly.
+    deployment(
+        sql,
+        id,
+        applicationName,
+        environmentId,
+        sha,
+        status,
+        "null".equals(environmentId) ? "PLATFORM" : "ENVIRONMENT");
+  }
+
+  private static void deployment(
+      Statement sql,
+      String id,
+      String applicationName,
+      String environmentId,
+      String sha,
+      String status,
+      String target)
+      throws Exception {
     sql.execute(
-        "insert into pd_deployment (id, application_name, environment_id, commit_sha, status,"
-            + " container_name, created_at) values ('"
+        "insert into pd_deployment (id, application_name, environment_id, deployment_target,"
+            + " commit_sha, status, container_name, created_at) values ('"
             + id
             + "', '"
             + applicationName
             + "', "
             + environmentId
             + ", '"
+            + target
+            + "', '"
             + sha
             + "', '"
             + status
