@@ -1381,9 +1381,12 @@ Five things about it, each easy to undo by accident:
   abandoned names carried a red `FAILED` row apiece for a fortnight because of it — there is a door
   now, `POST /applications/{applicationId}/decommission`, and its section is above.
 
-**The release door is unaffected**, and that was checked rather than assumed: qits-workspaces'
-`DeploymentSpecReader` **stats** this file and never opens it (a file means "it deploys"), so a new
-key is invisible to it. qits-ci's strict unknown-key parser only ever sees `ci-event-*.yml`. And,
+**The release door was unaffected**, and that was checked rather than assumed at the time:
+qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means
+"it deploys"), so a new key was invisible to it. That door is retired — releasing is a release
+request in qits-projects — but the reading it did survives here: the presence of this file is still
+what decides whether `main` is finalized at release or only after a successful deployment.
+qits-ci's strict unknown-key parser only ever sees `ci-event-*.yml`. And,
 like every spec key: **it must ship in the deployer before any repository writes the line**, since a
 spec is read at the released tag and an unknown key fails a deployment.
 
@@ -1649,8 +1652,9 @@ query that reads the null as a PLANE**; that question is `deployment_target` now
 ## Dependencies
 
 **The client is the only submodule.** `service/src/main/webui` is
-qits-deployments-platform-frontend; `git submodule update --init` is half of a clone here, and
-`.config/qits/ci-post-receive.yml` runs it for that reason. Shared auth comes from the platform
+qits-deployments-platform-frontend; `git submodule update --init` is half of a clone here, and both
+pipelines (`.config/qits/ci-event-release-request.yml`, `.config/qits/ci-event-release.yml`) run it
+for that reason. Shared auth comes from the platform
 Maven repository as `qits-auth-core`, and the event bus client as `qits-eventstream` — ordinary
 Maven dependencies, never gitlinks.
 
@@ -1789,9 +1793,9 @@ against.
 ### The userflow catalogue
 
 Twelve `@UserStory` methods in five classes, so `mvn verify -DskipITs=false` also emits
-`service/target/userstories/` — a story log plus a mermaid **network** diagram each — which
-`.config/qits/ci-event-userflows.yml` publishes per commit as the docs bundle
-`@userflows/qits-deployments`. They are **browserless** (an `Interactions` parameter and no `Flow`),
+`service/target/userstories/` — a story log plus a mermaid **network** diagram each — which the
+non-gating second step of `.config/qits/ci-event-release-request.yml` publishes, once per release
+request fold, as the docs bundle `@userflows/qits-deployments`. They are **browserless** (an `Interactions` parameter and no `Flow`),
 so qits-userflows-javalib's transitive Playwright never launches anything.
 
 | class | category | what it is about |
@@ -1873,7 +1877,8 @@ Six things about how they are built, each easy to undo by accident:
 
 ## The image and the pipeline
 
-`docker/Dockerfile` and `.config/qits/ci-post-receive.yml` are two halves of one thing, and the seam
+`docker/Dockerfile` and `.config/qits/ci-event-release.yml` are two halves of one thing (the gating
+step of `ci-event-release-request.yml` is the same two halves, minus the push), and the seam
 between them is the only reason either is interesting: **the client cannot be built inside a docker
 build.** It depends on `@qits/ui-components`, which lives only on the platform's own npm registry,
 and a `RUN` step reaches the public internet but reaches that registry by no address at all. So the
@@ -1939,9 +1944,10 @@ the platform with nowhere for a release to land. `PdEnvironmentApiTest` holds th
 
 **`deploy_branches:` is retired: accepted, validated, acted on by nobody.** Its one reader was
 qits-workspaces' release flow, which pushed a release onto *every* branch the list named — a
-fan-out rather than a ladder, and with three tiers it would have shipped into all three at once. A
-release lands on one entry branch from that component's own configuration now, and no repository
-states it. The parser still tolerates the key, and the reason is sharper than the `singleton`
+fan-out rather than a ladder, and with three tiers it would have shipped into all three at once.
+That flow is gone with the door: a release is a VERSION now, published against a tag, and where it
+lands is a Deployment Request against an environment — never a branch a repository names. The
+parser still tolerates the key, and the reason is sharper than the `singleton`
 alias's: **a spec is fetched at the RELEASED tag**, so a redeploy of an older version still presents
 a file carrying it, and an unknown key fails a deployment. Do not write it into a new file; do not
 remove the tolerance.
