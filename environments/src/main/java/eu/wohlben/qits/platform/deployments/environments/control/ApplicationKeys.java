@@ -1,6 +1,7 @@
 package eu.wohlben.qits.platform.deployments.environments.control;
 
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import java.util.Optional;
 
 /**
  * The id an application is addressed by on the read surface, derived rather than stored.
@@ -53,5 +54,37 @@ public final class ApplicationKeys {
   /** Whether a value written where an environment id goes names the platform plane instead. */
   public static boolean isPlatform(String environmentId) {
     return PLATFORM.equals(environmentId);
+  }
+
+  /**
+   * The pair a key was built from — {@code environmentId} null for the platform plane, which is how
+   * every table and every query in this component spells "belongs to no tier".
+   */
+  public record Key(String environmentId, String applicationName) {}
+
+  /**
+   * The inverse of {@link #of}, or empty for anything that is not one of these keys.
+   *
+   * <p>It exists because the surface grew a door that <b>acts</b> on an application rather than
+   * listing one, and a door has to turn the id a client already holds back into the pair the rows
+   * are keyed by. The derivation was one-way for as long as the id was only ever a join key.
+   *
+   * <p><b>The split is at the FIRST colon and the rest is the name</b>, which is exact rather than
+   * lenient: an environment id is a UUID and an application name is a DNS label, so neither half can
+   * contain one. Splitting at the last colon would be the same answer today and a different one the
+   * day something malformed arrives, and this way the malformed value is refused rather than
+   * silently truncated.
+   */
+  public static Optional<Key> parse(String applicationId) {
+    if (applicationId == null) {
+      return Optional.empty();
+    }
+    int colon = applicationId.indexOf(':');
+    if (colon <= 0 || colon == applicationId.length() - 1) {
+      return Optional.empty();
+    }
+    String plane = applicationId.substring(0, colon);
+    String name = applicationId.substring(colon + 1);
+    return Optional.of(new Key(isPlatform(plane) ? null : plane, name));
   }
 }

@@ -318,6 +318,34 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
+   * Queue an <b>operator's</b> action on the deploy worker — a scale, a bounce — behind whatever the
+   * queue already holds. Package-private: {@link ApplicationScaling} is the only caller, and it is
+   * in this package for exactly that reason.
+   *
+   * <p><b>The placement is a correctness requirement, not tidiness.</b> A scale and a bounce are
+   * both {@code docker service update} on a service a deployment may be cutting over this second,
+   * and two concurrent updates of one service is the least of it: swarm's {@code UpdateStatus} holds
+   * the most recent update, so an operator's restart issued from a request thread mid-cutover would
+   * be the status {@link DeploymentDriver#awaitConverged} reads as that deployment's verdict. On the
+   * worker there is no mid-cutover — the action runs between events, never inside one, which is the
+   * same guarantee {@link #enqueueObservation()} takes.
+   *
+   * <p>Unlike an observation, two of these never collapse: they are two things a person asked for.
+   *
+   * @param description what a failure names in the log — the action, not the outcome
+   */
+  void enqueueOperation(String description, Runnable action) {
+    worker.submit(
+        () -> {
+          try {
+            action.run();
+          } catch (RuntimeException e) {
+            LOG.warnf(e, "%s failed", description);
+          }
+        });
+  }
+
+  /**
    * Settle every row a previous process left in flight, from what the runtime is running now.
    * Package-private so the suite drives the sweep without a real StartupEvent.
    *

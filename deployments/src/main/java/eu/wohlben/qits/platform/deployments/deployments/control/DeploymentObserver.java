@@ -14,6 +14,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.jboss.logging.Logger;
@@ -41,10 +42,11 @@ import org.jboss.logging.Logger;
  * {@code DECOMMISSIONED} is a decision another deployment made; none of the three is observable from
  * a container's state.
  *
- * <p><b>Two transitions, and each is deliberately narrow.</b>
+ * <p><b>Three transitions, and each is deliberately narrow.</b>
  *
  * <ul>
- *   <li>{@code FAILED} or {@code GONE} → {@code ACTIVE} when the container <b>the row itself names</b> exists, runs
+ *   <li>{@code FAILED}, {@code GONE} or {@code SCALED_TO_ZERO} → {@code ACTIVE} when the container
+ *       <b>the row itself names</b> exists, runs
  *       and is healthy by {@link HealthGate#healthy} — the gate's own verdict, so a recovery cannot
  *       mean something a health gate would have refused. Only the row's own container counts: a
  *       healthy container of some other deployment must never resurrect a foreign row, which is why
@@ -56,7 +58,19 @@ import org.jboss.logging.Logger;
  *       coming back from it must not be declared failed on the way. The second pass is the belt for
  *       a docker hiccup: one {@code inspect} that could not answer must never flip a deployment that
  *       is serving.
+ *   <li>{@code ACTIVE} → {@code SCALED_TO_ZERO} when the place is empty and the orchestrator says it
+ *       is <b>declared</b> empty — {@link DeploymentDriver#desiredReplicas}. This one takes no
+ *       strikes and needs none: it is not a guess about a container that might come back, it is the
+ *       intent read off the runtime that holds it.
  * </ul>
+ *
+ * <p><b>The third arm is what keeps this class from fighting an operator</b>, and it is the reason
+ * it was added at all. An application scaled to zero — through {@code ApplicationScaling}, or by
+ * hand with {@code docker service scale} — runs no task, so every reading here says "gone": without
+ * the desired count this pass would demote the row two ticks after somebody deliberately stopped
+ * the application, report an outage that is not one, and then keep saying so for as long as the
+ * pause lasted. The count is asked <b>only of a candidate that already looks dead</b>, so a healthy
+ * platform pays nothing for it.
  *
  * <p><b>A recovery also retires the predecessors it never got to retire.</b> The bookkeeping that
  * died in eaa34fbc was one bracket doing two things — decommission the prior {@code ACTIVE} rows of
@@ -89,6 +103,19 @@ public class DeploymentObserver {
 
   /** Docker container statuses that are not coming back. Everything else is patience. */
   private static final Set<String> TERMINAL_STATUSES = Set.of("exited", "dead");
+
+  /**
+   * The words a healthy container takes back. Every one of them is a statement this class or a
+   * deployment made about a place being down, and a demotion that could not be undone is a status
+   * this pass could write and never retract — which {@code GONE}'s own javadoc argues at length and
+   * {@link PdDeploymentStatus#SCALED_TO_ZERO} inherits for the same reason: scaling back up is what
+   * ends a pause, and nothing else in this component would notice that it had.
+   */
+  private static final Set<PdDeploymentStatus> RECOVERABLE =
+      Set.of(
+          PdDeploymentStatus.FAILED,
+          PdDeploymentStatus.GONE,
+          PdDeploymentStatus.SCALED_TO_ZERO);
 
   @Inject PdDeploymentRepository deployments;
   @Inject DeploymentDriver driver;
@@ -126,13 +153,21 @@ public class DeploymentObserver {
       // component's own may span one.
       HealthGate.Poll observed = driver.observe(candidate.containerName());
       if (candidate.status() != PdDeploymentStatus.ACTIVE) {
-        // FAILED or GONE — a demotion heals whatever word the demotion wrote.
+        // FAILED, GONE or SCALED_TO_ZERO — every word this pass can write, it can take back.
         if (HealthGate.healthy(observed)) {
           recover(candidate, observed);
         }
         continue;
       }
       if (dead(observed)) {
+        if (deliberatelyStopped(candidate)) {
+          // Not a death: somebody scaled this application to zero, here or by hand on the host.
+          // Recorded once and then left alone — the strike count is cleared, so a place that is
+          // deliberately empty never accumulates toward a demotion it would deserve if it were not.
+          pause(candidate);
+          strikes.remove(candidate.deploymentId());
+          continue;
+        }
         int strike = strikes.merge(candidate.deploymentId(), 1, Integer::sum);
         if (strike >= STRIKES_TO_DEMOTE) {
           demote(candidate, observed);
@@ -175,7 +210,10 @@ public class DeploymentObserver {
       }
       if (row.status == PdDeploymentStatus.ACTIVE
           || row.status == PdDeploymentStatus.FAILED
-          || row.status == PdDeploymentStatus.GONE) {
+          || row.status == PdDeploymentStatus.GONE
+          // A stopped place is watched too, and only so it can come BACK: scaling up is the one
+          // event that ends this state, and nothing else in this component would notice it.
+          || row.status == PdDeploymentStatus.SCALED_TO_ZERO) {
         candidates.add(
             new Candidate(
                 row.id, row.applicationName, row.environmentId, row.status, row.containerName,
@@ -191,10 +229,11 @@ public class DeploymentObserver {
    * at deploy time, and eaa34fbc is exactly the row where that text is the whole reason anybody
    * found the bug.
    *
-   * <p>Both words recover, and that is the rule rather than a convenience: {@code GONE} is this
-   * class's own demotion, so a container that comes back has to be able to undo it. A recovery arm
-   * that healed only {@code FAILED} would leave the observation able to demote a row it could never
-   * put back.
+   * <p>Every word this class can write recovers, and that is the rule rather than a convenience:
+   * {@code GONE} and {@code SCALED_TO_ZERO} are both its own, so a container that comes back has to
+   * be able to undo either. A recovery arm that healed only {@code FAILED} would leave the
+   * observation able to write a status it could never put back — and for a paused application the
+   * scale back up is the ONLY thing that ever ends the state.
    */
   private void recover(Candidate candidate, HealthGate.Poll observed) {
     Instant at = Instant.now();
@@ -203,9 +242,7 @@ public class DeploymentObserver {
             "The observed recovery of deployment " + candidate.deploymentId(),
             () -> {
               PdDeployment row = deployments.findById(candidate.deploymentId());
-              if (row == null
-                  || (row.status != PdDeploymentStatus.FAILED
-                      && row.status != PdDeploymentStatus.GONE)) {
+              if (row == null || !RECOVERABLE.contains(row.status)) {
                 return List.<String>of(); // deleted, or already settled by a deployment
               }
               List<String> stale = new ArrayList<>();
@@ -236,6 +273,66 @@ public class DeploymentObserver {
         candidate.containerName(),
         describe(observed),
         retired.isEmpty() ? "" : " (retired " + retired.size() + " row(s) it never decommissioned)");
+  }
+
+  /**
+   * Whether the place is empty <b>because somebody asked for it to be</b> — the orchestrator's own
+   * desired task count, read only for a candidate that already looks dead.
+   *
+   * <p>It is asked here rather than for every candidate on every pass because it is the expensive
+   * half of the question and the rare one: an application that is up answers {@link #dead} false and
+   * never reaches this line, so a healthy platform costs exactly what it costed before.
+   *
+   * <p><b>Only a confident zero counts.</b> A runtime that cannot answer — no such service, a daemon
+   * that timed out, a template that printed something unparseable — is not a deliberate stop, and
+   * treating it as one would silence the demotion this class exists to make: an outage would read as
+   * a pause forever, which is the exact failure in the opposite direction.
+   */
+  private boolean deliberatelyStopped(Candidate candidate) {
+    OptionalInt declared = driver.desiredReplicas(candidate.containerName());
+    return declared.isPresent() && declared.getAsInt() == 0;
+  }
+
+  /**
+   * An {@code ACTIVE} row whose place the orchestrator is declared to keep empty.
+   *
+   * <p>Written <b>once</b>: the row is already {@code SCALED_TO_ZERO} on every later pass and is
+   * then a recovery candidate rather than a demotion one, so a stopped application does not re-write
+   * its row every thirty seconds. It is the mirror of {@link #demote} and reaches the same place by
+   * a different word, which is the whole point — {@code GONE} asks for a person and this asks for
+   * nothing.
+   */
+  private void pause(Candidate candidate) {
+    Instant at = Instant.now();
+    DbRetry.runInNewTx(
+        "The observed pause of deployment " + candidate.deploymentId(),
+        () -> {
+          PdDeployment row = deployments.findById(candidate.deploymentId());
+          if (row == null || row.status != PdDeploymentStatus.ACTIVE) {
+            return; // deleted, or settled by a deployment while this pass ran
+          }
+          row.status = PdDeploymentStatus.SCALED_TO_ZERO;
+          row.detail = pauseDetail(candidate, at);
+          deployments.flush(); // statement phase, so a lost connection is retriable — see recover()
+        },
+        CUTOVER_BUDGET);
+    LOG.infof(
+        "Deployment %s was ACTIVE and %s is declared to run 0 tasks — recorded SCALED_TO_ZERO."
+            + " Nothing was touched: scaling it back up recovers the row on the next pass.",
+        candidate.deploymentId(), candidate.containerName());
+  }
+
+  /** The pause stamp, with whatever the row already said kept under it. */
+  private static String pauseDetail(Candidate candidate, Instant at) {
+    String stamp =
+        "[scaled to 0 as observed at "
+            + at
+            + ": "
+            + candidate.containerName()
+            + " is declared to run no tasks, so this place is stopped rather than gone]";
+    return candidate.detail() == null || candidate.detail().isBlank()
+        ? stamp
+        : stamp + "\n" + candidate.detail();
   }
 
   /**

@@ -48,6 +48,12 @@ class MachineGuardEnforcedTest {
   private static final String INTAKE = "/platform-deployments/api/events/software-released";
   private static final String PINS = "/platform-deployments/api/pins";
 
+  /** An application nothing here ever deployed — the operator levers' own two paths. */
+  private static final String APPLICATION = "/platform-deployments/api/applications/platform:guarded-app";
+
+  private static final String SCALE = APPLICATION + "/scale";
+  private static final String RESTART = APPLICATION + "/restart";
+
   private static final String ENVIRONMENT_BODY = "{\"name\":\"guarded-env\"}";
   private static final String SERVICE_BODY =
       "{\"deploymentTarget\":\"PLATFORM\",\"branch\":\"main\",\"availableOnEnv\":false}";
@@ -286,6 +292,44 @@ class MachineGuardEnforcedTest {
     machine().when().get(SERVICES).then().statusCode(403);
 
     machine().when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
+  }
+
+  // --- the operator's levers are a person's too -------------------------------------------------
+
+  @Test
+  void theScaleAndRestartDoorsAreRefusedWithNoCredentialAndToAMachine() {
+    // They are WRITES on the read surface's role, and that is the decision they carry: stopping an
+    // application is a person's operational action, driven from this component's own client through
+    // the edge's forwarded header. A service bearer opens every machine door here and must not be
+    // able to take an application down as a side effect of holding one.
+    given()
+        .contentType(ContentType.JSON)
+        .body("{\"replicas\":0}")
+        .when()
+        .post(SCALE)
+        .then()
+        .statusCode(401);
+    given().when().post(RESTART).then().statusCode(401);
+
+    machine()
+        .contentType(ContentType.JSON)
+        .body("{\"replicas\":0}")
+        .when()
+        .post(SCALE)
+        .then()
+        .statusCode(403);
+    machine().when().post(RESTART).then().statusCode(403);
+
+    // ...and the admin, who holds the grant, is let through to the answer the resolution gives:
+    // nothing has ever been deployed for this application, which is a 404 and not a refusal.
+    admin()
+        .contentType(ContentType.JSON)
+        .body("{\"replicas\":0}")
+        .when()
+        .post(SCALE)
+        .then()
+        .statusCode(404);
+    admin().when().post(RESTART).then().statusCode(404);
   }
 
   /** A caller with a fresh token minted for this service, carrying the machine roles the idp grants. */

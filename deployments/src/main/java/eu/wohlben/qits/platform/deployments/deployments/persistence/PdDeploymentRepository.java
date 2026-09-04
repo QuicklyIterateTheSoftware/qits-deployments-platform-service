@@ -6,6 +6,7 @@ import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarg
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Panache DAO for {@link PdDeployment}.
@@ -81,6 +82,35 @@ public class PdDeploymentRepository implements PanacheRepositoryBase<PdDeploymen
             applicationName,
             environmentId,
             PdDeploymentStatus.ACTIVE);
+  }
+
+  /**
+   * The newest deployment of one application in one place — the row an operator's scale or restart
+   * acts on, and the row the observation settles.
+   *
+   * <p>The place is what {@link
+   * eu.wohlben.qits.platform.deployments.environments.control.ApplicationKeys.Key} carries: a tier
+   * id, or {@code null} for the <b>platform plane</b>. So the null arm asks {@code
+   * deployment_target}, exactly as {@link #listPlatformNewestFirst} does — <b>not</b> {@code
+   * environment_id is null</b>, which was the same question only while the plane had no tier. Since
+   * V8 the plane names the designated tier, so the null-tier read would answer with pre-V8 rows
+   * alone and an operator's scale would act on a deployment years old, or on nothing at all.
+   *
+   * <p>The tier arm is deliberately plane-blind: a tier id names one place, and both planes'
+   * newest row for that application in that tier is the row that is actually serving there.
+   */
+  public Optional<PdDeployment> newestForPlace(String applicationName, String environmentId) {
+    return environmentId == null
+        ? find(
+                "applicationName = ?1 and deploymentTarget = ?2 order by seq desc",
+                applicationName,
+                PdDeploymentTarget.PLATFORM)
+            .firstResultOptional()
+        : find(
+                "applicationName = ?1 and environmentId = ?2 order by seq desc",
+                applicationName,
+                environmentId)
+            .firstResultOptional();
   }
 
   /**

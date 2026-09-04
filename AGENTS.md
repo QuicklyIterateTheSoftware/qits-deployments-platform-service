@@ -316,10 +316,83 @@ whose container died an hour after the gate passed, with nothing ever noticing.
   is bookkeeping *after* a container is running, and one day a pass will run during a postgres
   self-cutover. The docker call sits between the two brackets, never inside one.
 
+- **A place the orchestrator DECLARES empty is `SCALED_TO_ZERO`, not `GONE`, and there is no
+  debounce on that arm.** See *Scale and restart* below: the desired replica count is asked only of
+  a candidate that already looks dead, so a healthy platform pays nothing for it, and only a
+  confident zero counts — a runtime that cannot answer still demotes, because an unreadable answer
+  read as a deliberate stop would turn every outage into a pause nobody is paged for.
+
 No ticker runs under a `@QuarkusTest` — `onStart` returns early in test mode — so the interval keeps
 its shipped default in the suite and `PdDeploymentObservationTest` drives `observeOnce()` and
 `enqueueObservation()` directly, the `PdSweepAdoptionTest` shape. That test also holds the serialization
 claim, off the fake's call log: the pass's `observe:` calls land after the deployment's last one.
+
+## Scale and restart: the operator's two levers (2026-09-04)
+
+**qits-ci wedged and the only recovery was a same-sha push.** A disk-full incident orphaned its
+in-memory dispatch queue — a state its own boot sweep clears in seconds — and the platform's one
+lever for replacing a container was re-firing `environment/dev` so a rebuild and a redeploy would do
+it: a quarter of an hour, a new deployment row and a fresh image build, to restart a process. So a
+restart is an operation here now, and so is stopping an application:
+
+    POST /platform-deployments/api/applications/{applicationId}/scale   {"replicas": 0|1}   → 202
+    POST /platform-deployments/api/applications/{applicationId}/restart                      → 202
+
+Eight things about it, each easy to undo by accident:
+
+- **`applicationId` is the derived key the read surface already carries** — `<environmentId>:<name>`,
+  `platform:<name>` — and `ApplicationKeys.parse` is its one inverse. The derivation was one-way for
+  as long as the id was only ever a join key; a door that ACTS on an application has to turn it back
+  into the `(application, tier)` pair the rows are keyed by.
+- **The service the update is issued against comes off the deployment ROW** (`container_name`, which
+  under swarm is the service's name and therefore its address) — never from the request. That is the
+  same source `DeploymentObserver` takes it from and the same rule: nothing arriving over HTTP may
+  shape an argv, and only the service a row named may be acted on for that row.
+- **Everything runs on `pd-deploy-worker`** (`DeployService.enqueueOperation`), which is a
+  correctness requirement rather than tidiness. A scale and a bounce are both
+  `docker service update` on a service a deployment may be cutting over this second, and swarm's
+  `UpdateStatus` holds the most recent update — an operator's restart issued from a request thread
+  mid-cutover would be the status `awaitConverged` reads as that deployment's verdict. Hence 202,
+  and hence the suite waits on `awaitIdle()`.
+- **A restart writes NO status.** It stamps the row's `detail` and nothing else — the id, the sha,
+  the container name, the timestamps and the history are untouched. That stamp is the whole audit
+  trail, and it is deliberately not a row: a bounce is not an attempt to put a commit live. A new
+  stamp **replaces** a previous one and keeps everything under it, so a script hammering the door
+  cannot grow a text column and the deployment's own diagnosis is never lost.
+- **A scale to 0 writes `SCALED_TO_ZERO`; a scale back up writes nothing** and leaves the row for
+  the observation to promote. This component reaches a health verdict in exactly one place and it is
+  `DeploymentObserver`; a scale that wrote `ACTIVE` would be claiming a gate it never ran. The wait
+  is one `observe-interval-seconds` and that is the honest cost.
+- **`MAX_REPLICAS` is 1, and it is the platform's shape rather than swarm's limit.** Every
+  application here binds host ports from inside the task, or writes to a store with one writer, or
+  holds a config volume. Raising it belongs in the commit that makes one of them able to run twice.
+- **Scaling the deployer's own service to 0 is REFUSED by the driver**, naming why: there would be
+  nothing left to scale it back up, and the API that would have done it is what stops answering.
+  Scaling it up and bouncing it are allowed and come back `HANDED_OFF`, the self-deployment's own
+  outcome and the same arbiter.
+- **A deployment RESTATES `--replicas 1`**, which is new in `buildUpdateArgv` and is the one piece
+  of desired state an update owns beside the image. A service left at 0 takes `service update
+  --image` happily — swarm has no task to converge, so the update completes at once and the row is
+  recorded `ACTIVE` with nothing running behind it. Mounts, networks and ports stay absent for the
+  reason they always were: those are SHAPE, and this is state.
+
+**The role is `qits-platform:admin`, the reader's**, and that is a decision rather than an
+oversight: this is a person's operational action driven from this component's own client through the
+edge's forwarded header. `qits-platform:system` is deliberately not granted — nothing on the
+platform should be able to stop an application as a side effect of holding a service token, and the
+two sets do not overlap. `MachineGuardEnforcedTest` arms it in both directions.
+
+**Neither door announces an event**, and that is `DeploymentObserver`'s rule rather than an
+omission: the four events describe a *deployment's* lifecycle, and a bounce is not one. A consumer
+told `DeploymentActive` twice for one row would have to know the second statement supersedes the
+first, which is a second design and is not this one. The routing snapshot is unchanged by either
+action, so the edge has nothing to relearn.
+
+**What is NOT on the read surface, and it is a decision.** There is no live replica count per row.
+The status word carries the whole of what a client needs (`SCALED_TO_ZERO` is not `ACTIVE`, so a
+stopped service does not render as a healthy one), and a `replicas` field would mean one
+`docker service inspect` per row per listing — a read surface that shells out per row is a listing
+that fails when the daemon is busy.
 
 ## One orchestrator, one seam
 
@@ -333,14 +406,21 @@ the successor, join it to every other network, poll the gate, roll back on failu
 `docker` from before the migration names an orchestrator this build does not have, and failing loudly
 naming the key beats deploying the platform with whatever is left. `DeploymentDriversTest` holds it.
 
-**The seam is two verbs**: `apply(ServiceSpec)` makes the described service exist at the described
-image, `awaitConverged(name, timeout)` says whether it took. `start`, `stop`, `restart`, `connect`,
+**The deployment half of the seam is two verbs**: `apply(ServiceSpec)` makes the described service
+exist at the described image, `awaitConverged(name, timeout)` says whether it took. `start`, `stop`,
+the container-level `restart`, `connect`,
 `disconnect`, `aliasHolders`, `handoff`, `isSelf` and `containerId` went when the second
 orchestrator arrived — every one of them is a statement about how *docker* replaces a container, and
 keeping them would have made one orchestrator's model look like the contract. **Do not put a
 mechanic back on this seam**: `pull` and `networks` are the two verbs here that are not
 swarm-shaped, and each is kept for what it ANSWERS (is anything published; what is the membership),
 never for how.
+
+**Three verbs beside them are the OPERATOR's, and they are not the mechanics coming back** —
+`desiredReplicas`, `scale` and `restart(serviceName)`; see *Scale and restart* below. The test the
+removed verbs failed is the one to keep applying: none of these three is a step somebody sequences
+to perform a deployment. Each states an outcome a person asked for, and nothing calls two of them in
+a row.
 
 **So `DeployService.execute` has no branches in it**: resolve → provision → pull (for the
 `IMAGE_MISSING` classification) → `apply` → `awaitConverged` → record. What stayed with it is the
@@ -498,6 +578,7 @@ Three of the five outcomes `FAILED` used to cover have their own word, one write
 | `ROLLED_BACK` | the successor never converged and the orchestrator put the predecessor back — it is serving | `DeployService.execute`, off `ConvergenceOutcome.ROLLED_BACK` |
 | `SUPERSEDED` | a restart interrupted this in-flight row and a newer sha is serving its place | the startup sweep's verdict |
 | `GONE` | a formerly `ACTIVE` row whose container two observation passes found absent | `DeploymentObserver.demote` |
+| `SCALED_TO_ZERO` | the workload is **deliberately stopped** — somebody scaled the application to 0 | `ApplicationScaling` on the operator's own action, and `DeploymentObserver.pause` for a scale performed by hand |
 | `FAILED` | the attempt ended and **nothing is known to serve the place** | everything else — refused apply, image pull error, convergence failure with no rollback, interrupted row with no successor |
 
 Four things that are decisions rather than details:
@@ -919,7 +1000,7 @@ carries a `@RolesAllowed`, and there are exactly two roles:
 
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
-| `qits-platform:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
+| `qits-platform:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
 | `qits-platform:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all |
 
 The two sets do not overlap and must not. A machine token never carries `qits-platform:admin`, so

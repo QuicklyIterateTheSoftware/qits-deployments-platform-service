@@ -181,6 +181,7 @@ components:
       - ROLLED_BACK
       - SUPERSEDED
       - GONE
+      - SCALED_TO_ZERO
       - DECOMMISSIONED
     PdDeploymentTarget:
       type: string
@@ -252,6 +253,12 @@ components:
           type: array
           items:
             type: string
+    ScaleRequest:
+      type: object
+      properties:
+        replicas:
+          type: integer
+          format: int32
     UpdateEnvironmentRequest:
       type: object
       properties:
@@ -291,6 +298,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListApplicationsResponse"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits-platform:admin
+  /platform-deployments/api/applications/{applicationId}/restart:
+    post:
+      summary: "Restart an application in place — its tasks are replaced, its deployment\
+        \ is not"
+      parameters:
+      - name: applicationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "202":
+          description: Queued on the deploy worker
+        "400":
+          description: Not an application id
+        "404":
+          description: Nothing has ever been deployed for this application
+        "409":
+          description: Its newest deployment never reached the orchestrator
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits-platform:admin
+  /platform-deployments/api/applications/{applicationId}/scale:
+    post:
+      summary: "Scale an application's workload — 0 stops it, 1 runs it"
+      parameters:
+      - name: applicationId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScaleRequest"
+        required: true
+      responses:
+        "202":
+          description: Queued on the deploy worker
+        "400":
+          description: "No replica count, a negative one, or one above the single\
+            \ task every application here is deployed as"
+        "404":
+          description: Nothing has ever been deployed for this application
+        "409":
+          description: Its newest deployment never reached the orchestrator
         "401":
           description: Not Authorized
         "403":
@@ -622,4 +691,4 @@ paths:
         - qits-platform:system
 info:
   title: qits-platform-deployments API
-  version: 2026.903.101842
+  version: 2026.904.105200
