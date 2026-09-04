@@ -135,9 +135,12 @@ class SwarmDeploymentDriverTest {
       DeploymentDriver.PublishMode publishMode,
       List<DeploymentDriver.ResourceBinding> resources) {
     boolean platform = target == PdDeploymentTarget.PLATFORM;
+    // BOTH PLANES CARRY THE TIER. A platform service is deployed into the designated environment,
+    // so its spec names one exactly as an environment application's does; what stays the plane's
+    // own is the bare deployment name, the bare wire alias and the qits-platform overlay below.
     return new DeploymentDriver.ServiceSpec(
-        platform ? null : "env-id",
-        platform ? null : "dev",
+        "env-id",
+        "dev",
         "app-id",
         "qits-gateway",
         "dep-id",
@@ -239,6 +242,60 @@ class SwarmDeploymentDriverTest {
     List<String> platformCreate = cli.matching("service create");
     assertTrue(platformCreate.contains("qits-net"), platformCreate.toString());
     assertTrue(platformCreate.contains("qits-platform"), platformCreate.toString());
+  }
+
+  @Test
+  void aPlatformServiceCarriesTheTierInItsLabelsAndItsEnvironmentAndNothingInItsNames() {
+    // The whole of what V8 changed at the argv, in one place.
+    //
+    // A platform service used to be created with NO environment label and NO QITS_ENVIRONMENT, on
+    // the reasoning that it serves every tier and being told it lived in one would be untrue. What
+    // that actually bought was an application that could not name its own install: no tier in its
+    // telemetry, no tier on the four events consumers project a route table per environment from,
+    // and a resource registry keyed by an absence. It is deployed into the designated tier and says
+    // so.
+    List<String> argv =
+        driver()
+            .buildCreateArgv(
+                spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()),
+                "qits-gateway",
+                List.of("qits-net", "qits-platform"));
+
+    assertTrue(argv.contains("qits.platform.deployments.environment=env-id"), argv.toString());
+    assertTrue(argv.contains("QITS_ENVIRONMENT=dev"), argv.toString());
+    assertTrue(
+        argv.contains(
+            "OTEL_RESOURCE_ATTRIBUTES=service.version=abc1234"
+                + ",deployment.environment.name=dev"
+                + ",service.instance.id=qits-gateway"),
+        "the telemetry names the tier AND the bare instance: " + argv);
+    // ...and the plane is still stated, which is what every reader asks instead of "has no tier".
+    assertTrue(argv.contains("qits.platform.deployments.target=platform"), argv.toString());
+    // The three things that stay the plane's own, none of them derived from a missing tier.
+    assertTrue(argv.containsAll(List.of("--name", "qits-gateway")), argv.toString());
+    assertTrue(argv.containsAll(List.of("--network", "qits-platform")), argv.toString());
+    assertTrue(
+        argv.stream().noneMatch("dev-qits-gateway"::equals),
+        "nothing about a platform service is qualified by the tier: " + argv);
+  }
+
+  @Test
+  void anEnvironmentTeardownReapsThatTiersServicesAndNotThePlaneRunningInIt() {
+    // The reader the label change had to move with it. A teardown reaps by the environment label,
+    // and a platform service carries this tier's now — so without the second filter, tearing down
+    // the designated environment would take qits-platform-idp, the deployer and the rest of the
+    // plane with it. They serve every tier and are merely running in this one.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("service ls", result(0, ""));
+
+    driver.removeEnvironmentContainers("env-id");
+
+    List<String> listed = cli.matching("service ls");
+    assertTrue(
+        listed.contains("label=qits.platform.deployments.environment=env-id"), listed.toString());
+    assertTrue(
+        listed.contains("label=qits.platform.deployments.target=environment"),
+        "the plane is excluded by the label it now carries: " + listed);
   }
 
   /** Every {@code --network} and the element behind it, in order — the membership as declared. */

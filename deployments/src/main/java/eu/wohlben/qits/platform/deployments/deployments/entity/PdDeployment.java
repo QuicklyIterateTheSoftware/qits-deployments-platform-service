@@ -2,6 +2,7 @@ package eu.wohlben.qits.platform.deployments.deployments.entity;
 
 import eu.wohlben.qits.eventstream.CausationStamp;
 import eu.wohlben.qits.eventstream.CausedRow;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -66,12 +67,79 @@ public class PdDeployment extends PanacheEntityBase implements CausedRow {
   @Column(name = "application_name", nullable = false, length = 64)
   public String applicationName;
 
-  /** The tier it was deployed into, or null for a platform deployment. */
+  /**
+   * The tier it was deployed into.
+   *
+   * <p><b>Every deployment has one since V8, the platform plane included</b> — a platform service
+   * is deployed into the designated platform environment like any other application. Null is only a
+   * row written before that file on an install that had designated no tier, and nothing reads it as
+   * a plane any more: {@link #deploymentTarget} says which plane this is.
+   */
   @Column(name = "environment_id")
   public String environmentId;
 
-  @Column(name = "commit_sha", nullable = false, length = 64)
+  /**
+   * <b>Which plane this deployment is on</b>, recorded rather than inferred — the same word {@link
+   * eu.wohlben.qits.platform.deployments.environments.entity.PdService#deploymentTarget} carries,
+   * put on the execution row so nothing has to re-derive it from a missing tier.
+   *
+   * <p>It exists because the absence it replaced stopped being true. "Platform" was spelled as a
+   * null {@code environment_id} until V8; a platform deployment names the main environment now, so
+   * every reader that asked the old question — the {@code ?environmentId=platform} listing, the
+   * {@code platform:<name>} id a client joins on ({@code ApplicationKeys}), the bare wire alias the
+   * startup sweep rebuilds when it adopts a self-update — asks this instead.
+   *
+   * <p>Not null and no default, {@code pd_service.deployment_target}'s rule: every writer states
+   * the plane. V8 backfilled the two existing writers' rows from exactly what the null meant.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "deployment_target", nullable = false, length = 32)
+  public PdDeploymentTarget deploymentTarget;
+
+  /** Whether this deployment is the platform plane's — the one question the column is asked. */
+  public boolean platform() {
+    return deploymentTarget == PdDeploymentTarget.PLATFORM;
+  }
+
+  /**
+   * <b>The released coordinate — the CalVer stamp, and the tag the image carries.</b> {@code
+   * qits/<application>:<version>} is what the deployment pulls, {@code refs/tags/<version>} is what
+   * the spec is read at, and this is the string the startup sweep compares a running image against.
+   *
+   * <p>Null on every row written before V7 added the column, and only on those: a release names a
+   * version or it is refused at the intake. Read it through {@link #imageTag()} rather than
+   * directly, which is what makes a historical row keep answering.
+   */
+  @Column(length = 64)
+  public String version;
+
+  /**
+   * The commit the released tag RESOLVED to, recorded rather than assumed: the spec read addresses
+   * {@code refs/tags/<version>} and the git host answers with the commit in a header, so one
+   * request gets both the file and the commit it came from. It is the edge from a container back to
+   * a diff.
+   *
+   * <p><b>Nullable since V7, and the null is a real answer.</b> A repository that carries no
+   * deployments.yml gets a 404 from the blob read, and a 404 says nothing about where the tag
+   * points; so does a spec read that failed outright. On rows older than V7 it is the opposite —
+   * the sha was the whole coordinate, which is why {@link #imageTag()} falls back to it.
+   */
+  @Column(name = "commit_sha", length = 64)
   public String commitSha;
+
+  /**
+   * What tag this deployment's image carries — the single spelling of that question, because three
+   * readers have to agree on it: the pull, the startup sweep's adoption check, and the rollback
+   * pins qits-artifacts' garbage collector keeps images by.
+   *
+   * <p>The version, and the commit sha behind it. The fallback is not defensive: a row written
+   * before V7 describes a deployment whose image really is tagged with a sha, so answering the
+   * version there (null) would make the pins claim nothing and the collector delete an image that
+   * is live. V7 deliberately backfills nothing for exactly that reason.
+   */
+  public String imageTag() {
+    return version != null ? version : commitSha;
+  }
 
   /**
    * The qits-ci run whose green build caused this deployment, as the intake received it — the one

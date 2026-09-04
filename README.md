@@ -41,25 +41,34 @@ client or a process shell-out.
 
 ## The model: tiers, planes, and derived rows
 
-An **environment is a tier** — today just prod. It is created deliberately, over REST, with the
-conventions filled in: branch `environment/<name>`, bundle network `qits-env-<name>`. `main` stays
-the integration trunk, and a release reaches an environment by fast-forwarding `environment/<name>`
-onto it — so a push to `main` alone builds and deploys nothing.
+An **environment is a tier** — today just dev. It is created deliberately, over REST, with the
+bundle network's convention filled in (`qits-env-<name>`). It has **no branch**: a tier listened to
+`environment/<name>` while a green build was the deploy trigger, and a release names a tag, so
+where a version lands is a property of the platform rather than of the thing being deployed.
 
-**`environment/<name>` is the only deploy ref there is.** Both planes ask the same question of a
-green build — does an environment listen to this branch — and the answer decides whether anything
-ships. The platform plane had a second convention (`platform/main`) and no longer does: what a
-platform service gets from an environment's branch is still one platform-shaped instance.
+**One tier is designated the platform environment** (`pd_environment.platform`, true on exactly one
+row), and it decides two things: it is where a release ENTERS the platform, and it is where the
+platform plane itself is deployed.
 
 A **service** has one row for the whole platform, not one per tier, and says where it runs by
 carrying a **link** to each environment. Two planes:
 
 - **environment** — one instance per tier, on that tier's networks.
-- **platform** — one instance for the whole platform, on every environment's networks. It carries
-  **no links at all**, and that absence is the mechanism: "present everywhere" is spelled as
-  "linked nowhere in particular", which is what makes an environment created tomorrow pick up
-  qits-platform-idp without anyone editing a row. It is also what makes it immune to an environment
-  teardown — no environment label, so nothing reaps it with a tier it merely serves.
+- **platform** — one instance for the whole platform, on every environment's networks, deployed
+  into the designated environment. It carries **no links at all**, and that absence is the
+  mechanism: "present everywhere" is spelled as "linked nowhere in particular", which is what makes
+  an environment created tomorrow pick up qits-platform-idp without anyone editing a row.
+
+**A platform service is deployed TO a tier and reached without one.** Its deployment row, its
+labels, the `QITS_ENVIRONMENT` it boots with and all four of its lifecycle events name the
+designated environment — the plane used to carry none of them, which left it unable to tell its own
+telemetry, its own resource rows or its own consumers which install it belonged to. What stays the
+plane's own is stated rather than inferred from a missing tier: the **bare wire alias**
+(`qits-ci`, not `dev-qits-ci`, so a peer in any tier reaches it without knowing where the plane
+runs), the membership in every environment's networks, and the `platform:<name>` id the read
+surface joins on. An environment teardown still cannot take it down — the reap demands the
+`qits.platform.deployments.target=environment` label beside the environment one, and tearing down
+the designated tier is a 409 anyway.
 
 The word used to be `singleton`. It named a cardinality where the thing being said is which plane a
 service lives on — and it made this very component, cross-environment from its first commit, look
@@ -97,9 +106,10 @@ does not notice. Two repositories claiming one application name is last-wins and
 cannot refuse it (these tables record an application name and no repository identity); changing the
 key on a live application is a decommission and a new application, not a rename.
 
-`deploy_branches` is parsed, validated and **not acted on**: where a build deploys is the
-environment rows' answer, not the file's. It is accepted because qits-workspaces' release flow reads
-the same file for its promotion targets, and this parser fails a deployment on an unknown key.
+`deploy_branches` is **retired**: parsed, validated and acted on by nobody. Where a release lands is
+the environment rows' answer — the designated platform environment — and never the file's. The
+tolerance stays because a spec is fetched at the RELEASED tag, so a redeploy of an older version
+still presents a file carrying the key, and an unknown key fails a deployment.
 
 `routes:` is the service-owned public surface: comma-separated, unique absolute lowercase path
 prefixes. `upstream_port:` is shared by those prefixes and defaults to `8080`. `navigation:` is
@@ -155,7 +165,7 @@ never a guess, because a guessed topology is a container on the wrong networks u
                           │                                    /git/<projectId>/<repoName>/blob/…
                           │                                    or /git/<repoId>/blob/… with no pair
                           │
-                    register: upsert the service row, link it into every tier whose branch matches
+                    register: upsert the service row, link it into the designated entry tier
                           │
                           ▼   one recorded deployment per place it addresses
                     pull ▶ stop the predecessor ▶ run ▶ join networks ▶ health gate ▶ cut over

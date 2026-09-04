@@ -1,6 +1,7 @@
 package eu.wohlben.qits.platform.deployments.githost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -9,6 +10,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import eu.wohlben.qits.platform.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecException;
+import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import java.io.IOException;
@@ -37,10 +39,16 @@ public class GitHostSpecSourceTest {
   private static final String SHA = "a".repeat(40);
   private static final String UUID_ID = "6d0c2b1e-3a44-4b0e-9a5b-2b1c0d9e4f88";
 
+  /** What a release deploys, and what the spec has to be read at. */
+  private static final String VERSION = "2026.903.113443";
+
   private HttpServer server;
+
+  /** RAW paths: the encoding of the rev segment is exactly what these tests are about. */
   private final List<String> paths = new ArrayList<>();
   private volatile int status = 200;
   private volatile String body = "deployment_target: platform\n";
+  private volatile String commitSha = SHA;
 
   @BeforeEach
   void start() throws IOException {
@@ -57,9 +65,13 @@ public class GitHostSpecSourceTest {
 
   private void handle(HttpExchange exchange) throws IOException {
     synchronized (paths) {
-      paths.add(exchange.getRequestURI().getPath());
+      paths.add(exchange.getRequestURI().getRawPath());
     }
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+    if (status != 404 && commitSha != null) {
+      // What the git host answers every blob read with: the commit the rev resolved to.
+      exchange.getResponseHeaders().add(GitHostSpecSource.COMMIT_SHA_HEADER, commitSha);
+    }
     exchange.sendResponseHeaders(status, status == 404 ? -1 : bytes.length);
     if (status != 404) {
       try (OutputStream out = exchange.getResponseBody()) {
@@ -72,7 +84,8 @@ public class GitHostSpecSourceTest {
   public void anEventCarryingTheNamePairIsReadNameAddressed() {
     // The public address. The storage id is not in the URL at all — githost serves blob and tree
     // under (projectId, repoName) since it became dumb storage, and the id route is internal.
-    DeploymentSpec spec = source().read(new RepositoryRef(UUID_ID, "qits", "qits-gateway"), SHA);
+    DeploymentSpec spec =
+        source().read(new RepositoryRef(UUID_ID, "qits", "qits-gateway"), SHA).spec();
 
     assertEquals(PdDeploymentTarget.PLATFORM, spec.target());
     assertEquals(
@@ -111,8 +124,13 @@ public class GitHostSpecSourceTest {
     status = 404;
 
     assertSame(
-        DeploymentSpec.DEFAULTS, source().read(new RepositoryRef(UUID_ID, "qits", "gw"), SHA));
-    assertSame(DeploymentSpec.DEFAULTS, source().read(RepositoryRef.ofId("gw"), SHA));
+        DeploymentSpec.DEFAULTS,
+        source().read(new RepositoryRef(UUID_ID, "qits", "gw"), SHA).spec());
+    SpecSource.SpecRead byId = source().read(RepositoryRef.ofId("gw"), SHA);
+    assertSame(DeploymentSpec.DEFAULTS, byId.spec());
+    // No blob, so no commit: a 404 says nothing about where the rev points, and inventing a sha
+    // here would put a commit on the deployment row that nobody resolved.
+    assertNull(byId.commitSha());
   }
 
   @Test
@@ -127,6 +145,46 @@ public class GitHostSpecSourceTest {
 
     assertTrue(refused.getMessage().contains("/git/qits/qits-gateway/blob/"), refused.getMessage());
     assertTrue(refused.getMessage().contains("503"), refused.getMessage());
+  }
+
+  @Test
+  public void aReleaseIsReadAtTheTagRefWithItsSlashesEncoded() {
+    // THE claim of the version campaign, and it has two halves. The rev is refs/tags/<version>
+    // rather than the bare version, because a bare name is whatever the repository holds under it
+    // — a branch of that name would win, and the file that decides where this container runs has
+    // to be the file the release was cut from. And a rev is ONE path segment to the git host,
+    // whose route regex is [^/]+ and whose charset refuses a literal slash, so it arrives encoded.
+    source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION));
+
+    assertEquals(
+        "/git/qits-gateway/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/deployments.yml",
+        onlyPath());
+  }
+
+  @Test
+  public void theResolvedCommitComesBackWithTheSpecRatherThanFromASecondRequest() {
+    // The git host offers no ref-resolution endpoint at all, so without this header a released
+    // deployment could record no commit and the edge from a container back to a diff would be
+    // gone. One request, both answers.
+    SpecSource.SpecRead read =
+        source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION));
+
+    assertEquals(SHA, read.commitSha());
+    assertEquals(PdDeploymentTarget.PLATFORM, read.spec().target());
+    assertEquals(1, paths.size(), "one request, not a read plus a resolution");
+  }
+
+  @Test
+  public void anAnswerWithNoCommitHeaderCostsTheTraceEdgeAndNotTheDeployment() {
+    // An older git host, or a proxy that dropped the header. The version is the coordinate and the
+    // sha is advisory, so the read still answers and the row simply names no commit.
+    commitSha = null;
+
+    SpecSource.SpecRead read =
+        source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION));
+
+    assertNull(read.commitSha());
+    assertEquals(PdDeploymentTarget.PLATFORM, read.spec().target());
   }
 
   private GitHostSpecSource source() {

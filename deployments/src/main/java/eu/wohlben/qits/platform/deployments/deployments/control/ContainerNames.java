@@ -1,9 +1,14 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+
 /**
  * One name shape for every container this component starts: {@code qits-pd-<env>-<app>-<id8>}, and
- * {@code qits-pd-<app>-<id8>} for a platform deployment, which has no environment to be named
- * after.
+ * {@code qits-pd-<app>-<id8>} for a platform deployment.
+ *
+ * <p><b>The plane is asked, not inferred from a missing tier.</b> A platform deployment names the
+ * main environment on its row and in its labels since V8, so "no environment" stopped identifying
+ * one; what stayed is that the plane's names are unqualified, the wire alias first of all.
  *
  * <p><b>The platform shape drops the segment rather than filling it.</b> It used to read {@code
  * qits-pd-platform-<app>-<id8>}, which was right while a platform repository was named like any
@@ -31,12 +36,13 @@ public final class ContainerNames {
 
   private ContainerNames() {}
 
-  public static String of(String environmentName, String applicationName, String deploymentId) {
+  public static String of(
+      PdDeploymentTarget target,
+      String environmentName,
+      String applicationName,
+      String deploymentId) {
     String shortId = deploymentId.length() > 8 ? deploymentId.substring(0, 8) : deploymentId;
-    return PREFIX
-        + (environmentName == null ? "" : environmentName + "-")
-        + applicationName
-        + "-"
-        + shortId;
+    boolean qualified = target != PdDeploymentTarget.PLATFORM && environmentName != null;
+    return PREFIX + (qualified ? environmentName + "-" : "") + applicationName + "-" + shortId;
   }
 }

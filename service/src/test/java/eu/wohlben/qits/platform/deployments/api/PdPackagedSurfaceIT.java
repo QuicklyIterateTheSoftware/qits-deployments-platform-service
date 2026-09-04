@@ -216,15 +216,15 @@ public class PdPackagedSurfaceIT {
   }
 
   @Test
-  public void theIntakeIsAtTheAddressQitsCiPostsTo() {
-    // qits-ci's notifier delivers here fire-and-forget: a wrong path raises no error on either side
-    // and deployments simply never happen, so the address is asserted from the artifact. An empty
-    // body must reach @Valid — a 400 proves the resource, not the router's 404.
+  public void theReleaseIntakeIsAtTheAddressAReplayPostsTo() {
+    // The manual door is fire-and-forget: a wrong path raises no error on either side and
+    // deployments simply never happen, so the address is asserted from the artifact. An empty body
+    // must reach @Valid — a 400 proves the resource, not the router's 404.
     given()
         .contentType(ContentType.JSON)
         .body("{}")
         .when()
-        .post(SEGMENT + "/api/events/build-succeeded")
+        .post(SEGMENT + "/api/events/software-released")
         .then()
         .statusCode(400);
   }
@@ -237,7 +237,8 @@ public class PdPackagedSurfaceIT {
     String environmentId =
         given()
             .contentType(ContentType.JSON)
-            .body(Map.of("name", "packaged-env", "branch", "main"))
+            // The entry tier: a release lands in the designated platform environment.
+            .body(Map.of("name", "packaged-env", "platform", true))
             .when()
             .post(SEGMENT + "/api/environments")
             .then()
@@ -273,10 +274,9 @@ public class PdPackagedSurfaceIT {
             Map.of(
                 "runId", "6f31a0c4-1c2b-4f7a-9b03-2ee45c1f8d61",
                 "repoId", "packaged-repo",
-                "branch", "main",
-                "commitSha", "a".repeat(40)))
+                "version", "2026.903.193059"))
         .when()
-        .post(SEGMENT + "/api/events/build-succeeded")
+        .post(SEGMENT + "/api/events/software-released")
         .then()
         .statusCode(202);
 

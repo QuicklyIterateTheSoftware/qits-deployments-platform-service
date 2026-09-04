@@ -18,12 +18,16 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * Environment lifecycle, <b>rows only</b>: creation with the conventions filled in (branch {@code
- * environment/<name>}, bundle network {@code qits-env-<name>}), rename/retarget, and removal.
+ * Environment lifecycle, <b>rows only</b>: creation with the bundle network's convention filled in
+ * ({@code qits-env-<name>}), rename, designation, and removal.
  *
  * <p>An environment is a <b>tier</b> and is created deliberately — nothing derives one. What is
- * derived is everything inside it: a green build on the environment's branch registers the
- * repository's service and links it, so this call creates the tier and the builds fill it.
+ * derived is everything inside it: a release registers the repository's service and links it into
+ * the entry tier, so this call creates the tier and the releases fill it.
+ *
+ * <p><b>There is no branch here any more.</b> A tier listened to {@code environment/<name>} while a
+ * green build was the trigger; a release names a tag, so where a version lands is the {@code
+ * platform} designation and nothing else. V8 dropped the column.
  *
  * <p><b>Nothing here touches docker</b>, and that is the module boundary rather than a phase.
  * Creating an environment writes a row and names a network; making that network, reaping the tier's
@@ -41,13 +45,6 @@ import org.jboss.logging.Logger;
 public class EnvironmentService {
 
   private static final Logger LOG = Logger.getLogger(EnvironmentService.class);
-
-  /**
-   * The branch an environment listens to when its creator names none. A tier deploys from its own
-   * ref — {@code main} stays the integration trunk, and a release reaches dev by fast-forwarding
-   * {@code environment/dev} onto it.
-   */
-  public static final String BRANCH_PREFIX = "environment/";
 
   /** The per-environment bundle network when the creator names none. */
   public static final String NETWORK_PREFIX = PdNetworks.BUNDLE_PREFIX;
@@ -70,10 +67,11 @@ public class EnvironmentService {
   Duration writeDeadline;
 
   /**
-   * {@code branch} and {@code network} are optional; each omitted one takes its convention.
+   * {@code network} is optional and takes its convention when omitted.
    *
-   * <p>{@code platform} designates this tier as the one the platform plane deploys from, and
-   * designating is a <b>move</b> — see {@link #designate}.
+   * <p>{@code platform} designates this tier as the platform environment — where a release enters
+   * and where the platform plane itself is deployed — and designating is a <b>move</b>, see {@link
+   * #designate}.
    *
    * <p><b>Held through a short database outage</b> ({@link DbRetry#inNewTx}, {@link
    * #writeDeadline}). The retry owns the transaction, so it repeats only an attempt that certainly
@@ -81,10 +79,8 @@ public class EnvironmentService {
    * with a {@code flush()}. Validation runs outside it: a rejected name is not worth a second
    * attempt, and a {@code ConflictException} is rethrown at once like every other business failure.
    */
-  public PdEnvironment create(String name, String branch, String network, boolean platform) {
+  public PdEnvironment create(String name, String network, boolean platform) {
     PdIdentifiers.requireName(name, "environment name");
-    String effectiveBranch =
-        PdIdentifiers.requireBranch(isBlank(branch) ? BRANCH_PREFIX + name : branch);
     String effectiveNetwork =
         isBlank(network)
             ? PdNetworks.bundle(name)
@@ -99,7 +95,6 @@ public class EnvironmentService {
           PdEnvironment environment = new PdEnvironment();
           environment.id = UUID.randomUUID().toString();
           environment.name = name;
-          environment.branch = effectiveBranch;
           environment.network = effectiveNetwork;
           environment.platform = platform;
           environment.createdAt = Instant.now();
@@ -112,7 +107,8 @@ public class EnvironmentService {
             // platform one" and "this branch is not the platform tier's" are the same answer.
             LOG.warnf(
                 "Created environment %s and no environment is the platform one — until one is"
-                    + " designated, a green build of a platform service deploys nowhere",
+                    + " designated, a release enters the platform nowhere and a platform service"
+                    + " has no tier to deploy into",
                 name);
           }
           // Last statement, and it is load-bearing: an ORM flushes at commit by default, which
@@ -125,12 +121,11 @@ public class EnvironmentService {
   }
 
   /**
-   * Rename an environment, point it at another branch, or make it the platform environment. Every
-   * field is optional; an omitted one is left alone. This is the migration path onto the {@code
-   * environment/<name>} branch convention and onto new names.
+   * Rename an environment, or make it the platform environment. Every field is optional; an omitted
+   * one is left alone.
    *
    * <p>{@code platform = true} moves the designation here (see {@link #designate}). {@code false} is
-   * refused: the platform plane must always have a tier to deploy from, so the designation is moved
+   * refused: the platform plane must always have a tier to deploy into, so the designation is moved
    * to another environment, never dropped.
    *
    * <p><b>No docker side effects, deliberately</b> — a rename that tore containers down would be a
@@ -142,10 +137,8 @@ public class EnvironmentService {
    *
    * <p>Held through a short database outage, exactly as {@link #create} is.
    */
-  public PdEnvironment update(
-      String environmentId, String name, String branch, Boolean platform) {
+  public PdEnvironment update(String environmentId, String name, Boolean platform) {
     String newName = isBlank(name) ? null : PdIdentifiers.requireName(name, "environment name");
-    String newBranch = isBlank(branch) ? null : PdIdentifiers.requireBranch(branch);
     return DbRetry.inNewTx(
         "The update of environment " + environmentId,
         () -> {
@@ -155,9 +148,6 @@ public class EnvironmentService {
               throw new ConflictException("Environment already exists: " + newName);
             }
             environment.name = newName;
-          }
-          if (newBranch != null) {
-            environment.branch = newBranch;
           }
           if (Boolean.TRUE.equals(platform)) {
             designate(environment);
@@ -183,13 +173,16 @@ public class EnvironmentService {
    *
    * <p>Moving is also the right shape for the operation a caller actually wants. "The platform
    * environment is prod now" is one fact, and expressing it as a clear plus a set would leave a
-   * window with no platform environment at all — during which a green build of a platform service
+   * window with no platform environment at all — during which a release of a platform service
    * would register nothing and quietly deploy nowhere.
    *
-   * <p><b>Rows only, like everything else here.</b> The containers do not move: a platform service
-   * has no environment id and keeps its bare wire alias, so what changes is which branch is allowed
-   * to roll it, not where it runs. Actually relocating a running platform plane is a larger
-   * operation and is not this.
+   * <p><b>Rows only, like everything else here.</b> The containers do not move, and since V8 that
+   * is worth being precise about: a platform service is deployed INTO this tier now, so moving the
+   * designation changes which tier its next deployment names — its labels, its {@code
+   * QITS_ENVIRONMENT} and its events. What it does not change is the address. The wire alias of a
+   * platform service is bare on purpose, so a peer keeps reaching it under the same name whichever
+   * tier is designated, and nothing has to be redeployed for a move to be safe. Actually relocating
+   * a running platform plane is a larger operation and is not this.
    */
   private void designate(PdEnvironment environment) {
     for (PdEnvironment holder : environments.listPlatform()) {
@@ -248,24 +241,12 @@ public class EnvironmentService {
   }
 
   /**
-   * Every environment listening to exactly this branch — what a green build fans out over.
-   *
-   * <p>A repository query now, where the split needed an HTTP round trip and a client-side filter:
-   * the previous registry API had no by-branch question, so the deployer read every environment and
-   * matched them itself. One database, one query, one index ({@code idx_pd_environment_branch}).
-   */
-  public List<PdEnvironment> onBranch(String branch) {
-    return QuarkusTransaction.joiningExisting()
-        .call(() -> List.copyOf(environments.listByBranch(branch)));
-  }
-
-  /**
-   * The platform environment, if one is designated — the tier whose branch deploys the platform
-   * plane.
+   * The platform environment, if one is designated — the tier a release enters at, and the tier a
+   * platform service is deployed into.
    *
    * <p>Empty is a real answer and not only a fresh-database one: an install can be mid-bootstrap,
-   * and a platform build then registers nothing rather than picking a tier at random. {@link
-   * #designate} is what fills it.
+   * and a release then registers nothing rather than picking a tier at random. {@link #designate}
+   * is what fills it.
    */
   public Optional<PdEnvironment> platformEnvironment() {
     return QuarkusTransaction.joiningExisting()

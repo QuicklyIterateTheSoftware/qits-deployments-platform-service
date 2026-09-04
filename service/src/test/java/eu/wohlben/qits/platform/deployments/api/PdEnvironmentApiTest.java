@@ -60,8 +60,9 @@ public class PdEnvironmentApiTest {
         .then()
         .statusCode(201)
         .body("environment.name", equalTo("env-conventions"))
-        // The tier deploys from its own ref; main stays the integration trunk.
-        .body("environment.branch", equalTo("environment/env-conventions"))
+        // No branch: a tier listened to environment/<name> while a green build was the trigger,
+        // and a release names a tag. V8 dropped the column and the field with it.
+        .body("environment.branch", nullValue())
         .body("environment.network", equalTo("qits-env-env-conventions"))
         .body("environment.applications", hasSize(0))
         .body("environment.id", notNullValue())
@@ -73,8 +74,12 @@ public class PdEnvironmentApiTest {
   }
 
   @Test
-  public void explicitBranchAndNetworkWin() {
+  public void anExplicitNetworkWinsAndAnOldSendersBranchIsIgnored() {
     // The dev tier is exactly this shape: its bundle is qits-net by history, not by convention.
+    //
+    // `branch` is sent here on purpose. A bootstrap or an operator's script written against the
+    // previous surface still spells it, and the tier it would have named is decided by `platform`
+    // now — so the field has to deserialize into nothing rather than fail a creation.
     given()
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-explicit", "branch", "environment/dev", "network", "qits-net"))
@@ -82,7 +87,7 @@ public class PdEnvironmentApiTest {
         .post(ENVIRONMENTS)
         .then()
         .statusCode(201)
-        .body("environment.branch", equalTo("environment/dev"))
+        .body("environment.branch", nullValue())
         .body("environment.network", equalTo("qits-net"));
   }
 
@@ -142,14 +147,6 @@ public class PdEnvironmentApiTest {
     given()
         .contentType(ContentType.JSON)
         .body(Map.of("name", "env-hostile-net", "network", "--privileged"))
-        .when()
-        .post(ENVIRONMENTS)
-        .then()
-        .statusCode(400);
-
-    given()
-        .contentType(ContentType.JSON)
-        .body(Map.of("name", "env-hostile-branch", "branch", "a..b"))
         .when()
         .post(ENVIRONMENTS)
         .then()
@@ -265,25 +262,23 @@ public class PdEnvironmentApiTest {
   // --- patch ------------------------------------------------------------------------------------
 
   @Test
-  public void patchRenamesAndRetargetsWithoutTouchingDocker() {
+  public void patchRenamesWithoutTouchingDocker() {
     String environmentId = create("env-patch");
     driver.reset();
 
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", "env-patched", "branch", "environment/env-patched"))
+        .body(Map.of("name", "env-patched"))
         .when()
         .patch(ENVIRONMENTS + "/" + environmentId)
         .then()
         .statusCode(200)
         .body("environment.name", equalTo("env-patched"))
-        .body("environment.branch", equalTo("environment/env-patched"))
         // The bundle network is NOT renamed with it: the rename is a row change, and the running
         // containers keep the networks they are on until their own next deploy.
         .body("environment.network", equalTo("qits-env-env-patch"));
 
-    // This is the migration path onto the branch convention, so it must be safe on a live tier:
-    // nothing was ensured, removed, disconnected or reaped.
+    // A rename must be safe on a live tier: nothing was ensured, removed, disconnected or reaped.
     assertTrue(driver.calls().isEmpty(), "PATCH has no runtime side effects: " + driver.calls());
     assertTrue(driver.removedEnvironments().isEmpty());
   }
@@ -292,6 +287,7 @@ public class PdEnvironmentApiTest {
   public void patchLeavesAnOmittedFieldAloneAndRejectsWhatCreateWouldReject() {
     String environmentId = create("env-patch-partial");
 
+    // An empty patch leaves everything alone — and an old sender's `branch` is exactly that now.
     given()
         .contentType(ContentType.JSON)
         .body(Map.of("branch", "environment/dev"))
@@ -300,19 +296,11 @@ public class PdEnvironmentApiTest {
         .then()
         .statusCode(200)
         .body("environment.name", equalTo("env-patch-partial"))
-        .body("environment.branch", equalTo("environment/dev"));
+        .body("environment.branch", nullValue());
 
     given()
         .contentType(ContentType.JSON)
         .body(Map.of("name", "Evil Name"))
-        .when()
-        .patch(ENVIRONMENTS + "/" + environmentId)
-        .then()
-        .statusCode(400);
-
-    given()
-        .contentType(ContentType.JSON)
-        .body(Map.of("branch", "bad//branch"))
         .when()
         .patch(ENVIRONMENTS + "/" + environmentId)
         .then()
@@ -539,9 +527,10 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void aPatchMovesTheDesignationToAnExistingTier() {
-    // The future "switch the platform environment" is this call. It is rows only: a platform
-    // service has no environment id and keeps its bare wire alias, so nothing moves on the host —
-    // what changes is which branch may roll the plane next.
+    // The "switch the platform environment" call. It is rows only: a platform service keeps its
+    // bare wire alias, which is its address and under swarm its service name, so nothing on the
+    // host moves — what changes is the tier the plane's NEXT deployment names, in its row, its
+    // labels and its QITS_ENVIRONMENT.
     create(Map.of("name", "env-move-from", "platform", true));
     String to = create("env-move-to");
 
@@ -565,8 +554,9 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void theDesignationIsMovedNeverCleared() {
-    // A window with no platform environment is a window in which a green build of a platform
-    // service registers nothing and reports no error. So there is no way to ask for one.
+    // A window with no platform environment is a window in which a release of a platform service
+    // registers nothing, has no tier to deploy into, and reports no error. So there is no way to
+    // ask for one.
     String only = create(Map.of("name", "env-nodrop", "platform", true));
     given()
         .contentType(ContentType.JSON)
@@ -579,8 +569,9 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void thePlatformEnvironmentCannotBeTornDown() {
-    // Deleting it would leave the platform plane running and deployable from no branch at all.
-    // Designate another tier first; that is a move, and the plane has a tier throughout.
+    // Deleting it would leave the platform plane running with nowhere to deploy and no release
+    // able to enter. Designate another tier first; that is a move, and the plane has a tier
+    // throughout.
     String platform = create(Map.of("name", "env-undeletable", "platform", true));
     given()
         .when()

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdResource;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdResourceRepository;
+import eu.wohlben.qits.platform.deployments.environments.control.EnvironmentService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -28,6 +29,7 @@ public class BootResourceRegistrationTest {
 
   @Inject BootResourceRegistration registration;
   @Inject PdResourceRepository resources;
+  @Inject EnvironmentService environments;
 
   private PdResource rowOf(String environmentName) {
     return rowOf(environmentName, BootResourceRegistration.RESOURCE_NAME);
@@ -147,6 +149,41 @@ public class BootResourceRegistrationTest {
   }
 
   @Test
+  public void aBootWithoutTheEnvironmentVariableResolvesTheDesignatedPlatformTier() {
+    // THE BOOTSTRAP WINDOW, and the one arm this whole change turns on. This component is deployed
+    // by the instance before it, so the first container carrying the new code was started by code
+    // that wrote no QITS_ENVIRONMENT for a platform service — the absence used to MEAN "the
+    // platform plane" and the rows went in under a null key.
+    //
+    // Read as a plane it is now wrong: the deployment that starts the successor names the
+    // designated tier, and ResourceProvisioning looks the credential up by that name. A row left at
+    // null would miss, the provisioner would take its reconcile arm, and both of this component's
+    // own passwords would be rotated while its pools hold the old ones open. So the absence is
+    // RESOLVED — from pd_environment.platform, the same designation that chose where to deploy it.
+    QuarkusTransaction.requiringNew()
+        .run(() -> environments.create("boot-designated", "qits-net", true));
+
+    assertEquals(
+        "boot-designated",
+        registration.environmentName(),
+        "no variable is the boot before the first deployment by the current code, not a plane");
+  }
+
+  @Test
+  public void aBootWithTheVariableTakesItVerbatimWithoutAskingTheDatabase() {
+    // The ordinary boot, and the one that must not become a query: what this container was started
+    // with is the truth, and a designation moved since then says nothing about where it is running.
+    QuarkusTransaction.requiringNew()
+        .run(() -> environments.create("boot-elsewhere", "qits-net", true));
+    System.setProperty(BootResourceRegistration.ENVIRONMENT_VARIABLE, "boot-started-with");
+    try {
+      assertEquals("boot-started-with", registration.environmentName());
+    } finally {
+      System.clearProperty(BootResourceRegistration.ENVIRONMENT_VARIABLE);
+    }
+  }
+
+  @Test
   public void aPlatformBootRecordsOnThePlaneAndLeavesTheOldTierRowAlone() {
     // The row a platform that still ran this per tier has.
     registration.record(
@@ -156,9 +193,9 @@ public class BootResourceRegistrationTest {
         "the-tier-password",
         "boot-e");
 
-    // After the flip the swarm driver injects no QITS_ENVIRONMENT, so the boot records with none:
-    // environment_name null is the key ResourceProvisioning looks a platform service's rows up by,
-    // and a row under any other key would send the next self-deploy down the reconcile arm.
+    // The last-resort arm: an install with no designated tier has nothing to key a row by, so the
+    // row goes in where the old code put it and the operator is warned. V8 moves it onto the tier's
+    // name the moment one is designated.
     registration.record(
         BootResourceRegistration.RESOURCE_NAME,
         "jdbc:postgresql://boot-e-qits-oci-postgresql:5432/qits_deployments_plane",
@@ -167,7 +204,7 @@ public class BootResourceRegistrationTest {
         null);
 
     PdResource plane = rowOf(null);
-    assertNull(plane.environmentName, "a platform service belongs to no tier");
+    assertNull(plane.environmentName, "nothing designated, so nothing to name");
     assertEquals("qits_deployments_plane", plane.databaseName);
     assertEquals("the-platform-password", plane.password);
     // The tier row is a leftover, not a conflict: same application name, so the cross-application

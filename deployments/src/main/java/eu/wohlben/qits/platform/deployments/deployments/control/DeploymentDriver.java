@@ -340,9 +340,13 @@ public interface DeploymentDriver {
    * the name — see {@link #nameOf}. The alias is the address peers dial and is derived in one place
    * ({@code PdNetworks}) so nothing that has to agree about an address can disagree.
    *
-   * <p>{@code environmentId} and {@code environmentName} are null on a platform service, which is
-   * what leaves it without an environment label — an environment teardown reaps by that label, and
-   * it must never take a platform-plane service with it.
+   * <p>{@code environmentId} and {@code environmentName} are the tier this is deployed into, and
+   * <b>a platform service has one</b>: it is deployed into the designated platform environment, so
+   * it carries the environment label and boots with {@code QITS_ENVIRONMENT} like everything else.
+   * The plane is {@code target}, and it is what an implementation asks when it needs to know —
+   * never a missing tier. (An environment teardown reaps by the environment label, so it demands
+   * the target label too; a platform-plane service must never go down with a tier it merely serves.)
+   * Null is a mid-bootstrap install with no tier designated.
    *
    * <p>{@code healthCmd} is the repository's own readiness probe and, when present, <b>replaces</b>
    * the health path rather than adding to it: an image with no HTTP surface has no path to fetch.

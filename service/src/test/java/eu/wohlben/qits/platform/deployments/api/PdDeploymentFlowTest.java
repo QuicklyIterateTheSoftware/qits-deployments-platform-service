@@ -37,8 +37,11 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class PdDeploymentFlowTest {
 
-  private static final String SHA_A = "a".repeat(40);
-  private static final String SHA_B = "b".repeat(40);
+  // Released versions, not commit shas. Unpadded on purpose: the platform's stamp is built by
+  // integer arithmetic, so V_B is the later of the two and yet sorts FIRST as a string — every
+  // ordering claim here would pass by accident against a lexical comparison of padded values.
+  private static final String V_A = "2026.903.93059";
+  private static final String V_B = "2026.903.193059";
 
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
@@ -53,16 +56,12 @@ public class PdDeploymentFlowTest {
     provisioner.reset();
   }
 
-  private String createEnvironment(String name) {
-    return createEnvironment(name, false);
-  }
-
   /**
-   * The tier the platform plane deploys from. A platform build ships only when THIS environment
-   * listens to the built branch, so every platform-plane test here designates its own — and
-   * designating moves the flag, so the suite's shared database never holds two.
+   * The tier a release enters at. With branch matching gone that is the designated platform
+   * environment, and creating one MOVES the designation — so every method here makes its own the
+   * entry tier and the suite's shared database never holds two.
    */
-  private String createPlatformEnvironment(String name) {
+  private String createEnvironment(String name) {
     return createEnvironment(name, true);
   }
 
@@ -78,16 +77,16 @@ public class PdDeploymentFlowTest {
         .path("environment.id");
   }
 
-  private void postBuildSucceeded(String repoId, String branch, String sha) {
-    postBuildSucceeded("run-1", repoId, branch, sha);
+  private void postRelease(String repoId, String version) {
+    postRelease("run-1", repoId, version);
   }
 
-  private void postBuildSucceeded(String runId, String repoId, String branch, String sha) {
+  private void postRelease(String runId, String repoId, String version) {
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("runId", runId, "repoId", repoId, "branch", branch, "commitSha", sha))
+        .body(Map.of("runId", runId, "repoId", repoId, "version", version))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -136,18 +135,22 @@ public class PdDeploymentFlowTest {
   }
 
   /**
-   * A platform deployment is unreachable through the environment-scoped listing, so a test about
-   * one reads the row directly — the same thing PdSweepAdoptionTest does for the same reason.
+   * The row itself, when a test needs a column the wire shape does not carry. It used to exist
+   * because a platform deployment was unreachable through the environment-scoped listing; the rows
+   * name their tier now, so what it is for is the plane column and the detail text.
    */
-  private PdDeployment deploymentOf(String applicationName, String environmentId, String sha) {
+  private PdDeployment deploymentOf(
+      String applicationName, String environmentId, String version) {
     return QuarkusTransaction.requiringNew()
         .call(
             () ->
                 deployments.listByApplication(applicationName, environmentId).stream()
-                    .filter(d -> sha.equals(d.commitSha))
+                    .filter(d -> version.equals(d.version))
                     .findFirst()
                     .orElseThrow(
-                        () -> new AssertionError("no deployment of " + applicationName + " at " + sha)));
+                        () ->
+                            new AssertionError(
+                                "no deployment of " + applicationName + " at " + version)));
   }
 
   /** Platform deployments have no environment to read through — wait on the driver instead. */
@@ -166,12 +169,12 @@ public class PdDeploymentFlowTest {
   @Test
   public void aGreenBuildOnTheListenedBranchDeploys() {
     String environmentId = createEnvironment("flow-green");
-    postBuildSucceeded("repo-green", "environment/flow-green", SHA_A);
+    postRelease("repo-green", V_A);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     Map<String, Object> deployment = deployments.get(0);
     assertEquals("ACTIVE", deployment.get("status"));
-    assertEquals(SHA_A, deployment.get("commitSha"));
+    assertEquals(V_A, deployment.get("version"));
     assertEquals("repo-green", deployment.get("applicationName"));
     // The run that caused it, straight from the intake and out again on the read surface — this is
     // the whole deployment -> /ci/runs/<runId> click-through.
@@ -182,7 +185,7 @@ public class PdDeploymentFlowTest {
 
     // The image reference is DERIVED — the convention is the contract under test.
     assertEquals(
-        List.of("qits-platform-artifacts:8080/qits/repo-green:" + SHA_A), driver.pulled());
+        List.of("qits-platform-artifacts:8080/qits/repo-green:" + V_A), driver.pulled());
     DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
     // The primary network is the application's OWN, not the environment's bundle: an ordinary
     // application is a spoke, and only its own services are on it.
@@ -208,17 +211,43 @@ public class PdDeploymentFlowTest {
   }
 
   @Test
+  public void theSpecIsReadAtTheReleasedTagAndTheResolvedCommitLandsOnTheRow() {
+    // The version coordinate end to end. Three things have to agree and each is a separate
+    // regression: the image is pulled at `:<version>`, the spec is read at `refs/tags/<version>`
+    // rather than at a branch tip that happens to carry the same name, and the commit the git host
+    // resolved that tag to is recorded — the only edge a released deployment has back to a diff.
+    String environmentId = createEnvironment("flow-tag");
+    postRelease("repo-tag", V_B);
+
+    List<Map<String, Object>> settled = awaitDeployments(environmentId, 1);
+    assertEquals("ACTIVE", settled.get(0).get("status"));
+    assertEquals(V_B, settled.get(0).get("version"));
+    assertEquals(
+        FakeSpecSource.RESOLVED_COMMIT,
+        settled.get(0).get("commitSha"),
+        "the commit the released tag resolved to, recorded rather than assumed");
+    assertEquals(
+        "refs/tags/" + V_B,
+        specs.revOf("repo-tag"),
+        "a bare version would let a branch of the same name win");
+    assertEquals(
+        List.of("qits-platform-artifacts:8080/qits/repo-tag:" + V_B),
+        driver.pulled(),
+        "the image carries the released tag, never the commit");
+  }
+
+  @Test
   public void theNextGreenBuildCutsOverAndDecommissionsThePrevious() {
     String environmentId = createEnvironment("flow-cutover");
-    postBuildSucceeded("repo-cutover", "environment/flow-cutover", SHA_A);
+    postRelease("repo-cutover", V_A);
     awaitDeployments(environmentId, 1);
 
-    postBuildSucceeded("repo-cutover", "environment/flow-cutover", SHA_B);
+    postRelease("repo-cutover", V_B);
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 2);
 
     // Newest-first: the sha-B deployment is ACTIVE, the sha-A one decommissioned.
     assertEquals("ACTIVE", deployments.get(0).get("status"));
-    assertEquals(SHA_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertEquals("DECOMMISSIONED", deployments.get(1).get("status"));
     // Both rows name the same service, which is what an in-place replace is — so there is nothing
     // to reap, and reaping it would remove the deployment that just went live.
@@ -233,13 +262,13 @@ public class PdDeploymentFlowTest {
         new DeploymentDriver.PullResult(
             DeploymentDriver.PullOutcome.IMAGE_MISSING, "manifest unknown"));
     String environmentId = createEnvironment("flow-noimage");
-    postBuildSucceeded("repo-noimage", "environment/flow-noimage", SHA_A);
+    postRelease("repo-noimage", V_A);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     assertEquals("IMAGE_MISSING", deployments.get(0).get("status"));
     String detail = (String) deployments.get(0).get("detail");
     assertTrue(
-        detail.contains("qits-platform-artifacts:8080/qits/repo-noimage:" + SHA_A),
+        detail.contains("qits-platform-artifacts:8080/qits/repo-noimage:" + V_A),
         "the detail names the reference nothing published: " + detail);
     // Nothing was applied and nothing reaped — the previous state is untouched.
     assertEquals(List.of(), driver.applied());
@@ -254,7 +283,7 @@ public class PdDeploymentFlowTest {
             "pull access denied for qits/repo-denied, repository does not exist or may require"
                 + " 'docker login'"));
     String environmentId = createEnvironment("flow-denied");
-    postBuildSucceeded("repo-denied", "environment/flow-denied", SHA_A);
+    postRelease("repo-denied", V_A);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     // FAILED rather than IMAGE_MISSING: the image may well be published, and what has to be fixed
@@ -263,7 +292,7 @@ public class PdDeploymentFlowTest {
     String detail = (String) deployments.get(0).get("detail");
     assertTrue(detail.contains("registry credential"), "the detail says what to fix: " + detail);
     assertTrue(
-        detail.contains("qits-platform-artifacts:8080/qits/repo-denied:" + SHA_A),
+        detail.contains("qits-platform-artifacts:8080/qits/repo-denied:" + V_A),
         "...and which reference it was refused: " + detail);
     // Nothing was applied and nothing reaped — the previous state is untouched.
     assertEquals(List.of(), driver.applied());
@@ -273,19 +302,19 @@ public class PdDeploymentFlowTest {
   @Test
   public void aSuccessorThatNeverConvergesLeavesTheOldOneServing() {
     String environmentId = createEnvironment("flow-unhealthy");
-    postBuildSucceeded("repo-unhealthy", "environment/flow-unhealthy", SHA_A);
+    postRelease("repo-unhealthy", V_A);
     awaitDeployments(environmentId, 1);
 
     driver.scriptConvergence(
         DeploymentDriver.Convergence.rolledBack("the successor never went healthy"));
-    postBuildSucceeded("repo-unhealthy", "environment/flow-unhealthy", SHA_B);
+    postRelease("repo-unhealthy", V_B);
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 2);
 
     assertEquals(
         "ROLLED_BACK",
         deployments.get(0).get("status"),
         "the orchestrator put the predecessor back, and the word says so");
-    assertEquals(SHA_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertTrue(
         ((String) deployments.get(0).get("detail")).contains("never went healthy"),
         "the orchestrator's own words are on the row: " + deployments.get(0).get("detail"));
@@ -303,7 +332,7 @@ public class PdDeploymentFlowTest {
         new DeploymentDriver.ApplyResult(
             DeploymentDriver.ApplyOutcome.REFUSED, "docker: connection refused"));
     String environmentId = createEnvironment("flow-refused");
-    postBuildSucceeded("repo-refused", "environment/flow-refused", SHA_A);
+    postRelease("repo-refused", V_A);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     assertEquals("FAILED", deployments.get(0).get("status"));
@@ -324,7 +353,7 @@ public class PdDeploymentFlowTest {
             null,
             null,
             List.of(new SpecSource.DeploymentSpec.ResourceSpec("db", null))));
-    postBuildSucceeded("qits-storing", "environment/flow-resource", SHA_A);
+    postRelease("qits-storing", V_A);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     assertEquals("ACTIVE", deployments.get(0).get("status"));
@@ -362,7 +391,7 @@ public class PdDeploymentFlowTest {
             List.of(new SpecSource.DeploymentSpec.ResourceSpec("db", null))));
     provisioner.scriptResult(
         new ResourceProvisioner.Result(false, null, "postgres refused: too many connections"));
-    postBuildSucceeded("qits-refused", "environment/flow-resource-refused", SHA_A);
+    postRelease("qits-refused", V_A);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     assertEquals("FAILED", deployments.get(0).get("status"));
@@ -378,22 +407,11 @@ public class PdDeploymentFlowTest {
     // The backward-compatibility half, which is every application on the platform today: the seam
     // is never called and the service is told about nothing.
     String environmentId = createEnvironment("flow-resource-none");
-    postBuildSucceeded("repo-nostore", "environment/flow-resource-none", SHA_A);
+    postRelease("repo-nostore", V_A);
 
     assertEquals("ACTIVE", awaitDeployments(environmentId, 1).get(0).get("status"));
     assertEquals(List.of(), provisioner.requests());
     assertEquals(List.of(), driver.applied().get(0).resources());
-  }
-
-  @Test
-  public void aBranchNoEnvironmentListensToDeploysNothing() {
-    String environmentId = createEnvironment("flow-other");
-    postBuildSucceeded("repo-other", "main", SHA_A);
-
-    // 202 (fire-and-forget sender), but nothing was queued or pulled.
-    awaitWorkerIdle();
-    awaitDeployments(environmentId, 0);
-    assertEquals(List.of(), driver.pulled());
   }
 
   @Test
@@ -402,7 +420,7 @@ public class PdDeploymentFlowTest {
     // environment's branch is the whole registration. The row is named after the repository and
     // carries the defaults its (absent) deployments.yml implies.
     String environmentId = createEnvironment("flow-derive");
-    postBuildSucceeded("repo-derived", "environment/flow-derive", SHA_A);
+    postRelease("repo-derived", V_A);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 1);
     assertEquals("ACTIVE", deployments.get(0).get("status"));
@@ -439,7 +457,7 @@ public class PdDeploymentFlowTest {
             "app-hub-seed"));
     specs.script(
         "repo-gw", new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, true, null, null, null, null));
-    postBuildSucceeded("repo-gw", "environment/flow-hub", SHA_A);
+    postRelease("repo-gw", V_A);
 
     awaitDeployments(environmentId, 1);
     DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
@@ -457,7 +475,7 @@ public class PdDeploymentFlowTest {
 
   @Test
   public void aPlatformServiceRunsOnThePlatformNetworkAndDeclaresEveryApplicationNetwork() {
-    String environmentId = createPlatformEnvironment("flow-single");
+    String environmentId = createEnvironment("flow-single");
     driver.scriptExistingNetwork(
         new DeploymentDriver.Network(
             "qits-env-flow-single-app-single-seed",
@@ -466,22 +484,26 @@ public class PdDeploymentFlowTest {
             "app-single-seed"));
     specs.script(
         "repo-idp", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    // An environment's own branch, because that is the only kind of deploy ref there is — and what
-    // comes out of it is still platform-shaped.
-    postBuildSucceeded("repo-idp", "environment/flow-single", SHA_A);
+    postRelease("repo-idp", V_A);
 
     awaitApplied(1);
     DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
     assertEquals("qits-platform", spec.primaryNetwork());
-    assertEquals(PdDeploymentTarget.PLATFORM, spec.target());
-    assertNull(spec.environmentId(), "a platform service belongs to no tier");
-    assertNull(spec.environmentName());
+    assertEquals(PdDeploymentTarget.PLATFORM, spec.target(), "the plane is stated on the spec");
+    // IT IS DEPLOYED INTO THE MAIN ENVIRONMENT. Everything an application is told about where it
+    // runs — the label an operator greps the host by, the QITS_ENVIRONMENT it boots with, the tier
+    // on all four lifecycle events — comes off these two, and a platform service used to be told
+    // nothing at all.
+    assertEquals(environmentId, spec.environmentId(), "a platform service is deployed into a tier");
+    assertEquals("flow-single", spec.environmentName());
+    // ...and the three things the PLANE still decides, none of them read off a missing tier.
     assertTrue(
         spec.deploymentName().startsWith("qits-pd-repo-idp-"),
-        "no tier segment in the derived name, because there is no tier: " + spec.deploymentName());
-    // Its wire alias stays the bare application name — one instance for the whole platform has
-    // nothing to be qualified against.
-    assertEquals("repo-idp", spec.wireAlias());
+        "the plane's names stay unqualified: " + spec.deploymentName());
+    assertEquals(
+        "repo-idp",
+        spec.wireAlias(),
+        "and the address most of all — a peer in any tier reaches it by writing its bare name");
     assertTrue(
         spec.networks().contains("qits-env-flow-single-app-single-seed"),
         "a platform service is on every application network of every environment: "
@@ -490,9 +512,9 @@ public class PdDeploymentFlowTest {
         spec.networks().contains("qits-net"),
         "and the legacy network while the transition lasts: " + spec.networks());
 
-    // The environment it is not part of deploys nothing on this event.
-    assertEquals(
-        0,
+    // The tier it deploys into shows it, which it could not before: `?environmentId=` was a query
+    // no platform row could answer.
+    List<Map<String, Object>> inTier =
         given()
             .when()
             .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
@@ -500,59 +522,34 @@ public class PdDeploymentFlowTest {
             .statusCode(200)
             .extract()
             .jsonPath()
-            .getList("deployments")
-            .size());
+            .getList("deployments");
+    assertEquals(1, inTier.size(), "the plane's deployment is in the tier's listing: " + inTier);
+    assertEquals(
+        "platform:repo-idp",
+        inTier.get(0).get("applicationId"),
+        "and it is still keyed by its PLANE, so a client's join against /applications holds");
   }
 
   @Test
-  public void aPlatformServiceOnABranchNoEnvironmentTracksDeploysNothing() {
-    // A platform service asks the same branch question a tiered one does — does an environment
-    // listen to this ref. `release` is nobody's deploy ref, so the first event ships nothing and
-    // only the second one does.
-    createPlatformEnvironment("flow-pinned");
-    specs.script(
-        "repo-pinned", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-pinned", "release", SHA_A);
-    postBuildSucceeded("repo-pinned", "environment/flow-pinned", SHA_B);
-
-    awaitApplied(1);
-    awaitWorkerIdle();
-    assertEquals(1, driver.applied().size(), "only the environment's branch shipped");
-    assertEquals(SHA_B, driver.applied().get(0).commitSha());
-  }
-
-  @Test
-  public void onlyThePlatformEnvironmentsBranchRollsThePlatformPlane() {
-    // The claim that makes a second tier ordinary. Both environments are real deploy refs and both
-    // would once have shipped this service, because the gate asked only whether SOME environment
-    // listened — and with one instance and no environment id, that was never a fan-out, it was two
-    // tiers taking turns overwriting one container. Now the platform environment owns the turn.
+  public void thePlatformPlaneIsRolledOnceByTheTierTheReleaseEntersAt() {
+    // The claim that survived branch matching, restated. There is one designated platform
+    // environment; it decides that the plane may be rolled at all, and — since V8 — where. Two
+    // tiers exist and only the designated one is named: a second instance in the other would be
+    // the fan-out this plane has never had.
     createEnvironment("flow-otherplane");
-    createPlatformEnvironment("flow-thisplane");
+    String designated = createEnvironment("flow-thisplane");
     specs.script(
         "repo-planegate",
         new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
 
-    postBuildSucceeded("repo-planegate", "environment/flow-otherplane", SHA_A);
-    awaitWorkerIdle();
-    assertEquals(List.of(), driver.applied(), "another tier's branch leaves the plane alone");
-    assertTrue(
-        given()
-            .when()
-            .get("/platform-deployments/api/services")
-            .then()
-            .statusCode(200)
-            .extract()
-            .jsonPath()
-            .getList("services.name", String.class)
-            .stream()
-            .noneMatch("repo-planegate"::equals),
-        "and registers nothing — there is no half-registered state");
-
-    postBuildSucceeded("repo-planegate", "environment/flow-thisplane", SHA_B);
+    postRelease("repo-planegate", V_B);
     awaitApplied(1);
-    assertEquals(SHA_B, driver.applied().get(0).commitSha());
-    assertNull(driver.applied().get(0).environmentId(), "still one instance, on no tier");
+    assertEquals(1, driver.applied().size(), "one instance, once");
+    assertTrue(driver.applied().get(0).imageRef().endsWith(":" + V_B));
+    assertEquals(
+        designated,
+        driver.applied().get(0).environmentId(),
+        "one instance, in the tier the release entered at — not in the other one, and not nowhere");
   }
 
   @Test
@@ -560,13 +557,13 @@ public class PdDeploymentFlowTest {
     // The conversion, in one test: a repository that is an environment application today can
     // become a platform service with the commit that adds its deployments.yml. The old rows must
     // not sit beside the new one — one repository deploys to one place.
-    String environmentId = createPlatformEnvironment("flow-convert");
-    postBuildSucceeded("repo-convert", "environment/flow-convert", SHA_A);
+    String environmentId = createEnvironment("flow-convert");
+    postRelease("repo-convert", V_A);
     awaitDeployments(environmentId, 1);
 
     specs.script(
         "repo-convert", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-convert", "environment/flow-convert", SHA_B);
+    postRelease("repo-convert", V_B);
     awaitApplied(2);
 
     List<Map<String, Object>> registered =
@@ -583,22 +580,33 @@ public class PdDeploymentFlowTest {
             .toList();
     assertEquals(1, registered.size(), "one row, not two: " + registered);
     assertEquals("PLATFORM", registered.get(0).get("target"));
-    assertNull(registered.get(0).get("environmentId"));
+    assertNull(registered.get(0).get("environmentId"), "a platform service still carries no link");
     assertNull(registered.get(0).get("branch"), "the plane has no deploy ref of its own");
 
-    // The history moved with it: the environment it left has no deployments of it any more, and
-    // the row that was serving is decommissioned rather than deleted.
-    assertEquals(
-        0,
+    // The history moved onto the PLANE, which is a column now rather than a missing tier — so the
+    // plane's listing has both rows and the one that was serving as an environment application is
+    // decommissioned rather than deleted.
+    List<Map<String, Object>> onThePlane =
         given()
             .when()
-            .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+            .get("/platform-deployments/api/deployments?environmentId=platform")
             .then()
             .statusCode(200)
             .extract()
             .jsonPath()
-            .getList("deployments")
-            .size());
+            .<Map<String, Object>>getList("deployments")
+            .stream()
+            .filter(d -> "repo-convert".equals(d.get("applicationName")))
+            .toList();
+    assertEquals(2, onThePlane.size(), "both rows are the plane's now: " + onThePlane);
+    assertEquals("ACTIVE", onThePlane.get(0).get("status"), "the newest is serving");
+    assertEquals(
+        "DECOMMISSIONED",
+        onThePlane.get(1).get("status"),
+        "and the environment row it converted is decommissioned rather than dropped");
+    assertTrue(
+        onThePlane.stream().allMatch(d -> "platform:repo-convert".equals(d.get("applicationId"))),
+        "one history, one key — the conversion must not split it: " + onThePlane);
   }
 
   @Test
@@ -607,16 +615,16 @@ public class PdDeploymentFlowTest {
     // the history", and the environment deployment would find the running platform container
     // through the legacy network and remove it — leaving a row saying ACTIVE about nothing. So it
     // is refused, and the refusal is written where an operator looks: a FAILED row on the plane.
-    createPlatformEnvironment("flow-unflip");
+    String environmentId = createEnvironment("flow-unflip");
     specs.script(
         "repo-unflip", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postBuildSucceeded("repo-unflip", "environment/flow-unflip", SHA_A);
+    postRelease("repo-unflip", V_A);
     awaitApplied(1);
 
     // The file goes back to saying `environment`, on the tier's own branch this time.
     specs.script(
         "repo-unflip", new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, false, null, null, null, null));
-    postBuildSucceeded("repo-unflip", "environment/flow-unflip", SHA_B);
+    postRelease("repo-unflip", V_B);
     awaitWorkerIdle();
 
     // Nothing was registered into the environment and nothing new was deployed.
@@ -636,8 +644,10 @@ public class PdDeploymentFlowTest {
     assertEquals("PLATFORM", rows.get(0).get("target"));
     assertEquals(1, driver.applied().size(), "the refused build deployed nothing");
 
-    // ...and the refusal is on the record, naming the flip.
-    PdDeployment refused = deploymentOf("repo-unflip", null, SHA_B);
+    // ...and the refusal is on the record, naming the flip. It is written where the deployment it
+    // refuses would have gone: on the plane, in the tier the plane deploys into.
+    PdDeployment refused = deploymentOf("repo-unflip", environmentId, V_B);
+    assertEquals(PdDeploymentTarget.PLATFORM, refused.deploymentTarget);
     assertEquals("FAILED", refused.status.name());
     assertTrue(
         refused.detail.contains("deployment_target: environment"),
@@ -653,7 +663,7 @@ public class PdDeploymentFlowTest {
     // and ServiceCatalog.upsert's own lock is another, but the contract under test is the worker:
     // handling the WHOLE event on one thread is what makes read-then-write atomic against every
     // other event — which is what the ancestor's null-environment_id row had no constraint for.
-    createPlatformEnvironment("flow-once");
+    createEnvironment("flow-once");
     specs.script(
         "repo-once", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
     int senders = 8;
@@ -667,7 +677,7 @@ public class PdDeploymentFlowTest {
             pool.submit(
                 () -> {
                   go.await();
-                  postBuildSucceeded("repo-once", "environment/flow-once", SHA_A);
+                  postRelease("repo-once", V_A);
                   return null;
                 }));
       }
@@ -705,16 +715,16 @@ public class PdDeploymentFlowTest {
     // registered has no row to fail and records nothing (the 202-and-silence an unknown
     // repository always got); one that fails for a registered application fails it, there.
     String environmentId = createEnvironment("flow-nospec");
-    postBuildSucceeded("repo-nospec", "environment/flow-nospec", SHA_A);
+    postRelease("repo-nospec", V_A);
     awaitDeployments(environmentId, 1);
     driver.reset();
 
     specs.scriptFailure("repo-nospec", "the git host answered 500");
-    postBuildSucceeded("repo-nospec", "environment/flow-nospec", SHA_B);
+    postRelease("repo-nospec", V_B);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 2);
     assertEquals("FAILED", deployments.get(0).get("status"));
-    assertEquals(SHA_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertTrue(
         ((String) deployments.get(0).get("detail")).contains("the git host answered 500"),
         "the cause is on the row: " + deployments.get(0).get("detail"));
@@ -729,7 +739,7 @@ public class PdDeploymentFlowTest {
   public void aSpecThatCannotBeReadForAnUnknownRepositoryRecordsNothing() {
     String environmentId = createEnvironment("flow-nospec-unknown");
     specs.scriptFailure("repo-nospec-unknown", "the git host answered 500");
-    postBuildSucceeded("repo-nospec-unknown", "environment/flow-nospec-unknown", SHA_A);
+    postRelease("repo-nospec-unknown", V_A);
 
     awaitWorkerIdle();
     awaitDeployments(environmentId, 0);
@@ -741,27 +751,27 @@ public class PdDeploymentFlowTest {
     // Two green builds of the same application: each row names its own run, so the click-through
     // from a historical deployment reaches the build that produced THAT image, not the newest one.
     String environmentId = createEnvironment("flow-runid");
-    postBuildSucceeded("6f31a0c4-1c2b-4f7a-9b03-2ee45c1f8d61", "repo-runid", "environment/flow-runid", SHA_A);
+    postRelease("6f31a0c4-1c2b-4f7a-9b03-2ee45c1f8d61", "repo-runid", V_A);
     awaitDeployments(environmentId, 1);
-    postBuildSucceeded("b41d7e90-9a11-4c33-8f0d-77c0e13a4412", "repo-runid", "environment/flow-runid", SHA_B);
+    postRelease("b41d7e90-9a11-4c33-8f0d-77c0e13a4412", "repo-runid", V_B);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 2);
     assertEquals("b41d7e90-9a11-4c33-8f0d-77c0e13a4412", deployments.get(0).get("runId"));
-    assertEquals(SHA_B, deployments.get(0).get("commitSha"));
+    assertEquals(V_B, deployments.get(0).get("version"));
     assertEquals("6f31a0c4-1c2b-4f7a-9b03-2ee45c1f8d61", deployments.get(1).get("runId"));
-    assertEquals(SHA_A, deployments.get(1).get("commitSha"));
+    assertEquals(V_A, deployments.get(1).get("version"));
   }
 
   @Test
   public void aDeploymentWithNoRunNamesNoneRatherThanInventingOne() {
-    // The sender may omit runId — every deployment recorded before the column existed reads this
-    // way too, and the read surface must say null rather than guess a run from the sha.
+    // The sender may omit runId — a SoftwareRelease carries none at all, so this is the ordinary
+    // shape now and the read surface must say null rather than guess a run from the version.
     String environmentId = createEnvironment("flow-norunid");
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("repoId", "repo-norunid", "branch", "environment/flow-norunid", "commitSha", SHA_A))
+        .body(Map.of("repoId", "repo-norunid", "version", V_A))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
 
@@ -780,27 +790,25 @@ public class PdDeploymentFlowTest {
             Map.of(
                 "runId", "r".repeat(300),
                 "repoId", "repo-bigrun",
-                "branch", "main",
-                "commitSha", SHA_A))
+                "version", V_A))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(400);
   }
 
   @Test
   public void malformedIdentifiersAreRejectedNotQueued() {
-    // The intake is attacker-reachable; a sha that could escape an image reference must never
-    // reach a docker argv (400 from cd's own validation, not a queued deployment).
+    // The intake is attacker-reachable; a version that could escape an image reference must never
+    // reach a docker argv (400 from this component's own validation, not a queued deployment).
     given()
         .contentType(ContentType.JSON)
         .body(
             Map.of(
                 "repoId", "repo-x",
-                "branch", "main",
-                "commitSha", "latest; docker run --privileged evil"))
+                "version", "latest; docker run --privileged evil"))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(400);
   }

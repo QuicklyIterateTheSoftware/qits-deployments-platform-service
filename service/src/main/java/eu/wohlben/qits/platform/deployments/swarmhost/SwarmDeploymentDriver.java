@@ -10,6 +10,7 @@ import eu.wohlben.qits.platform.deployments.deployments.control.PdProcess;
 import eu.wohlben.qits.platform.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.file.Files;
@@ -77,6 +78,16 @@ import org.jboss.logging.Logger;
  * — is {@link ServiceExtras}, stated in deployment config and rendered here in swarm's own words.
  * Nothing translates a {@code docker run} argv any more: config states the intent, and the one
  * intent swarm cannot express — a publish bound to an ip — is refused rather than widened.
+ *
+ * <p><b>Nothing here reads an absent environment as a plane.</b> A platform service is deployed
+ * into the designated environment now, so every spec that reaches this class carries a tier: the
+ * environment label is written for both planes and so is {@code QITS_ENVIRONMENT}. What the plane
+ * still decides is asked of {@link ServiceSpec#platform()} — the {@code qits-platform} overlay on
+ * top of the flat one, and the bare wire alias, which is also the service NAME and is therefore
+ * what keeps a platform service's address unchanged across this whole change. The one reader that
+ * must not follow the label is the environment teardown: it reaps by it, so it now also demands
+ * {@code target=environment}, or tearing a tier down would take the platform plane with it. See
+ * {@link #removeEnvironmentContainers}.
  *
  * <p><b>The one piece of a self-update swarm does not do for us is the row.</b> The instance that
  * issues the update on its own service dies before the outcome exists, so the deployment stays
@@ -1169,7 +1180,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     LOG.debugf("Nothing to detach from %s: a service's networks are declared, not joined", networks);
   }
 
-  /** The environment's services, by the label every one of them carries. */
+  /**
+   * The environment's services, by the two labels that together mean "this tier's own".
+   *
+   * <p><b>The second filter is not belt and braces.</b> A platform service carries this
+   * environment's id now — it is deployed into the designated tier — and it must never go down with
+   * a tier, because it serves every one of them and the tier being torn down is merely where it
+   * happens to run. The environment label alone identified a tier's services only while the plane
+   * carried none; the plane's own label is what tells them apart now, and it is written on every
+   * service this component creates.
+   *
+   * <p>Two {@code --filter} arguments are ANDed by the CLI, which is what makes this one query.
+   */
   @Override
   public int removeEnvironmentContainers(String environmentId) {
     PdProcess.Result listed =
@@ -1180,7 +1202,12 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 "ls",
                 "-q",
                 "--filter",
-                "label=" + ENVIRONMENT_LABEL + "=" + environmentId),
+                "label=" + ENVIRONMENT_LABEL + "=" + environmentId,
+                "--filter",
+                "label="
+                    + TARGET_LABEL
+                    + "="
+                    + PdDeploymentTarget.ENVIRONMENT.name().toLowerCase(Locale.ROOT)),
             CLEANUP_TIMEOUT);
     if (listed.exitCode() != 0) {
       LOG.debugf("Could not list services of environment %s: %s", environmentId, listed.output());
@@ -1485,9 +1512,11 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   private static List<String> labels(ServiceSpec spec) {
     List<String> labels = new ArrayList<>();
-    // A platform service gets NO environment label, and the absence is the feature: an environment
-    // teardown reaps every service carrying its id, and a platform-plane service must never go down
-    // with a tier it merely serves.
+    // EVERY service carries the environment label now, the platform plane included: it is deployed
+    // into the designated tier and the label says which install and which tier a container on the
+    // host belongs to. The absence used to be load-bearing — an environment teardown reaps by this
+    // label — and that reader is what changed instead: it demands the target label too, so a
+    // teardown still cannot take a platform service down with a tier it merely serves.
     if (spec.environmentId() != null) {
       labels.add(ENVIRONMENT_LABEL + "=" + spec.environmentId());
     }
@@ -1505,8 +1534,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   private static List<String> environment(ServiceSpec spec) {
     List<String> variables = new ArrayList<>();
-    // QITS_ENVIRONMENT is written for environment applications ONLY: a platform service serves
-    // every environment, and telling it that it lives in one would be a statement that is untrue.
+    // QITS_ENVIRONMENT is written for EVERY service, the platform plane included. It used to be
+    // withheld from a platform service on the reasoning that it serves every environment and being
+    // told it lived in one would be untrue — which read well and cost the plane the ability to
+    // name its own install: no tier in its telemetry, no tier in its resource rows, and every
+    // consumer of it having to special-case a null. A platform service is deployed into the
+    // designated environment, and this says which one. What stays true of "serves every
+    // environment" is the address, which is the wire alias and is bare.
+    //
+    // The null guard is a guard and not a plane test: a spec without a tier is a mid-bootstrap
+    // install with none designated, and QITS_ENVIRONMENT=null is worse than the variable's absence.
     if (spec.environmentName() != null) {
       variables.add(ENVIRONMENT_VARIABLE + "=" + spec.environmentName());
     }

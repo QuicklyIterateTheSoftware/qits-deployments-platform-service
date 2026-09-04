@@ -22,16 +22,31 @@ import java.util.concurrent.ConcurrentHashMap;
 @ApplicationScoped
 public class FakeSpecSource implements SpecSource {
 
+  /** The commit every scripted read reports the rev resolved to. One value: no test varies it. */
+  public static final String RESOLVED_COMMIT = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736";
+
   private final Map<String, DeploymentSpec> specs = new ConcurrentHashMap<>();
   private final Map<String, String> failures = new ConcurrentHashMap<>();
+  private final Map<String, String> revs = new ConcurrentHashMap<>();
 
   public void reset() {
     specs.clear();
     failures.clear();
+    revs.clear();
   }
 
   /**
-   * What this application declares, whatever sha is asked for.
+   * The rev this application's spec was last read at — {@code refs/tags/<version>} on every release
+   * path. It is recorded rather than asserted here so a test can hold the claim that the file the
+   * deployment ran on is the file the RELEASED TAG carries, which is the difference between
+   * deploying a version and deploying whatever a branch happens to point at.
+   */
+  public String revOf(String applicationName) {
+    return revs.get(applicationName);
+  }
+
+  /**
+   * What this application declares, whatever rev is asked for.
    *
    * <p><b>Keyed by the APPLICATION NAME</b>, which is the repository's name when the announcement
    * carried one and its storage id when it did not — the same answer {@link
@@ -50,11 +65,14 @@ public class FakeSpecSource implements SpecSource {
   }
 
   @Override
-  public DeploymentSpec read(RepositoryRef repository, String sha) {
+  public SpecRead read(RepositoryRef repository, String rev) {
+    revs.put(repository.applicationName(), rev);
     String failure = failures.get(repository.applicationName());
     if (failure != null) {
       throw new SpecException(failure);
     }
-    return specs.getOrDefault(repository.applicationName(), DeploymentSpec.DEFAULTS);
+    return new SpecRead(
+        specs.getOrDefault(repository.applicationName(), DeploymentSpec.DEFAULTS),
+        RESOLVED_COMMIT);
   }
 }

@@ -69,8 +69,12 @@ public class PdEnvironmentController {
   public record ApplicationSpec(@NotBlank String repoId, @NotBlank String name, String healthPath) {}
 
   /**
-   * The creation payload. {@code branch} and {@code network} are conventions when omitted: {@code
-   * environment/<name>} and {@code qits-env-<name>}.
+   * The creation payload. {@code network} is a convention when omitted: {@code qits-env-<name>}.
+   *
+   * <p><b>There is no {@code branch}.</b> A tier listened to {@code environment/<name>} while a
+   * green build was the deploy trigger; a release names a tag, so where a version lands is {@code
+   * platform} and nothing else. An older sender's {@code branch} is simply not a field any more and
+   * is ignored by the deserializer.
    *
    * <p>{@code applications} is <b>deprecated and ignored</b>, with a WARN so a sender finds out.
    * Service rows are derived from each repository's own {@code .config/qits/deployments.yml}, so
@@ -79,28 +83,27 @@ public class PdEnvironmentController {
    * has nowhere to land. The field is still accepted so an older sender's payload keeps
    * deserializing; send nothing.
    *
-   * <p>{@code platform} makes this the <b>platform environment</b> — the one tier whose branch
-   * deploys the platform plane. Omitted is false, and the bootstrap is the sender that sets it: it
-   * creates the standing environment that {@code --platform-env} names. Creating a tier without it
-   * on a database that has no platform environment yet is legal and logs a warning, because a
-   * platform build would then deploy nowhere and say nothing.
+   * <p>{@code platform} makes this the <b>platform environment</b> — the tier a release enters at,
+   * and the tier the platform plane itself is deployed into. Omitted is false, and the bootstrap is
+   * the sender that sets it: it creates the standing environment that {@code --platform-env} names.
+   * Creating a tier without it on a database that has no platform environment yet is legal and logs
+   * a warning, because a release would then deploy nowhere and say nothing.
    */
   public record CreateEnvironmentRequest(
       @NotBlank String name,
-      String branch,
       String network,
       Boolean platform,
       @Deprecated List<@Valid ApplicationSpec> applications) {}
 
   /**
-   * The rename/retarget/designate payload — every field optional, an omitted one is left alone.
-   * This is how an environment moves onto the {@code environment/<name>} branch convention, and how
-   * the platform designation moves between tiers.
+   * The rename/designate payload — every field optional, an omitted one is left alone. This is how
+   * an environment is renamed and how the platform designation moves between tiers.
    *
    * <p>{@code platform: true} moves the designation to this environment. {@code false} is refused
-   * (409): the platform plane always has a tier, so the designation is moved, never dropped.
+   * (409): the platform plane always has a tier to deploy into, so the designation is moved, never
+   * dropped.
    */
-  public record UpdateEnvironmentRequest(String name, String branch, Boolean platform) {}
+  public record UpdateEnvironmentRequest(String name, Boolean platform) {}
 
   public record EnvironmentResponse(PdEnvironmentDto environment) {}
 
@@ -109,9 +112,9 @@ public class PdEnvironmentController {
   public record ListLinksResponse(List<PdLinkedServiceDto> services) {}
 
   @POST
-  @Operation(summary = "Create an environment: a name, a branch to listen to, a bundle network")
-  @APIResponse(responseCode = "201", description = "Created; green builds on the branch now deploy")
-  @APIResponse(responseCode = "400", description = "A name, branch or network failed validation")
+  @Operation(summary = "Create an environment: a name and a bundle network")
+  @APIResponse(responseCode = "201", description = "Created; a release may now be deployed into it")
+  @APIResponse(responseCode = "400", description = "A name or network failed validation")
   @APIResponse(responseCode = "409", description = "An environment of that name already exists")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   @APIResponse(responseCode = "403", description = "Gate on and the token is for another service")
@@ -126,29 +129,26 @@ public class PdEnvironmentController {
     }
     PdEnvironment environment =
         environments.create(
-            request.name(),
-            request.branch(),
-            request.network(),
-            Boolean.TRUE.equals(request.platform()));
+            request.name(), request.network(), Boolean.TRUE.equals(request.platform()));
     return Response.status(Response.Status.CREATED).entity(toResponse(environment)).build();
   }
 
   /**
-   * Rename an environment or point it at another branch. <b>No docker side effects</b> — a rename
-   * that tore containers down would be a delete in disguise, and delete is the one thing never to
-   * reach for on a live environment. The bundle network is not renamed either: dev's is {@code
-   * qits-net} by design. The next deployment of each application moves it onto the networks the new
-   * name derives; what runs now keeps running.
+   * Rename an environment, or designate it the platform one. <b>No docker side effects</b> — a
+   * rename that tore containers down would be a delete in disguise, and delete is the one thing
+   * never to reach for on a live environment. The bundle network is not renamed either: dev's is
+   * {@code qits-net} by design. The next deployment of each application moves it onto the networks
+   * the new name derives; what runs now keeps running.
    *
    * <p>Moving the platform designation has none either, for the same reason plus one of its own: a
-   * platform service has no environment id and keeps its bare wire alias, so the plane's containers
-   * are not a tier's to move. The flag decides which branch may roll them next.
+   * platform service keeps its bare wire alias, so a peer reaches it under the same name whichever
+   * tier is designated. What the move changes is the tier the plane's next deployment names.
    */
   @PATCH
   @Path("/{environmentId}")
-  @Operation(summary = "Rename an environment, point it at another branch, or designate it the platform environment")
+  @Operation(summary = "Rename an environment, or designate it the platform environment")
   @APIResponse(responseCode = "200", description = "The updated environment")
-  @APIResponse(responseCode = "400", description = "A name or branch failed validation")
+  @APIResponse(responseCode = "400", description = "A name failed validation")
   @APIResponse(responseCode = "404", description = "No such environment")
   @APIResponse(
       responseCode = "409",
@@ -163,7 +163,6 @@ public class PdEnvironmentController {
         environments.update(
             environmentId,
             request == null ? null : request.name(),
-            request == null ? null : request.branch(),
             request == null ? null : request.platform());
     return toResponse(environment);
   }
@@ -230,10 +229,10 @@ public class PdEnvironmentController {
 
   /**
    * Tear the environment down: its recorded deployments, its containers, its networks, and last the
-   * tier itself. 204 — after this the branch deploys nowhere.
+   * tier itself. 204 — after this the tier holds nothing.
    *
-   * <p>The platform environment is refused: the platform plane would be left deployable from no
-   * branch at all. Designate another environment first.
+   * <p>The platform environment is refused: a release would enter nowhere and the platform plane
+   * would have no tier to deploy into. Designate another environment first.
    */
   @DELETE
   @Path("/{environmentId}")

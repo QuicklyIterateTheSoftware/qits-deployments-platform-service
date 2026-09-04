@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
 @TestProfile(LegacyNetworkOffProfile.class)
 public class LegacyNetworkOffTest {
 
-  private static final String SHA = "a".repeat(40);
+  private static final String VERSION = "2026.903.193059";
 
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
@@ -46,16 +46,16 @@ public class LegacyNetworkOffTest {
   public void anEmptyLegacyNetworkDropsItFromTheDeclaredMembership() {
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("name", "flip"))
+        .body(Map.of("name", "flip", "platform", true))
         .when()
         .post("/platform-deployments/api/environments")
         .then()
         .statusCode(201);
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("repoId", "repo-flip", "branch", "environment/flip", "commitSha", SHA))
+        .body(Map.of("repoId", "repo-flip", "version", VERSION))
         .when()
-        .post("/platform-deployments/api/events/build-succeeded")
+        .post("/platform-deployments/api/events/software-released")
         .then()
         .statusCode(202);
 
