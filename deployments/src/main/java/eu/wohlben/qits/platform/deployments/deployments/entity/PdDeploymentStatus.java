@@ -21,9 +21,14 @@ package eu.wohlben.qits.platform.deployments.deployments.entity;
  * {@code ACTIVE}, and an {@code ACTIVE} row whose container is absent or terminally exited on two
  * consecutive passes becomes {@code GONE}. The rest are nobody's to observe — {@code QUEUED} and
  * {@code STARTING} belong to the worker's state machine, {@code IMAGE_MISSING} is a statement about
- * a registry rather than a container, {@code SUPERSEDED} is a statement about a row a later
- * deployment overtook, and {@code DECOMMISSIONED} is a decision another deployment made. A row that
- * is not the latest for its place is history and is never revisited.
+ * a registry rather than a container, {@code SPEC_UNREADABLE} is a statement about the git host,
+ * {@code SUPERSEDED} is a statement about a row a later deployment overtook, and {@code
+ * DECOMMISSIONED} is a decision another deployment made. A row that is not the latest for its place
+ * is history and is never revisited.
+ *
+ * <p><b>One of them is settled by a retry rather than by an observation</b>: {@link
+ * #SPEC_UNREADABLE} is re-attempted by {@code DeployService} on the same cadence, because what has
+ * to be re-asked there is the file rather than a container.
  */
 public enum PdDeploymentStatus {
   /** Recorded by the intake, waiting for the single-threaded deploy worker. */
@@ -44,6 +49,31 @@ public enum PdDeploymentStatus {
    * state means that pipeline publishes nothing or its tag broke the convention.
    */
   IMAGE_MISSING,
+  /**
+   * The repository's {@code .config/qits/deployments.yml} could not be READ at the released tag,
+   * for a reason that may pass — the git host refused the blob, answered a 5xx, or did not answer
+   * at all. <b>Nothing about the repository is being claimed</b>: the file was never seen, so this
+   * indicts the hop rather than the commit.
+   *
+   * <p><b>It is the one terminal-looking word that is not terminal</b>, and that is the whole
+   * reason it exists. Every spec failure used to be {@code FAILED} — a row nothing revisits — so a
+   * release whose single deploy attempt met an intermittent 403 from qits-githost stranded until
+   * somebody replayed it by hand; three did, for 13 to 17 minutes each, on 2026-09-04. A row that
+   * says this is re-read on the deployment observation's own cadence ({@code
+   * qits.platform.deployments.observe-interval-seconds}) until the file answers — at which point
+   * the release deploys for real and this row becomes history — or until a newer version of the
+   * same application supersedes it, which is the ordinary exit.
+   *
+   * <p><b>A spec problem that is the repository's own is NOT this.</b> A file that does not parse,
+   * or a key the schema refuses, stays {@code FAILED}: it was read, and reading it again answers
+   * the same thing. A repository carrying no file at all is neither — it gets every default and
+   * deploys, exactly as it did before the file existed.
+   *
+   * <p>Nothing observes it: it names no container, so {@code DeploymentObserver} skips it like every
+   * other row that never reached a {@code docker run}. The retry is {@code DeployService}'s, on the
+   * deploy worker, beside the observation pass rather than inside it.
+   */
+  SPEC_UNREADABLE,
   /**
    * The attempt ended and <b>nothing is known to serve the place</b>. The apply was refused, the
    * convergence failed without the orchestrator reverting anything, or a restart interrupted the row

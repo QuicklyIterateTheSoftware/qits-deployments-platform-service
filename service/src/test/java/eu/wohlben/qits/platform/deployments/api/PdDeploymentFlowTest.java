@@ -709,7 +709,7 @@ public class PdDeploymentFlowTest {
   }
 
   @Test
-  public void aSpecThatCannotBeReadFailsTheDeploymentRatherThanGuessing() {
+  public void aSpecThatCannotBeUnderstoodFailsTheDeploymentRatherThanGuessing() {
     // One green build first, so the registry knows where this repository deploys. That order is
     // the contract, not scaffolding: a spec read that fails for a repository nothing has
     // registered has no row to fail and records nothing (the 202-and-silence an unknown
@@ -719,14 +719,16 @@ public class PdDeploymentFlowTest {
     awaitDeployments(environmentId, 1);
     driver.reset();
 
-    specs.scriptFailure("repo-nospec", "the git host answered 500");
+    // A PERMANENT spec failure — the file was read and refused. A read that never saw the file is
+    // the other outcome entirely and is held rather than failed; PdSpecRetryTest owns that half.
+    specs.scriptFailure("repo-nospec", "line 3: indented lines — this file has no nesting");
     postRelease("repo-nospec", V_B);
 
     List<Map<String, Object>> deployments = awaitDeployments(environmentId, 2);
     assertEquals("FAILED", deployments.get(0).get("status"));
     assertEquals(V_B, deployments.get(0).get("version"));
     assertTrue(
-        ((String) deployments.get(0).get("detail")).contains("the git host answered 500"),
+        ((String) deployments.get(0).get("detail")).contains("this file has no nesting"),
         "the cause is on the row: " + deployments.get(0).get("detail"));
     // Nothing was pulled and nothing started — cd never guesses a topology.
     assertEquals(List.of(), driver.pulled());
@@ -738,7 +740,7 @@ public class PdDeploymentFlowTest {
   @Test
   public void aSpecThatCannotBeReadForAnUnknownRepositoryRecordsNothing() {
     String environmentId = createEnvironment("flow-nospec-unknown");
-    specs.scriptFailure("repo-nospec-unknown", "the git host answered 500");
+    specs.scriptFailure("repo-nospec-unknown", "line 3: indented lines — this file has no nesting");
     postRelease("repo-nospec-unknown", V_A);
 
     awaitWorkerIdle();

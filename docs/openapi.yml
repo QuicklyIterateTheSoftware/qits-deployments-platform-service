@@ -177,6 +177,7 @@ components:
       - STARTING
       - ACTIVE
       - IMAGE_MISSING
+      - SPEC_UNREADABLE
       - FAILED
       - ROLLED_BACK
       - SUPERSEDED
@@ -691,4 +692,4 @@ paths:
         - qits-platform:system
 info:
   title: qits-platform-deployments API
-  version: 2026.904.105200
+  version: 2026.904.131637

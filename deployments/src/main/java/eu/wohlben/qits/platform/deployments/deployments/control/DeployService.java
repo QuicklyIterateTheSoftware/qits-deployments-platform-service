@@ -36,9 +36,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -73,11 +75,15 @@ import org.jboss.logging.Logger;
  * because a deployer that cannot ask where a build belongs must never guess a topology. All of it
  * is gone. Registration writes rows in the same transaction as everything else here, resolution is
  * a repository query with an index behind it, and there is no outage to have a posture about. The
- * one remote call left is the spec read, and its posture stays exactly as it was.
+ * one remote call left is the spec read, and its posture is the one thing about this that changed:
+ * a read that never saw the file no longer ends the release, it holds it — see {@link
+ * #retrySpecReads()}.
  *
- * <p><b>The worker carries one thing that is not an event</b>: the periodic observation pass ({@link
- * DeploymentObserver}), enqueued by a ticker here and running in queue order like everything else.
- * That is the whole reason it may touch deployment rows at all — see {@link #enqueueObservation()}.
+ * <p><b>The worker carries two things that are not events</b>, both enqueued by one ticker here and
+ * both running in queue order like everything else: the periodic observation pass ({@link
+ * DeploymentObserver}), and the re-read of every release held on a spec the git host would not
+ * serve ({@link #retrySpecReads()}). That is the whole reason either may touch deployment rows at
+ * all — see {@link #enqueueObservation()}.
  *
  * <p>Each DB transition sits in its own {@link QuarkusTransaction#requiringNew()} bracket so the
  * slow docker work never holds a transaction, and everything the docker calls need is copied into a
@@ -151,6 +157,23 @@ public class DeployService implements ReleaseAnnouncements {
 
   private static final Duration ADOPTION_SPEC_RETRY = Duration.ofSeconds(2);
 
+  /**
+   * How long a release whose spec read failed retryably keeps being re-read before the attempt is
+   * given up on and recorded {@code FAILED}.
+   *
+   * <p><b>The ordinary exit is supersession, not this.</b> A newer version of the same application
+   * replaces the pending entry and the stale rows become history, which is what ends nearly every
+   * one of these. The deadline is the belt for the application nothing releases again: a git host
+   * that has been refusing for an hour is not having a moment, and a row that says {@code
+   * SPEC_UNREADABLE} forever would be the stranding this whole arm exists to remove, wearing a
+   * different word.
+   *
+   * <p>A constant rather than a config key, for {@link #ADOPTION_SPEC_ATTEMPTS}' reason: the number
+   * that matters operationally is the retry CADENCE, and that is already {@code
+   * observe-interval-seconds}.
+   */
+  private static final Duration SPEC_RETRY_DEADLINE = Duration.ofMinutes(60);
+
   @Inject PdDeploymentRepository deployments;
   @Inject PdDeploymentRequestRepository requests;
   @Inject DeploymentDriver driver;
@@ -217,6 +240,22 @@ public class DeployService implements ReleaseAnnouncements {
   private final AtomicBoolean observationPending = new AtomicBoolean();
 
   /**
+   * The releases whose spec could not be READ for a reason that may pass, by the name the
+   * announcement carried — one entry per application, because that is what supersession means here.
+   *
+   * <p><b>In memory, on purpose, and it is the {@code DeploymentObserver#strikes} trade.</b> What
+   * is remembered is an intention to try again, not a fact about the world: the facts are on the
+   * rows, which say {@code SPEC_UNREADABLE} and survive anything. A restart loses the intention and
+   * costs the release its automatic recovery — the same manual replay it needed before this
+   * existed, so nothing is worse than it was — while persisting it would mean a second table and a
+   * background job that outlives every process that queued it.
+   *
+   * <p>Concurrent because the intake thread writes it and the worker reads it, not because two
+   * retries ever overlap: they cannot, the worker is single-threaded.
+   */
+  private final Map<String, SpecRetry> specRetries = new ConcurrentHashMap<>();
+
+  /**
    * The observation tick — a bare daemon thread, the worker's own shape, rather than the
    * quarkus-scheduler extension. It has one job (submit a runnable every n seconds), it must not run
    * the pass itself, and a scheduler extension would add a managed thread pool and a second
@@ -265,7 +304,8 @@ public class DeployService implements ReleaseAnnouncements {
     if (observeIntervalSeconds <= 0) {
       LOG.info(
           "Deployment observation is off (qits.platform.deployments.observe-interval-seconds=0):"
-              + " a row's status will be whatever the deployment that wrote it said");
+              + " a row's status will be whatever the deployment that wrote it said, and a release"
+              + " held on an unreadable spec is never re-read");
       return;
     }
     Thread ticker =
@@ -289,8 +329,14 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
-   * Queue one observation pass <b>on the deploy worker</b>. Package-private so the suite drives a
-   * pass without waiting on the tick.
+   * Queue the periodic work <b>on the deploy worker</b> — {@link #retrySpecReads()} and then one
+   * {@link DeploymentObserver#observeOnce() observation pass}. Package-private so the suite drives
+   * a tick without waiting for one.
+   *
+   * <p><b>Two passes on one tick rather than a second ticker</b>, because they answer the same
+   * question at the same cadence: what does the world say now that a row was written minutes ago.
+   * One re-asks the runtime about containers, the other re-asks the git host about a file neither
+   * of them could read.
    *
    * <p>The placement is the concurrency contract, not a convenience. Serial execution is what makes
    * "the previous ACTIVE deployment" an uncontended read during a cutover, and an observer thread
@@ -309,6 +355,14 @@ public class DeployService implements ReleaseAnnouncements {
           // Cleared as the pass BEGINS, not when it ends: a tick arriving during a long pass may
           // queue the next one, so the queue holds at most one pending pass plus the running one.
           observationPending.set(false);
+          // The held releases first, and the order is deliberate: a recovered spec read queues a
+          // real deployment, and observing the rows AFTER it has run means the pass sees the world
+          // this tick actually left behind rather than the one it found.
+          try {
+            retrySpecReads();
+          } catch (RuntimeException e) {
+            LOG.warnf(e, "The held spec-read pass failed; the next tick tries again");
+          }
           try {
             observer.observeOnce();
           } catch (RuntimeException e) {
@@ -900,10 +954,16 @@ public class DeployService implements ReleaseAnnouncements {
    * was asked for, and deploy it.
    *
    * <p>The spec read comes first because it decides <b>which places exist</b> — there is nothing to
-   * request or queue until it has answered. A read that fails (the git host is down, the file does not parse)
-   * does not guess: the places this repository is already registered in each get a recorded {@code
-   * FAILED} deployment naming the cause, and a repository with nothing registered gets nothing,
-   * exactly as an unknown repository always has.
+   * request or queue until it has answered. A read that fails does not guess: the places this
+   * repository is already registered in each get a recorded deployment naming the cause, and a
+   * repository with nothing registered gets nothing, exactly as an unknown repository always has.
+   *
+   * <p><b>What that recorded word is depends on WHY the read failed</b>, and the difference was
+   * bought with three stranded releases. A file that does not parse is the repository's problem and
+   * ends {@code FAILED}, terminally, as it always did. A read that never saw the file — the git
+   * host refused it, 500'd, or did not answer — ends {@code SPEC_UNREADABLE} and the release is
+   * <b>held</b>: {@link #retrySpecReads()} reads it again on the observation cadence and deploys it
+   * for real the moment it answers. See {@link #recordUnreadableSpec} and {@link SpecException}.
    *
    * <p><b>The spec read is also where the application name can stop being the repository's</b>, and
    * this is the only place that substitution happens. {@code application:} in the file names what
@@ -929,42 +989,65 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       UUID causationId) {
-    DeploymentSpec spec = null;
-    String commitSha = null;
-    String failure = null;
+    // Whatever this application was waiting to re-read, this release replaces: a newer version is
+    // the supersession that ends a pending retry, and a re-announcement of the same one is a
+    // fresh attempt rather than a second entry beside the first.
+    specRetries.remove(releasedName);
+    SpecSource.SpecRead read;
     try {
       // The reference, not the application: the git host serves this blob under the repository's
       // own address. The REV is the released TAG, fully qualified — a bare version would let a
       // branch of the same name win, and the file that decides where this container runs has to be
       // the file the version was cut from. The answer carries the commit the tag resolved to, which
       // is the only place a release deployment can learn one.
-      SpecSource.SpecRead read = specs.read(repository, SpecSource.tagRev(version));
-      spec = read.spec();
-      commitSha = read.commitSha();
+      read = specs.read(repository, SpecSource.tagRev(version));
     } catch (RuntimeException e) {
-      failure = "[deployment spec unreadable: " + e.getMessage() + "]";
-      LOG.warnf(
-          "Could not read the deployment spec of %s@%s: %s",
-          releasedName, version, e.getMessage());
+      recordUnreadableSpec(runId, repository, releasedName, version, packageName, causationId, e);
+      return;
     }
+    deployReadSpec(
+        runId,
+        repository,
+        releasedName,
+        version,
+        packageName,
+        causationId,
+        read.spec(),
+        read.commitSha());
+  }
 
+  /**
+   * The rest of a deployment, once the repository's file has been read — everything that was in
+   * {@link #deploy} before a failed read stopped being final.
+   *
+   * <p>It is a method rather than the tail of one because there are two ways to arrive here now:
+   * the release event itself, and {@link #retrySpecReads()} minutes later with the same release and
+   * a file that has started answering. Both deploy identically from that point on, which is the
+   * property worth having — a recovered read is not a second code path.
+   */
+  private void deployReadSpec(
+      String runId,
+      RepositoryRef repository,
+      String releasedName,
+      String version,
+      String packageName,
+      UUID causationId,
+      DeploymentSpec spec,
+      String commitSha) {
     String applicationName = applicationName(releasedName, spec);
+    String failure = null;
 
     List<Target> targets;
-    if (spec == null) {
+    try {
+      targets = register(runId, applicationName, version, spec, causationId);
+    } catch (RuntimeException e) {
+      // Registration is a local transaction, so this is a bug rather than an outage — and a bug
+      // here is exactly the shape that once cost an hour of silence: a fire-and-forget sender,
+      // no row, no signal. It is recorded where an operator looks, in the tiers this application
+      // is already registered in.
+      LOG.errorf(e, "Registration of %s@%s failed", applicationName, version);
+      failure = "[registration failed: " + e.getMessage() + "]";
       targets = alreadyRegistered(applicationName);
-    } else {
-      try {
-        targets = register(runId, applicationName, version, spec, causationId);
-      } catch (RuntimeException e) {
-        // Registration is a local transaction, so this is a bug rather than an outage — and a bug
-        // here is exactly the shape that once cost an hour of silence: a fire-and-forget sender,
-        // no row, no signal. It is recorded where an operator looks, in the tiers this application
-        // is already registered in.
-        LOG.errorf(e, "Registration of %s@%s failed", applicationName, version);
-        failure = "[registration failed: " + e.getMessage() + "]";
-        targets = alreadyRegistered(applicationName);
-      }
     }
 
     List<Queued> queued =
@@ -987,6 +1070,213 @@ public class DeployService implements ReleaseAnnouncements {
             row.deploymentId(), row.target(), PdDeploymentStatus.FAILED, "[unexpected: " + e + "]");
       }
     }
+  }
+
+  /**
+   * A spec read that did not answer, recorded on the places this repository is already registered
+   * in — and, when the failure is one a second read may survive, remembered so that second read
+   * happens.
+   *
+   * <p><b>The application name is the announcement's own here, and it has to be.</b> The {@code
+   * application:} override lives in the file that could not be read, so the rows go to the places
+   * registered under the released name — which for a repository that has been renamed AND overrides
+   * is no place at all. That is the honest answer rather than a gap: nothing here knows which
+   * application a file it could not read was speaking for, and guessing would record a failure
+   * against somebody else's. It is also why a retry is worth having at all — an unregistered
+   * repository gets no row, so without one its very first release would strand invisibly.
+   */
+  private void recordUnreadableSpec(
+      String runId,
+      RepositoryRef repository,
+      String releasedName,
+      String version,
+      String packageName,
+      UUID causationId,
+      RuntimeException cause) {
+    boolean retryable = SpecException.isRetryable(cause);
+    String failure = "[deployment spec unreadable: " + cause.getMessage() + "]";
+    LOG.warnf(
+        "Could not read the deployment spec of %s@%s: %s", releasedName, version, cause.getMessage());
+
+    List<Queued> queued =
+        queue(
+            new Release(
+                runId, repository, releasedName, version, null, packageName, causationId),
+            alreadyRegistered(releasedName));
+    List<String> rows = new ArrayList<>();
+    for (Queued row : queued) {
+      finish(
+          row.deploymentId(),
+          row.target(),
+          retryable ? PdDeploymentStatus.SPEC_UNREADABLE : PdDeploymentStatus.FAILED,
+          failure);
+      rows.add(row.deploymentId());
+    }
+    if (!retryable) {
+      return;
+    }
+    specRetries.put(
+        releasedName,
+        new SpecRetry(
+            runId,
+            repository,
+            releasedName,
+            version,
+            packageName,
+            causationId,
+            Instant.now(),
+            1,
+            List.copyOf(rows)));
+    LOG.infof(
+        "The deployment spec of %s@%s did not answer for a reason that may pass, so the release is"
+            + " held rather than failed: it is read again every %ds until it answers, a newer"
+            + " version supersedes it, or %d minutes pass.",
+        releasedName, version, observeIntervalSeconds, SPEC_RETRY_DEADLINE.toMinutes());
+  }
+
+  /**
+   * One release whose spec read has not answered yet — everything {@link #deploy} was given, plus
+   * what the retry needs to know when to stop.
+   *
+   * <p>{@code rows} are the {@code SPEC_UNREADABLE} deployments this release already wrote. They
+   * are held so that giving up can settle exactly those rows and nothing else; a recovery leaves
+   * them alone, because a row that says the file could not be read at 13:17 is true and becomes
+   * history the moment the retry queues a real deployment beside it.
+   */
+  private record SpecRetry(
+      String runId,
+      RepositoryRef repository,
+      String releasedName,
+      String version,
+      String packageName,
+      UUID causationId,
+      Instant since,
+      int attempts,
+      List<String> rows) {
+
+    SpecRetry next() {
+      return new SpecRetry(
+          runId, repository, releasedName, version, packageName, causationId, since,
+          attempts + 1, rows);
+    }
+  }
+
+  /**
+   * Read the spec of every held release again — <b>on the deploy worker</b>, beside the observation
+   * pass and for the same reason it is there: this can queue a deployment, and a deployment that
+   * ran off a ticker thread would race the cutover invariants the whole class is written around.
+   *
+   * <p><b>Why this is not {@code DeploymentObserver}'s job.</b> That class observes CONTAINERS and
+   * writes rows about what they are doing; it explicitly touches nothing that never reached a
+   * {@code docker run}, which is every row here. What has to be re-asked for a held release is the
+   * git host, and the answer to it is a whole deployment rather than a status. Two questions, two
+   * passes, one worker.
+   *
+   * <p><b>Three outcomes and no fourth.</b> The file answers and the release deploys for real, at
+   * which point the held rows are simply history behind the new ones. It fails again the same way
+   * and the entry ages one attempt. It fails permanently, or the deadline passes, and the rows this
+   * release wrote are settled {@code FAILED} — the terminal word, said once, with what it was
+   * waiting for on it.
+   *
+   * <p>Package-private so the suite drives a pass without waiting on a tick, exactly as {@link
+   * DeploymentObserver#observeOnce()} and {@link #sweepInFlight()} are driven.
+   */
+  void retrySpecReads() {
+    for (SpecRetry held : List.copyOf(specRetries.values())) {
+      // Re-read under the key rather than trusting the copy: a release that arrived while this
+      // loop ran has already replaced the entry, and re-deploying the superseded version would
+      // undo exactly the collapse ReleaseTips performs.
+      if (specRetries.get(held.releasedName()) != held) {
+        continue;
+      }
+      SpecSource.SpecRead read;
+      try {
+        read = specs.read(held.repository(), SpecSource.tagRev(held.version()));
+      } catch (RuntimeException e) {
+        if (SpecException.isRetryable(e) && !expired(held)) {
+          specRetries.replace(held.releasedName(), held, held.next());
+          LOG.debugf(
+              "The deployment spec of %s@%s still does not answer (attempt %d): %s",
+              held.releasedName(), held.version(), held.attempts() + 1, e.getMessage());
+          continue;
+        }
+        giveUpOnSpec(held, e);
+        continue;
+      }
+      if (!specRetries.remove(held.releasedName(), held)) {
+        continue; // superseded between the read and here; the newer release owns the place now
+      }
+      LOG.infof(
+          "The deployment spec of %s@%s answered after %d attempt(s) — deploying the release that"
+              + " was held on it",
+          held.releasedName(), held.version(), held.attempts() + 1);
+      deployReadSpec(
+          held.runId(),
+          held.repository(),
+          held.releasedName(),
+          held.version(),
+          held.packageName(),
+          held.causationId(),
+          read.spec(),
+          read.commitSha());
+    }
+  }
+
+  /** Whether this release has been held longer than a git host having a moment could explain. */
+  private static boolean expired(SpecRetry held) {
+    return Duration.between(held.since(), Instant.now()).compareTo(SPEC_RETRY_DEADLINE) > 0;
+  }
+
+  /**
+   * Stop holding a release, and say so on the rows it wrote: {@code SPEC_UNREADABLE} becomes {@code
+   * FAILED}, which is the word for "this attempt is over and nothing is known to serve".
+   *
+   * <p>The rows are settled by ID and are the ones this release wrote, never "the latest of the
+   * place" — anything newer got there by being a newer deployment, and this must not overwrite it.
+   * A row that is already something else (a newer deployment decommissioned it, an operator scaled
+   * it) is left alone by {@link #finishHeld}'s status check.
+   */
+  private void giveUpOnSpec(SpecRetry held, RuntimeException cause) {
+    specRetries.remove(held.releasedName(), held);
+    String detail =
+        "[deployment spec unreadable: "
+            + cause.getMessage()
+            + "]\n[given up after "
+            + (held.attempts() + 1)
+            + " attempt(s) over "
+            + Duration.between(held.since(), Instant.now()).toMinutes()
+            + " minute(s)"
+            + (SpecException.isRetryable(cause)
+                ? "; the git host never answered"
+                : "; the last read failed permanently")
+            + "]";
+    LOG.warnf(
+        "Giving up on the deployment spec of %s@%s after %d attempt(s): %s",
+        held.releasedName(), held.version(), held.attempts() + 1, cause.getMessage());
+    for (String deploymentId : held.rows()) {
+      finishHeld(deploymentId, detail);
+    }
+  }
+
+  /**
+   * Settle one held row {@code FAILED}. Its own bracket, and no announcement: the row was already
+   * announced as a failure when it was written, and a second {@code DeploymentFailed} for the same
+   * deployment would tell every consumer the deployment failed twice.
+   */
+  private void finishHeld(String deploymentId, String detail) {
+    DbRetry.runInNewTx(
+        "Giving up on held deployment " + deploymentId,
+        () -> {
+          PdDeployment row = deployments.findById(deploymentId);
+          if (row == null || row.status != PdDeploymentStatus.SPEC_UNREADABLE) {
+            return; // torn down, or settled by something with a better claim on the row
+          }
+          row.status = PdDeploymentStatus.FAILED;
+          row.detail = detail;
+          row.finishedAt = Instant.now();
+          deployments.flush(); // statement phase, so a lost connection is retriable
+        },
+        CUTOVER_BUDGET);
   }
 
   /**

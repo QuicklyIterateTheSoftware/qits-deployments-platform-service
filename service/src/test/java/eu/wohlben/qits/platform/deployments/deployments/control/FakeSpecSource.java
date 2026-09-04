@@ -3,6 +3,7 @@ package eu.wohlben.qits.platform.deployments.deployments.control;
 import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -29,10 +30,18 @@ public class FakeSpecSource implements SpecSource {
   private final Map<String, String> failures = new ConcurrentHashMap<>();
   private final Map<String, String> revs = new ConcurrentHashMap<>();
 
+  /** Which scripted failures say "read me again" — see {@link #scriptRetryableFailure}. */
+  private final Set<String> retryable = ConcurrentHashMap.newKeySet();
+
+  /** How often each application's spec has been read, so a retry is countable rather than timed. */
+  private final Map<String, Integer> reads = new ConcurrentHashMap<>();
+
   public void reset() {
     specs.clear();
     failures.clear();
     revs.clear();
+    retryable.clear();
+    reads.clear();
   }
 
   /**
@@ -59,17 +68,46 @@ public class FakeSpecSource implements SpecSource {
     specs.put(applicationName, spec);
   }
 
-  /** Script the git host being unreachable, or the file being unreadable, for this application. */
+  /**
+   * Script a PERMANENT spec failure for this application — a file that does not parse, a key the
+   * schema refuses. The deployment ends {@code FAILED} and nothing reads it again.
+   */
   public void scriptFailure(String applicationName, String message) {
     failures.put(applicationName, message);
+    retryable.remove(applicationName);
+  }
+
+  /**
+   * Script a spec failure the read may yet survive — the git host refusing the blob, 500-ing, or
+   * not answering. The deployment ends {@code SPEC_UNREADABLE} and the release is held.
+   *
+   * <p>It is a second method rather than a boolean on the first because the two are different
+   * claims about the world, and a test that means "the git host had a moment" should not read as
+   * "the file is broken, retryable = true".
+   */
+  public void scriptRetryableFailure(String applicationName, String message) {
+    failures.put(applicationName, message);
+    retryable.add(applicationName);
+  }
+
+  /** Stop failing this application's read — what a git host that has come back looks like. */
+  public void recover(String applicationName) {
+    failures.remove(applicationName);
+    retryable.remove(applicationName);
+  }
+
+  /** How many reads this application's spec has been asked for, retries included. */
+  public int readsOf(String applicationName) {
+    return reads.getOrDefault(applicationName, 0);
   }
 
   @Override
   public SpecRead read(RepositoryRef repository, String rev) {
     revs.put(repository.applicationName(), rev);
+    reads.merge(repository.applicationName(), 1, Integer::sum);
     String failure = failures.get(repository.applicationName());
     if (failure != null) {
-      throw new SpecException(failure);
+      throw new SpecException(failure, retryable.contains(repository.applicationName()));
     }
     return new SpecRead(
         specs.getOrDefault(repository.applicationName(), DeploymentSpec.DEFAULTS),

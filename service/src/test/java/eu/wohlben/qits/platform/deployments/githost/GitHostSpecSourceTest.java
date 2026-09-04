@@ -1,6 +1,7 @@
 package eu.wohlben.qits.platform.deployments.githost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -47,12 +48,19 @@ public class GitHostSpecSourceTest {
   /** RAW paths: the encoding of the rev segment is exactly what these tests are about. */
   private final List<String> paths = new ArrayList<>();
   private volatile int status = 200;
+
+  /**
+   * What the SECOND and later requests answer, when the arms have to differ — the name route's
+   * 404 fallback onto the id route is the only place two answers are one read.
+   */
+  private volatile Integer laterStatus;
   private volatile String body = "deployment_target: platform\n";
   private volatile String commitSha = SHA;
 
   @BeforeEach
   void start() throws IOException {
     paths.clear();
+    laterStatus = null;
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext("/", this::handle);
     server.start();
@@ -64,9 +72,12 @@ public class GitHostSpecSourceTest {
   }
 
   private void handle(HttpExchange exchange) throws IOException {
+    int answered;
     synchronized (paths) {
       paths.add(exchange.getRequestURI().getRawPath());
+      answered = laterStatus != null && paths.size() > 1 ? laterStatus : status;
     }
+    int status = answered;
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     if (status != 404 && commitSha != null) {
       // What the git host answers every blob read with: the commit the rev resolved to.
@@ -145,6 +156,84 @@ public class GitHostSpecSourceTest {
 
     assertTrue(refused.getMessage().contains("/git/qits/qits-gateway/blob/"), refused.getMessage());
     assertTrue(refused.getMessage().contains("503"), refused.getMessage());
+    // ...and it says the read may yet answer, which is what keeps the release from stranding.
+    assertTrue(refused.retryable(), "a 503 is the git host's moment, not the repository's content");
+  }
+
+  @Test
+  public void anIntermittent403IsTheGitHostsMomentAndAsksToBeReadAgain() {
+    // Measured on 2026-09-04: qits-githost answered 403 on a blob a later request served fine, and
+    // three releases stranded on the terminal FAILED rows that produced. This reader sends one
+    // fixed forwarded identity on every request, so a refusal here cannot be about the credential.
+    status = 403;
+
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () -> source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION)));
+
+    assertTrue(refused.getMessage().contains("403"), refused.getMessage());
+    assertTrue(refused.retryable(), "403 is retryable");
+  }
+
+  @Test
+  public void aBadRequestIsThisComponentsOwnBugAndIsNotRepeatedForever() {
+    // The mirror of the case above, and the reason retryability is a decision rather than "not a
+    // 404": a 400 or a 405 on a URL this class built will answer exactly the same in an hour, so
+    // looping on it would hide a bug behind a status that reads like patience.
+    status = 400;
+
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () -> source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION)));
+
+    assertFalse(refused.retryable(), "400 is permanent");
+  }
+
+  @Test
+  public void aGitHostThatDoesNotAnswerAtAllAsksToBeReadAgain() {
+    // A refused connection: nothing looked at the file, so nothing is being claimed about it.
+    GitHostSpecSource source = source();
+    server.stop(0);
+
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () -> source.read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION)));
+
+    assertTrue(refused.retryable(), "a transport failure is retryable");
+  }
+
+  @Test
+  public void aFileThatDoesNotParseIsTheRepositorysProblemAndStaysTerminal() {
+    // It WAS read. Reading it again answers the same thing, so this must never be held: a broken
+    // commit would become a permanent background job.
+    body = "  deployment_target: platform\n"; // indented, and this file has no nesting
+
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () -> source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION)));
+
+    assertFalse(refused.retryable(), "a parse failure is permanent: " + refused.getMessage());
+  }
+
+  @Test
+  public void aNameAddressed404ThatFallsBackOntoA403KeepsThatVerdict() {
+    // The name route's 404 fallback asks the id route, and a 403 THERE has to arrive with the same
+    // verdict as one on the direct route — or the fallback would quietly strand the release.
+    status = 404;
+    laterStatus = 403;
+
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () ->
+                source()
+                    .read(new RepositoryRef(UUID_ID, "qits", "gw"), SpecSource.tagRev(VERSION)));
+
+    assertTrue(refused.retryable(), "403 on the name route is retryable too");
   }
 
   @Test

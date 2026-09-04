@@ -52,9 +52,15 @@ import org.jboss.logging.Logger;
  *
  * <p><b>404 is an answer, not a failure.</b> A repository that carries no spec gets every default
  * and deploys exactly as it did before the file existed. Every other outcome — a refused
- * connection, a 500, a timeout, an unparseable file — raises {@link SpecException} and fails the
- * deployment: the spec decides where the container runs and what may reach it, and a guess there is
- * worse than a recorded failure.
+ * connection, a 500, a 403, a timeout, an unparseable file — raises {@link SpecException} and stops
+ * the deployment: the spec decides where the container runs and what may reach it, and a guess
+ * there is worse than a recorded failure.
+ *
+ * <p><b>Those failures are not all the same failure, and this class is where the difference is
+ * decided.</b> A {@code SpecException} carries {@link SpecException#retryable()}, and everything
+ * raised here that never saw the file — a transport failure, a 5xx, a 401/403/408/429 — says yes,
+ * so the deployment is recorded {@code SPEC_UNREADABLE} and read again rather than stranded. What
+ * the parser raises on a file it DID read says no. See {@link #statusFailure}.
  */
 @ApplicationScoped
 public class GitHostSpecSource implements SpecSource {
@@ -117,8 +123,7 @@ public class GitHostSpecSource implements SpecSource {
               commitShaOf(byId));
         }
         if (byId.statusCode() != 404) {
-          throw new SpecException(
-              "could not read " + idUrl + ": the git host answered " + byId.statusCode());
+          throw statusFailure(idUrl, byId.statusCode());
         }
       }
       LOG.debugf(
@@ -129,13 +134,42 @@ public class GitHostSpecSource implements SpecSource {
       return new SpecRead(DeploymentSpec.DEFAULTS, null);
     }
     if (response.statusCode() != 200) {
-      throw new SpecException(
-          "could not read " + url + ": the git host answered " + response.statusCode());
+      throw statusFailure(url, response.statusCode());
     }
     return new SpecRead(
         DeploymentSpecParser.parse(
             response.body(), SPEC_PATH + " of " + repository.applicationName() + "@" + rev),
         commitShaOf(response));
+  }
+
+  /**
+   * The failure a status that is neither 200 nor 404 raises, <b>classified</b>.
+   *
+   * <p>The message is what it always was; what is new is the second half of the answer — whether
+   * reading again may yet succeed. {@link SpecException} says why that matters at all; this says
+   * which statuses qualify.
+   *
+   * <p><b>Everything about the git host's MOMENT is retryable.</b> A 5xx is the host having a bad
+   * second. A 401 or a 403 is the same shape here and not an authorisation decision worth
+   * believing: this reader sends one fixed forwarded identity ({@code qits-deployments} /
+   * {@code qits:system}) on every request, so a refusal cannot be about the credential — it is the
+   * peer mid-boot, mid-cutover, or an edge answering for it. That is exactly what was measured on
+   * 2026-09-04: the same blob 403'd once and read fine minutes later. A 408 and a 429 say the word
+   * themselves.
+   *
+   * <p><b>Every other 4xx is the REQUEST, and the request will not change.</b> A 400 or a 405 on a
+   * URL this class built is a bug in this class or a route the git host no longer serves; retrying
+   * it every thirty seconds would hide it behind a status that reads like patience. The 404 never
+   * reaches here — a repository with no spec gets the defaults, above.
+   */
+  private static SpecException statusFailure(String url, int status) {
+    return new SpecException(
+        "could not read " + url + ": the git host answered " + status, retryableStatus(status));
+  }
+
+  /** @see #statusFailure */
+  static boolean retryableStatus(int status) {
+    return status >= 500 || status == 401 || status == 403 || status == 408 || status == 429;
   }
 
   /**
@@ -182,10 +216,15 @@ public class GitHostSpecSource implements SpecSource {
               .build();
       return client().send(request, HttpResponse.BodyHandlers.ofString());
     } catch (InterruptedException e) {
+      // NOT retryable, and the interrupt is why: this thread has been asked to stop, so the one
+      // thing that must not happen is scheduling the same read again on the way out.
       Thread.currentThread().interrupt();
       throw new SpecException("interrupted while reading " + url, e);
     } catch (Exception e) {
-      throw new SpecException("could not read " + url + ": " + e, e);
+      // A transport failure is the retryable case by definition — a refused connection, a reset, a
+      // timeout, a DNS miss while the git host's alias is being re-bound. None of them looked at
+      // the file, so none of them says anything about it.
+      throw new SpecException("could not read " + url + ": " + e, e, true);
     }
   }
 
