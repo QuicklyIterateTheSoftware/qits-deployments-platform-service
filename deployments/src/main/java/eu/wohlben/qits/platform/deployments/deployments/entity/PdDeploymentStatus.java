@@ -83,6 +83,24 @@ public enum PdDeploymentStatus {
    * back to {@code ACTIVE}, the same recovery a {@code FAILED} row gets.
    */
   GONE,
+  /**
+   * The workload is <b>deliberately stopped</b>: somebody scaled this application to zero, and the
+   * deployment that put the image there is otherwise untouched. Written by {@code
+   * ApplicationScaling} when an operator scales down, and by {@code DeploymentObserver} when it
+   * finds a place empty that the orchestrator declares should be empty — which is how a scale
+   * performed by hand on the host reads here too.
+   *
+   * <p><b>It is the word {@code GONE} would otherwise have been, and telling them apart is the whole
+   * point.</b> {@code GONE} says a place died under a deployment that was serving and somebody
+   * should look; this says a person stopped it and nothing is wrong. Answering the operator's own
+   * action with a red row would train a reader to ignore the one status that means an outage.
+   *
+   * <p>It is <b>not</b> terminal in the sense the words above it are: scaling back up recovers it
+   * through the same observation arm {@code FAILED} and {@code GONE} recover through, so a row that
+   * says this becomes {@code ACTIVE} again as soon as the tasks are healthy — with its id, its sha
+   * and its history intact, because a scale is not a deployment.
+   */
+  SCALED_TO_ZERO,
   /** Was ACTIVE; replaced by a newer deployment that passed the health gate. */
   DECOMMISSIONED
 }

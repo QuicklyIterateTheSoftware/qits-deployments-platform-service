@@ -1429,6 +1429,141 @@ class SwarmDeploymentDriverTest {
     assertTrue(applied.detail().contains("rpc error"), applied.detail());
   }
 
+  // --- the operator's two levers ----------------------------------------------------------------
+
+  @Test
+  void aScaleIsAServiceUpdateThatStatesTheCountAndNothingElse() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+
+    DeploymentDriver.ScaleResult scaled = driver.scale("dev-qits-gateway", 0);
+
+    assertEquals(DeploymentDriver.ScaleOutcome.SCALED, scaled.outcome());
+    List<String> argv = cli.matching("service update");
+    assertEquals(
+        List.of(
+            "docker", "service", "update", "--detach", "--replicas", "0", "dev-qits-gateway"),
+        argv,
+        "a scale changes the count and touches nothing else about the service");
+  }
+
+  @Test
+  void scalingSomethingTheOrchestratorDoesNotHaveIsRefusedRatherThanAttempted() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}}", result(1, "Error: no such service: dev-qits-gateway"));
+
+    DeploymentDriver.ScaleResult scaled = driver.scale("dev-qits-gateway", 1);
+
+    assertEquals(DeploymentDriver.ScaleOutcome.REFUSED, scaled.outcome());
+    assertTrue(scaled.detail().contains("no service dev-qits-gateway"), scaled.detail());
+    assertEquals(0, cli.count("service update"), "nothing was issued");
+  }
+
+  @Test
+  void theSeedStacksTwinIsWhatAnOperatorsScaleFindsWhenTheBareNameIsNotThere() {
+    // The same fallback observe() and runningImage() have: on a platform whose deployer still runs
+    // as the seed, the service really is called qits_dev-qits-gateway and an operator's lever must
+    // reach it rather than report that the application does not exist.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(1, "no such service"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(0, "svc123"));
+
+    assertEquals(DeploymentDriver.ScaleOutcome.SCALED, driver.scale("dev-qits-gateway", 0).outcome());
+    assertTrue(cli.matching("service update").contains("qits_dev-qits-gateway"));
+  }
+
+  @Test
+  void theDeployersOwnServiceCannotBeScaledToZeroAndNothingIsIssued() {
+    // There would be nothing left to scale it back up, and the API that would have done it is what
+    // stops answering.
+    SwarmDeploymentDriver driver = driver();
+    driver.hostnameFile = hostnameFile("task-container-id");
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("com.docker.swarm.service.name", result(0, "dev-qits-gateway"));
+
+    DeploymentDriver.ScaleResult scaled = driver.scale("dev-qits-gateway", 0);
+
+    assertEquals(DeploymentDriver.ScaleOutcome.REFUSED, scaled.outcome());
+    assertTrue(scaled.detail().contains("nothing would be left to scale it back up"), scaled.detail());
+    assertEquals(0, cli.count("service update"), "the refusal happens before anything is issued");
+  }
+
+  @Test
+  void scalingTheDeployerUpIsAllowedAndIsHandedToTheManager() {
+    SwarmDeploymentDriver driver = driver();
+    driver.hostnameFile = hostnameFile("task-container-id");
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("com.docker.swarm.service.name", result(0, "dev-qits-gateway"));
+
+    DeploymentDriver.ScaleResult scaled = driver.scale("dev-qits-gateway", 1);
+
+    assertEquals(DeploymentDriver.ScaleOutcome.HANDED_OFF, scaled.outcome());
+    assertTrue(scaled.applied());
+  }
+
+  @Test
+  void aRestartIsAForcedUpdateThatSaysNothingAboutWhatTheServiceRuns() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script(".Spec.Mode.Replicated", result(0, "1"));
+
+    DeploymentDriver.ScaleResult restarted = driver.restart("dev-qits-gateway");
+
+    assertEquals(DeploymentDriver.ScaleOutcome.SCALED, restarted.outcome());
+    assertEquals(
+        List.of("docker", "service", "update", "--detach", "--force", "dev-qits-gateway"),
+        cli.matching("--force"),
+        "no image, no environment, no labels: a bounce is not a deployment");
+  }
+
+  @Test
+  void restartingAServiceDeclaredToRunNoTasksIsRefusedRatherThanReportedAsABounce() {
+    // `--force` on a service at 0 replicas succeeds and does nothing at all, so an operator would
+    // be told a stopped application had been restarted.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script(".Spec.Mode.Replicated", result(0, "0"));
+
+    DeploymentDriver.ScaleResult restarted = driver.restart("dev-qits-gateway");
+
+    assertEquals(DeploymentDriver.ScaleOutcome.REFUSED, restarted.outcome());
+    assertTrue(restarted.detail().contains("scale it up"), restarted.detail());
+    assertEquals(0, cli.count("--force"));
+  }
+
+  @Test
+  void theDesiredCountIsReadOffTheServiceSpec() {
+    SwarmDeploymentDriver driver = driver();
+    cli.script(".Spec.Mode.Replicated", result(0, "0\n"));
+
+    assertEquals(0, driver.desiredReplicas("dev-qits-gateway").getAsInt());
+  }
+
+  @Test
+  void aRuntimeThatCannotAnswerDeclaresNothingRatherThanZero() {
+    // The whole safety of the observer's third arm: an unreadable answer read as a deliberate zero
+    // would turn every outage into a pause nobody is ever paged for.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(".Spec.Mode.Replicated", result(1, "no such service"));
+
+    assertTrue(driver.desiredReplicas("dev-qits-gateway").isEmpty());
+    assertTrue(SwarmDeploymentDriver.parseReplicas("<no value>").isEmpty());
+    assertTrue(SwarmDeploymentDriver.parseReplicas("").isEmpty());
+    assertTrue(SwarmDeploymentDriver.parseReplicas(null).isEmpty());
+    assertEquals(3, SwarmDeploymentDriver.parseReplicas(" 3 ").getAsInt());
+  }
+
+  @Test
+  void aDeploymentRestatesTheReplicaCountSoAPausedApplicationComesBackWithIt() {
+    // A service left at 0 takes `service update --image` happily: swarm has no task to converge, so
+    // the update completes at once and the row is recorded ACTIVE with nothing running behind it.
+    List<String> argv = driver().buildUpdateArgv(spec(), "dev-qits-gateway");
+
+    int flag = argv.indexOf("--replicas");
+    assertTrue(flag >= 0, argv.toString());
+    assertEquals("1", argv.get(flag + 1));
+  }
+
   // --- the scripted seam --------------------------------------------------------------------
 
   /** A container id file of this test's own, so nothing here depends on the build host. */

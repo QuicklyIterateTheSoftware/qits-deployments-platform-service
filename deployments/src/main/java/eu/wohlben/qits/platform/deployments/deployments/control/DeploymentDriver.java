@@ -4,6 +4,7 @@ import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarg
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 /**
  * The seam between this component's orchestration and whatever runs the containers — the {@code
@@ -19,11 +20,23 @@ import java.util.Optional;
  * that model look like the contract. They went, the by-hand path went after them, and the shape
  * they left is the one worth keeping: a driver states outcomes, never mechanics.
  *
- * <p><b>So the seam is now two verbs and the rest is bookkeeping</b>: {@link #apply(ServiceSpec)}
- * makes the described service exist at the described image, and {@link #awaitConverged} says
- * whether it took. How that happens — stop-then-start with a hand-rolled rollback, or {@code
- * service update --update-order start-first --update-failure-action rollback} — is the
- * implementation's business, and the whole of the difference between the two lives there.
+ * <p><b>So the deployment half of the seam is two verbs and the rest is bookkeeping</b>: {@link
+ * #apply(ServiceSpec)} makes the described service exist at the described image, and {@link
+ * #awaitConverged} says whether it took. How that happens — stop-then-start with a hand-rolled
+ * rollback, or {@code service update --update-order start-first --update-failure-action rollback} —
+ * is the implementation's business, and the whole of the difference between the two lives there.
+ *
+ * <p><b>Three verbs beside it are the OPERATOR's, and they are not the mechanics coming back.</b>
+ * {@link #desiredReplicas}, {@link #scale} and {@link #restart} exist because a wedged application
+ * had exactly one recovery on this platform — re-firing a same-sha push and waiting fifteen minutes
+ * for a rebuild — and none of the three is a step of a cutover somebody else sequences. Each states
+ * an outcome an operator asked for: how many of this application are declared to run, make that
+ * number N, replace what is running under this name without changing what it runs. The verbs that
+ * went ({@code start}, {@code stop}, the container-level {@code restart}, {@code connect}) were
+ * different: {@link DeployService} called them in order to perform ONE replace, so the interface
+ * described docker's way of replacing a container. Nothing calls these three in a sequence, and the
+ * rule they were removed for is intact — <b>do not sequence them from a caller to build a
+ * deployment</b>.
  *
  * <p>Everything crossing this seam is ids, names and references — never entities. The driver knows
  * nothing about environments or deployments; it applies a spec, watches it converge, and makes and
@@ -198,6 +211,77 @@ public interface DeploymentDriver {
    * resurrect it.
    */
   HealthGate.Poll observe(String name);
+
+  /**
+   * How many tasks the named service is <b>declared</b> to run — the desired count the orchestrator
+   * holds, never how many happen to be up. Empty when the runtime has no such service, and empty
+   * when it could not answer at all.
+   *
+   * <p><b>This is what tells a deliberate zero from a death</b>, and it is the whole reason the read
+   * exists. {@link #observe} answers "is anything running under this name", and for a service an
+   * operator scaled to 0 the honest answer is no — which read as a dead deployment and would have
+   * had {@link DeploymentObserver} demote a row somebody had just deliberately stopped, then fight
+   * every later observation about it. The desired count is the intent, held by the same runtime that
+   * holds the membership: this component stores no replica column, exactly as it stores no network
+   * row, so an operator scaling a service by hand is understood the same way as one going through
+   * {@link #scale}.
+   *
+   * <p>It is asked <b>only when an observation looks dead</b> — one extra call on the rare pass
+   * rather than a second call per application per tick.
+   */
+  OptionalInt desiredReplicas(String name);
+
+  /**
+   * Make the named service run exactly {@code replicas} tasks, and nothing else about it change.
+   *
+   * <p><b>Zero is the interesting value.</b> It stops the workload while keeping the service, its
+   * spec, its networks, its mounts and its published ports — so scaling back up is the same image
+   * and the same configuration coming back, not a deployment. That is what makes a restart an
+   * operation rather than a release, and it is why the deployment row is left in place: a scale
+   * changes what runs, never what was deployed.
+   *
+   * <p>An implementation must refuse to scale <b>this process's own service</b> to zero. There would
+   * be nothing left to scale it back up, and the failure is silent — the API stops answering at the
+   * moment the operator would need it.
+   */
+  ScaleResult scale(String name, int replicas);
+
+  /**
+   * Replace whatever is running under this name with a fresh copy of the same thing — the operator's
+   * bounce, and the recovery for an application that is up, healthy to its probe and wedged behind
+   * it.
+   *
+   * <p><b>It is not a deployment and must not become one.</b> Nothing about the service's spec
+   * changes: same image, same environment, same networks, same ports. No row is created, no sha
+   * moves, and the deployment that put this image here keeps its identity — see {@code
+   * ApplicationScaling} for what it stamps instead.
+   *
+   * <p><b>It is not the {@code restart} that was removed either.</b> That one took a container name
+   * and was one step of a hand-rolled cutover, called by {@link DeployService} between a stop and a
+   * join; this one takes the service and is the whole of what its caller wants.
+   */
+  ScaleResult restart(String name);
+
+  /** How a scale or a bounce ended. */
+  enum ScaleOutcome {
+    /** The runtime took it. */
+    SCALED,
+    /**
+     * The service is <b>this very process</b>, and whatever happens next happens to the instance
+     * that survives — {@link ApplyOutcome#HANDED_OFF} for the same reason and with the same
+     * arbiter.
+     */
+    HANDED_OFF,
+    /** Nothing changed, and {@code detail} says why. */
+    REFUSED
+  }
+
+  record ScaleResult(ScaleOutcome outcome, String detail) {
+
+    public boolean applied() {
+      return outcome != ScaleOutcome.REFUSED;
+    }
+  }
 
   /**
    * Remove what settled deployments left behind — the containers of the rows a cutover just

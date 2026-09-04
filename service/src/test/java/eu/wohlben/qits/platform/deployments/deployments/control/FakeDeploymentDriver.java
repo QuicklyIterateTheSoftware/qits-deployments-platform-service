@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -54,6 +55,16 @@ public class FakeDeploymentDriver implements DeploymentDriver {
    */
   private final Map<String, HealthGate.Poll> observations = new ConcurrentHashMap<>();
 
+  /**
+   * What {@link #desiredReplicas} answers per name. A name nothing scripted answers <b>empty</b>,
+   * which is the "cannot say" the observer must not read as a deliberate stop — so a test that wants
+   * a scaled-down service says so, and every test that does not is unaffected.
+   */
+  private final Map<String, Integer> declaredReplicas = new ConcurrentHashMap<>();
+
+  /** What {@link #scale} and {@link #restart} answer. Refuse one by scripting a refusal. */
+  private volatile ScaleResult nextScale = new ScaleResult(ScaleOutcome.SCALED, null);
+
   private volatile PullResult nextPull = new PullResult(PullOutcome.OK, null);
   private volatile ApplyResult nextApply = new ApplyResult(ApplyOutcome.APPLIED, null);
   private volatile Convergence nextConvergence = Convergence.converged(List.of());
@@ -81,6 +92,8 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     calls.clear();
     runningImages.clear();
     observations.clear();
+    declaredReplicas.clear();
+    nextScale = new ScaleResult(ScaleOutcome.SCALED, null);
     nextPull = new PullResult(PullOutcome.OK, null);
     nextApply = new ApplyResult(ApplyOutcome.APPLIED, null);
     nextConvergence = Convergence.converged(List.of());
@@ -123,6 +136,19 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** The service the runtime cannot answer about at all — gone underneath a row that names it. */
   public void scriptObservationGone(String name, String detail) {
     observations.put(name, HealthGate.Poll.gone(detail));
+  }
+
+  /**
+   * How many tasks the orchestrator is declared to run for this service. Nothing scripted is the
+   * runtime declining to answer, which is deliberately NOT a scale to zero.
+   */
+  public void scriptDeclaredReplicas(String name, int replicas) {
+    declaredReplicas.put(name, replicas);
+  }
+
+  /** What the next scale or restart answers — a refusal, or a hand-off. */
+  public void scriptScale(ScaleResult result) {
+    nextScale = result;
   }
 
   /** A network the runtime already has when the test starts — {@link #networks} returns it. */
@@ -241,6 +267,33 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     calls.add("observe:" + name);
     HealthGate.Poll scripted = observations.get(name);
     return scripted == null ? HealthGate.Poll.gone("no such service: " + name) : scripted;
+  }
+
+  @Override
+  public OptionalInt desiredReplicas(String name) {
+    calls.add("desiredReplicas:" + name);
+    Integer declared = declaredReplicas.get(name);
+    return declared == null ? OptionalInt.empty() : OptionalInt.of(declared);
+  }
+
+  /**
+   * Records the request and applies it to what {@link #desiredReplicas} answers, so a test that
+   * scales down and then drives an observation pass sees what a daemon would have shown it.
+   */
+  @Override
+  public ScaleResult scale(String name, int replicas) {
+    calls.add("scale:" + name + "=" + replicas);
+    ScaleResult result = nextScale;
+    if (result.applied()) {
+      declaredReplicas.put(name, replicas);
+    }
+    return result;
+  }
+
+  @Override
+  public ScaleResult restart(String name) {
+    calls.add("restart:" + name);
+    return nextScale;
   }
 
   @Override

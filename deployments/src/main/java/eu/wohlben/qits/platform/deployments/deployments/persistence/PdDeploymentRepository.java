@@ -71,6 +71,25 @@ public class PdDeploymentRepository implements PanacheRepositoryBase<PdDeploymen
   }
 
   /**
+   * The newest deployment of one application in one place ({@code null} environment = the platform)
+   * — the row an operator's scale or restart acts on, and the row the observation settles.
+   *
+   * <p>It is the one query here that a null tier reaches through {@code is null} rather than through
+   * a caller's branch, for the reason the class header gives: {@code environment_id = null} matches
+   * nothing, and a platform application would silently have no current deployment at all.
+   */
+  public Optional<PdDeployment> newestForPlace(String applicationName, String environmentId) {
+    return environmentId == null
+        ? find("applicationName = ?1 and environmentId is null order by seq desc", applicationName)
+            .firstResultOptional()
+        : find(
+                "applicationName = ?1 and environmentId = ?2 order by seq desc",
+                applicationName,
+                environmentId)
+            .firstResultOptional();
+  }
+
+  /**
    * One application's whole history, newest-first — what a build falls back to when the spec at
    * that sha cannot be read at all.
    */

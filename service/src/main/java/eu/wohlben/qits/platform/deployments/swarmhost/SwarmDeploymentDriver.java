@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -142,6 +143,25 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   static final String SPEC_ENV_FORMAT =
       "{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}";
+
+  /**
+   * The DESIRED task count the service spec holds. Guarded by {@code if}, because a global-mode
+   * service has no {@code Replicated} block at all and the template would print {@code <no value>}
+   * — an empty answer is "this service has no replica count", which {@link #parseReplicas} reads as
+   * "cannot say" rather than as zero.
+   */
+  static final String REPLICAS_FORMAT =
+      "{{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{end}}";
+
+  /**
+   * How many tasks a service this component creates runs. One, everywhere: the applications on this
+   * platform bind host ports from inside the task and write to stores with a single writer, so a
+   * second task is a port collision or a corrupted volume rather than capacity.
+   *
+   * <p>It is stated once and used twice — the create declares it, and an update <b>restates</b> it.
+   * See {@link #buildUpdateArgv} for why the update must.
+   */
+  static final int DEPLOYED_REPLICAS = 1;
 
   /** Which tier this application is deployed into — an environment application's, and only one. */
   static final String ENVIRONMENT_VARIABLE = "QITS_ENVIRONMENT";
@@ -652,6 +672,160 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     return HealthGate.Poll.of("exited/unhealthy");
   }
 
+  /**
+   * The desired task count, off the service spec — asked under the bare alias first and under the
+   * seed stack's name second, the fallback {@link #observe} and {@link #runningImage} both have.
+   */
+  @Override
+  public OptionalInt desiredReplicas(String name) {
+    PdProcess.Result inspected = inspectReplicas(name);
+    if (inspected.exitCode() != 0) {
+      inspected = inspectReplicas(SEED_STACK_PREFIX + name);
+    }
+    return inspected.exitCode() != 0 ? OptionalInt.empty() : parseReplicas(inspected.output());
+  }
+
+  private PdProcess.Result inspectReplicas(String service) {
+    return run(
+        List.of(runtime, "service", "inspect", "--format", REPLICAS_FORMAT, service),
+        INSPECT_TIMEOUT);
+  }
+
+  /**
+   * Package-private for the parsing test. Anything that is not a whole number is <b>empty</b> and
+   * never zero: {@code <no value>}, a blank line from a global-mode service and a daemon that
+   * answered nonsense all mean "this cannot say what the count is", and reading any of them as a
+   * deliberate scale-to-zero would silence the very demotion the observer exists to make.
+   */
+  static OptionalInt parseReplicas(String output) {
+    String raw = safe(output).strip();
+    try {
+      return OptionalInt.of(Integer.parseInt(raw));
+    } catch (NumberFormatException e) {
+      return OptionalInt.empty();
+    }
+  }
+
+  /**
+   * {@code service update --replicas <n>}, which is what {@code docker service scale} is underneath
+   * — spelled as an update because every other command this class issues is one, and because {@code
+   * scale} blocks on convergence by default while this component reads its own verdicts.
+   *
+   * <p><b>Scaling this process's own service to zero is refused</b>, and the refusal is the point:
+   * it would stop the only thing that could ever scale it back up, and it would do so at the moment
+   * the operator is holding the API that would have done it. Scaling it UP is allowed and is a
+   * no-op — the count is already one.
+   */
+  @Override
+  public ScaleResult scale(String name, int replicas) {
+    if (replicas < 0) {
+      return new ScaleResult(ScaleOutcome.REFUSED, "a replica count cannot be negative");
+    }
+    String target = resolveService(name);
+    if (target == null) {
+      return new ScaleResult(ScaleOutcome.REFUSED, "the orchestrator has no service " + name);
+    }
+    boolean self = isSelf(target);
+    if (self && replicas == 0) {
+      return new ScaleResult(
+          ScaleOutcome.REFUSED,
+          "refusing to scale "
+              + target
+              + " to 0: that is this deployer's own service, and nothing would be left to scale it"
+              + " back up");
+    }
+    return issue(
+        target,
+        self,
+        List.of(
+            runtime,
+            "service",
+            "update",
+            "--detach",
+            "--replicas",
+            String.valueOf(replicas),
+            target),
+        "scale " + name + " to " + replicas);
+  }
+
+  /**
+   * {@code service update --force}, swarm's canonical bounce: the spec is unchanged, so the manager
+   * simply replaces the tasks — under {@code start-first} with an overlap, under {@code stop-first}
+   * with a gap, exactly as a deployment of the same service would.
+   *
+   * <p><b>A service scaled to zero has no task to force</b>, and swarm answers such an update
+   * happily while nothing at all happens. That is refused here rather than reported as a bounce, so
+   * an operator is told to scale it up instead of being told a stopped application was restarted.
+   */
+  @Override
+  public ScaleResult restart(String name) {
+    String target = resolveService(name);
+    if (target == null) {
+      return new ScaleResult(ScaleOutcome.REFUSED, "the orchestrator has no service " + name);
+    }
+    OptionalInt declared = parseReplicas(inspectReplicas(target).output());
+    if (declared.isPresent() && declared.getAsInt() == 0) {
+      return new ScaleResult(
+          ScaleOutcome.REFUSED,
+          target + " is declared to run 0 tasks, so there is nothing to replace — scale it up");
+    }
+    return issue(
+        target,
+        isSelf(target),
+        List.of(runtime, "service", "update", "--detach", "--force", target),
+        "restart " + name);
+  }
+
+  /**
+   * One operator-issued {@code service update}, and the one bookkeeping line it owes.
+   *
+   * <p><b>It CLEARS the issue instant rather than recording one.</b> {@code issuedUpdates} is
+   * {@code awaitConverged}'s way of telling this deployment's verdict from the previous one, and
+   * nothing waits for a scale — so remembering this update would leave an instant no verdict ever
+   * consumes, while forgetting the deployment's would be worse: the two cannot overlap (both run on
+   * {@code pd-deploy-worker}), so what is in the map at this point is always stale.
+   */
+  private ScaleResult issue(String target, boolean self, List<String> argv, String what) {
+    PdProcess.Result result = run(argv, APPLY_TIMEOUT);
+    if (result.exitCode() != 0 || result.timedOut()) {
+      LOG.warnf("Could not %s: %s", what, result.output());
+      return new ScaleResult(ScaleOutcome.REFUSED, safe(result.output()));
+    }
+    issuedUpdates.remove(target);
+    if (self) {
+      LOG.infof(
+          "Issued %s on this process's own service %s: the swarm manager finishes it, and the"
+              + " instance that survives is the one that sees the result",
+          what, target);
+      return new ScaleResult(
+          ScaleOutcome.HANDED_OFF, "the swarm manager arbitrates this service's own succession");
+    }
+    LOG.infof("Issued %s on service %s", what, target);
+    return new ScaleResult(ScaleOutcome.SCALED, null);
+  }
+
+  /**
+   * The name the daemon actually holds this application under — the bare wire alias, or the seed
+   * stack's twin of it — or null when it holds neither.
+   *
+   * <p>The caller passes the name the deployment ROW carries, which is the alias; resolving the twin
+   * here is the same fallback {@link #observe} and {@link #runningImage} make, and it is what keeps
+   * an operator's restart working on a platform whose deployer still runs as the seed.
+   */
+  private String resolveService(String name) {
+    if (serviceExists(name)) {
+      return name;
+    }
+    String twin = SEED_STACK_PREFIX + name;
+    return serviceExists(twin) ? twin : null;
+  }
+
+  /** Whether the named service is the one this process is a task of. False outside a container. */
+  private boolean isSelf(String service) {
+    String own = ownServiceName();
+    return !own.isBlank() && own.equals(service);
+  }
+
   private PdProcess.Result observeTasks(String service) {
     return run(
         List.of(
@@ -1073,7 +1247,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 "--name",
                 name,
                 "--replicas",
-                "1",
+                String.valueOf(DEPLOYED_REPLICAS),
                 "--no-resolve-image"));
     registryAuthFlag(argv);
     // The FULL membership, here and nowhere else: every later --network-add recreates the task.
@@ -1147,7 +1321,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * <p><b>Mounts, networks and published ports are deliberately absent.</b> A service update keeps
    * every part of the spec it is not asked to change, so re-stating them would at best be noise and
    * at worst would append a second copy of a mount. What changes on a deployment is the image, the
-   * identity this deployment stamps on the service, and the policy the update itself runs under.
+   * identity this deployment stamps on the service, the replica count, and the policy the update
+   * itself runs under.
+   *
+   * <p><b>The replica count is restated and that is a decision, not symmetry with the create.</b> It
+   * is desired state rather than shape — see the flag's own comment below — and leaving it alone
+   * would let a deployment onto a service an operator had scaled to 0 report a green {@code ACTIVE}
+   * row with nothing running behind it.
    *
    * <p><b>The publish MODE rides with the ports, so changing it is not a deployment.</b> A
    * repository that starts saying {@code publish_mode: ingress} is describing a different shape of
@@ -1181,7 +1361,16 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 "--detach",
                 "--no-resolve-image",
                 "--image",
-                spec.imageRef()));
+                spec.imageRef(),
+                // AND THE REPLICA COUNT, which is the one piece of desired state an update owns
+                // beside the image. An operator's scale-to-0 is a pause, and a service left at 0
+                // takes a `service update --image` without complaint: swarm has no task to
+                // converge, so the update completes at once and the deployment is recorded ACTIVE
+                // while nothing runs. Restating it is what makes a deployment mean "this
+                // application should be serving this image" rather than "this image is what it
+                // would run if it ran". Nothing here scales UP beyond one — see DEPLOYED_REPLICAS.
+                "--replicas",
+                String.valueOf(DEPLOYED_REPLICAS)));
     registryAuthFlag(argv);
     for (String label : labels(spec)) {
       argv.add("--label-add");

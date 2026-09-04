@@ -381,6 +381,90 @@ public class PdDeploymentObservationTest {
         "the pass waited for the whole deployment rather than interleaving with it: " + calls);
   }
 
+  // --- the third arm: a deliberate zero is not a death ------------------------------------------
+
+  @Test
+  public void aPlaceTheOrchestratorDeclaresEmptyIsRecordedStoppedRatherThanDemoted() {
+    // An operator scaled this application to zero — through the API, or by hand with `docker
+    // service scale`. Every observation of it says "gone", because no task is running; without the
+    // desired count this pass would demote a serving-until-a-minute-ago deployment to GONE two
+    // ticks after somebody deliberately stopped it, and page whoever reads red rows.
+    String container = "qits-pd-prod-obs-paused";
+    String active =
+        deployment("obs-paused", "env-obs-paused", PdDeploymentStatus.ACTIVE, container, null);
+    driver.scriptObservationGone(container, "no such service");
+    driver.scriptDeclaredReplicas(container, 0);
+
+    observer.observeOnce();
+
+    PdDeployment row = rowOf(active);
+    assertEquals(
+        PdDeploymentStatus.SCALED_TO_ZERO,
+        row.status,
+        "and on the FIRST pass: this is intent read off the runtime, not a guess needing a second"
+            + " opinion");
+    assertTrue(row.detail.contains("declared to run no tasks"), row.detail);
+    assertNothingWasTouched();
+  }
+
+  @Test
+  public void aStoppedPlaceIsNotDemotedByEveryLaterPassEither() {
+    String container = "qits-pd-prod-obs-stays-paused";
+    String active =
+        deployment(
+            "obs-stays-paused", "env-obs-stays-paused", PdDeploymentStatus.ACTIVE, container, null);
+    driver.scriptObservationGone(container, "no such service");
+    driver.scriptDeclaredReplicas(container, 0);
+
+    observer.observeOnce();
+    observer.observeOnce();
+    observer.observeOnce();
+
+    // Two consecutive dead passes are what demotes an ACTIVE row, and a paused place would reach
+    // that count on its second tick. The strike is cleared instead, so a pause lasts as long as the
+    // operator wants it to.
+    assertEquals(PdDeploymentStatus.SCALED_TO_ZERO.name(), statusOf(active));
+  }
+
+  @Test
+  public void aRuntimeThatCannotSayHowManyTasksAreDeclaredStillDemotes() {
+    // The safety of the whole arm: an unreadable answer read as a deliberate zero would turn every
+    // real outage into a pause nobody is ever paged for. Nothing scripts a count here, which is
+    // exactly what a daemon that could not answer looks like.
+    String container = "qits-pd-prod-obs-unanswerable";
+    String active =
+        deployment(
+            "obs-unanswerable", "env-obs-unanswerable", PdDeploymentStatus.ACTIVE, container, null);
+    driver.scriptObservationGone(container, "Error: No such object");
+
+    observer.observeOnce();
+    observer.observeOnce();
+
+    assertEquals(PdDeploymentStatus.GONE.name(), statusOf(active));
+  }
+
+  @Test
+  public void scalingBackUpTakesAStoppedRowBackThroughTheOrdinaryRecoveryArm() {
+    String container = "qits-pd-prod-obs-resumed";
+    String stopped =
+        deployment(
+            "obs-resumed",
+            "env-obs-resumed",
+            PdDeploymentStatus.SCALED_TO_ZERO,
+            container,
+            "[scaled to 0 by alice at t0: the deployment is otherwise untouched]");
+    driver.scriptObservation(container, "running/healthy");
+
+    observer.observeOnce();
+
+    PdDeployment row = rowOf(stopped);
+    assertEquals(PdDeploymentStatus.ACTIVE, row.status);
+    assertTrue(row.detail.contains("recovered by observation"), row.detail);
+    // The pause stamp is kept under the recovery, exactly as a failure's diagnosis is: a reader
+    // asking "why was this down" gets an answer rather than a blank.
+    assertTrue(row.detail.contains("scaled to 0 by alice"), row.detail);
+  }
+
   /**
    * The reaping stance, asserted rather than trusted: the observer writes rows and touches no
    * service. It is the startup sweep's rule, and it matters more here — this runs forever, beside a

@@ -30,6 +30,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdServiceController.ServiceResponse.class,
       PdServiceController.ListServicesResponse.class,
       PdApplicationController.ListApplicationsResponse.class,
+      PdApplicationController.ScaleRequest.class,
+      PdApplicationController.OperationResponse.class,
       PdDeploymentController.ListDeploymentsResponse.class,
       PdPinController.ListPinsResponse.class,
       PdEventController.BuildSucceededEvent.class,
