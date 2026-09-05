@@ -394,6 +394,55 @@ stopped service does not render as a healthy one), and a `replicas` field would 
 `docker service inspect` per row per listing — a read surface that shells out per row is a listing
 that fails when the daemon is busy.
 
+## Decommission: the third lever, and the one that writes no docker call (2026-09-04)
+
+**The `application:` section below says "CHANGING the value later is a decommission and a new
+application, and nothing here helps". This is the "here".**
+
+    POST /platform-deployments/api/applications/{applicationId}/decommission   → 200
+
+A repository that is renamed, or that starts overriding its deployed identity, leaves its old
+application name behind holding whatever its last attempt wrote. Three of them sat on this install —
+`qits-workspaces-service`, `qits-projects-service` and `qits-gateway` — each with a red `FAILED` row
+from August as its *current state*, beside the successor that was plainly serving. The listing was
+telling the truth about a row and lying about the platform.
+
+Six things about it:
+
+- **It writes a word; it deletes nothing.** `DECOMMISSIONED` is this component's own vocabulary for
+  "this deployment's place was taken", written by `DeployService` on every cutover; a retirement is
+  the same statement with an *application* as the successor rather than a deployment. The shas, the
+  run ids, the timestamps and the failure text stay exactly as they were. There is no delete on this
+  surface and there should not be: `RollbackPins` reads history, a cached id still resolves, and a
+  retirement is not a reason to lose an audit trail.
+- **The CURRENT row and the `SPEC_UNREADABLE` rows, and nothing else.** The current row because it
+  *is* what the listing calls the application's state. `SPEC_UNREADABLE` wherever it sits, because
+  it is the one word here that is not terminal — `DeployService` re-reads it on the observation's
+  cadence until the git host answers, and a retired application's spec never will. Older terminal
+  rows keep the word they earned: six identical `DECOMMISSIONED` rows would have destroyed the
+  history the door refuses to delete.
+- **200, not 202, and it is the only write on this class that is.** It issues no orchestrator call
+  at all — there is nothing running to act on, which is the *precondition* — so there is nothing to
+  queue behind the deploy worker and nothing to promise. A door that grew an `awaitIdle()` in its
+  test has grown a queue it has no reason to have.
+- **It refuses an application that is still deployed.** `ACTIVE` or `SCALED_TO_ZERO` on the current
+  row is a 409: the id names a place by string and a typo names a live application just as well as a
+  dead one. `SCALED_TO_ZERO` is in that pair deliberately — the swarm service exists, holds its
+  ports and volumes, and one scale back up makes the row `ACTIVE` again. `QUEUED`/`STARTING` is a
+  409 too: those are the worker's words and it is about to write the next one.
+- **It does NOT touch `pd_service`.** The catalogue is derived and `DELETE /services/{name}` is the
+  operator's deliberate act on it — a shipped door with its own argument. Folding it in would have
+  this one quietly turn a retired application into a row the client labels "no longer tracked",
+  which is a worse row than the one it was asked to fix.
+- **The stamp joins the other two.** `ApplicationScaling.stamped` drops a leading operator stamp so
+  a door called twice cannot grow a text column; `[decommissioned by ` is on that list, which is
+  what makes the retirement re-runnable. There is one stamp format on a deployment row and one place
+  that knows it.
+
+**Role: `qits-platform:admin`**, for the reason the other two levers carry it — a service bearer must
+no more be able to declare an application retired than to stop one. `MachineGuardEnforcedTest` arms
+it in both directions.
+
 ## One orchestrator, one seam
 
 **Docker swarm, and nothing else.** The by-hand docker replace — find the alias holder, stop it, run
@@ -1358,13 +1407,18 @@ Five things about it, each easy to undo by accident:
   a migration to hold it, which is a decision about foreign identity in this schema rather than a
   detail of this key — and it would have to key on the storage id, because the repository NAME is
   the thing phase 2 changes.
-- **CHANGING the value later is a decommission and a new application, and nothing here helps.** The
-  old name keeps its service, alias, database, rows and routes; the new one gets fresh ones and
-  deploys beside it. The rename runbook moves repositories, never applications.
+- **CHANGING the value later is a decommission and a new application.** The old name keeps its
+  service, alias, database, rows and routes; the new one gets fresh ones and deploys beside it. The
+  rename runbook moves repositories, never applications. Nothing here helped for a while, and three
+  abandoned names carried a red `FAILED` row apiece for a fortnight because of it — there is a door
+  now, `POST /applications/{applicationId}/decommission`, and its section is above.
 
-**The release door is unaffected**, and that was checked rather than assumed: qits-workspaces'
-`DeploymentSpecReader` **stats** this file and never opens it (a file means "it deploys"), so a new
-key is invisible to it. qits-ci's strict unknown-key parser only ever sees `ci-event-*.yml`. And,
+**The release door was unaffected**, and that was checked rather than assumed at the time:
+qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means
+"it deploys"), so a new key was invisible to it. That door is retired — releasing is a release
+request in qits-projects — but the reading it did survives here: the presence of this file is still
+what decides whether `main` is finalized at release or only after a successful deployment.
+qits-ci's strict unknown-key parser only ever sees `ci-event-*.yml`. And,
 like every spec key: **it must ship in the deployer before any repository writes the line**, since a
 spec is read at the released tag and an unknown key fails a deployment.
 
@@ -1630,8 +1684,9 @@ query that reads the null as a PLANE**; that question is `deployment_target` now
 ## Dependencies
 
 **The client is the only submodule.** `service/src/main/webui` is
-qits-deployments-platform-frontend; `git submodule update --init` is half of a clone here, and
-`.config/qits/ci-post-receive.yml` runs it for that reason. Shared auth comes from the platform
+qits-deployments-platform-frontend; `git submodule update --init` is half of a clone here, and both
+pipelines (`.config/qits/ci-event-release-request.yml`, `.config/qits/ci-event-release.yml`) run it
+for that reason. Shared auth comes from the platform
 Maven repository as `qits-auth-core`, and the event bus client as `qits-eventstream` — ordinary
 Maven dependencies, never gitlinks.
 
@@ -1770,9 +1825,9 @@ against.
 ### The userflow catalogue
 
 Twelve `@UserStory` methods in five classes, so `mvn verify -DskipITs=false` also emits
-`service/target/userstories/` — a story log plus a mermaid **network** diagram each — which
-`.config/qits/ci-event-userflows.yml` publishes per commit as the docs bundle
-`@userflows/qits-deployments`. They are **browserless** (an `Interactions` parameter and no `Flow`),
+`service/target/userstories/` — a story log plus a mermaid **network** diagram each — which the
+non-gating second step of `.config/qits/ci-event-release-request.yml` publishes, once per release
+request fold, as the docs bundle `@userflows/qits-deployments`. They are **browserless** (an `Interactions` parameter and no `Flow`),
 so qits-userflows-javalib's transitive Playwright never launches anything.
 
 | class | category | what it is about |
@@ -1854,7 +1909,8 @@ Six things about how they are built, each easy to undo by accident:
 
 ## The image and the pipeline
 
-`docker/Dockerfile` and `.config/qits/ci-post-receive.yml` are two halves of one thing, and the seam
+`docker/Dockerfile` and `.config/qits/ci-event-release.yml` are two halves of one thing (the gating
+step of `ci-event-release-request.yml` is the same two halves, minus the push), and the seam
 between them is the only reason either is interesting: **the client cannot be built inside a docker
 build.** It depends on `@qits/ui-components`, which lives only on the platform's own npm registry,
 and a `RUN` step reaches the public internet but reaches that registry by no address at all. So the
@@ -1920,9 +1976,10 @@ the platform with nowhere for a release to land. `PdEnvironmentApiTest` holds th
 
 **`deploy_branches:` is retired: accepted, validated, acted on by nobody.** Its one reader was
 qits-workspaces' release flow, which pushed a release onto *every* branch the list named — a
-fan-out rather than a ladder, and with three tiers it would have shipped into all three at once. A
-release lands on one entry branch from that component's own configuration now, and no repository
-states it. The parser still tolerates the key, and the reason is sharper than the `singleton`
+fan-out rather than a ladder, and with three tiers it would have shipped into all three at once.
+That flow is gone with the door: a release is a VERSION now, published against a tag, and where it
+lands is a Deployment Request against an environment — never a branch a repository names. The
+parser still tolerates the key, and the reason is sharper than the `singleton`
 alias's: **a spec is fetched at the RELEASED tag**, so a redeploy of an older version still presents
 a file carrying it, and an unknown key fails a deployment. Do not write it into a new file; do not
 remove the tolerance.

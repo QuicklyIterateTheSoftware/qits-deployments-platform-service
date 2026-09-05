@@ -263,6 +263,23 @@ components:
           type: array
           items:
             type: string
+    RetirementResponse:
+      type: object
+      properties:
+        applicationId:
+          type: string
+        applicationName:
+          type: string
+        environmentId:
+          type: string
+        currentDeploymentId:
+          type: string
+        previousStatus:
+          type: string
+        decommissionedIds:
+          type: array
+          items:
+            type: string
     ScaleRequest:
       type: object
       properties:
@@ -308,6 +325,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListApplicationsResponse"
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Application Controller
+      security:
+      - SecurityScheme:
+        - qits-platform:admin
+  /platform-deployments/api/applications/{applicationId}/decommission:
+    post:
+      summary: "Retire an application — its current row becomes DECOMMISSIONED, nothing\
+        \ is deleted"
+      parameters:
+      - name: applicationId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: Retired; the rows it settled are named
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetirementResponse"
+        "400":
+          description: Not an application id
+        "404":
+          description: Nothing has ever been deployed for this application
+        "409":
+          description: "It is still deployed, or the deploy worker still has work\
+            \ for it"
         "401":
           description: Not Authorized
         "403":

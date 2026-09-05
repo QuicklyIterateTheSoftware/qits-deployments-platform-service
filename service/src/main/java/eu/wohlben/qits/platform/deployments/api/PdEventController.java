@@ -34,6 +34,12 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
  * an operator posting a version is choosing that version, and refusing a lower one would be
  * refusing the choice.
  *
+ * <p><b>It is the {@link ReleaseAnnouncements.Door#MANUAL} door, and the same reasoning is why.</b>
+ * A release whose tag carries no {@code .config/qits/deployments.yml} is recorded and not deployed
+ * when the BUS announces it — that door hears every published image and a base image is not a
+ * service. Here it still deploys with the defaults: one of the things this door is for is a tag cut
+ * before the file existed anywhere, and somebody typed this version on purpose.
+ *
  * <p>Hidden from the OpenAPI document (a wire/system API).
  *
  * <p><b>{@code qits-platform:system} and {@link MachineAuth#require()} are both here because

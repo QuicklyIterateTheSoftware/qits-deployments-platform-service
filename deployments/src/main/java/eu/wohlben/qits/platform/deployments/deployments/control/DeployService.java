@@ -910,7 +910,8 @@ public class DeployService implements ReleaseAnnouncements {
       String applicationName,
       String version,
       String packageName,
-      UUID causationId) {
+      UUID causationId,
+      Door door) {
     DeploymentIdentifiers.requireRunId(runId);
     RepositoryRef repo = repository.validated();
     String released = DeploymentIdentifiers.requireApplicationName(applicationName);
@@ -918,7 +919,7 @@ public class DeployService implements ReleaseAnnouncements {
     worker.submit(
         () -> {
           try {
-            deploy(runId, repo, released, version, packageName, causationId);
+            deploy(runId, repo, released, version, packageName, causationId, door);
           } catch (RuntimeException e) {
             LOG.errorf(
                 e,
@@ -1000,7 +1001,8 @@ public class DeployService implements ReleaseAnnouncements {
       String releasedName,
       String version,
       String packageName,
-      UUID causationId) {
+      UUID causationId,
+      Door door) {
     // Whatever this application was waiting to re-read, this release replaces: a newer version is
     // the supersession that ends a pending retry, and a re-announcement of the same one is a
     // fresh attempt rather than a second entry beside the first.
@@ -1014,7 +1016,8 @@ public class DeployService implements ReleaseAnnouncements {
       // is the only place a release deployment can learn one.
       read = specs.read(repository, SpecSource.tagRev(version));
     } catch (RuntimeException e) {
-      recordUnreadableSpec(runId, repository, releasedName, version, packageName, causationId, e);
+      recordUnreadableSpec(
+          runId, repository, releasedName, version, packageName, causationId, door, e);
       return;
     }
     deployReadSpec(
@@ -1024,8 +1027,11 @@ public class DeployService implements ReleaseAnnouncements {
         version,
         packageName,
         causationId,
+        door,
         read.spec(),
-        read.commitSha());
+        read.commitSha(),
+        read.declared(),
+        List.of());
   }
 
   /**
@@ -1036,6 +1042,11 @@ public class DeployService implements ReleaseAnnouncements {
    * the release event itself, and {@link #retrySpecReads()} minutes later with the same release and
    * a file that has started answering. Both deploy identically from that point on, which is the
    * property worth having — a recovered read is not a second code path.
+   *
+   * <p><b>And this is where a release that never asked to be deployed stops.</b> {@code declared}
+   * is the git host's own answer — the repository carries {@link SpecSource#SPEC_PATH} at the
+   * released tag, or it does not — and on the {@link Door#RELEASE_EVENT} door a release that
+   * carries no file is recorded and goes no further. See {@link #refuseUndeclaredSpec}.
    */
   private void deployReadSpec(
       String runId,
@@ -1044,8 +1055,18 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       UUID causationId,
+      Door door,
       DeploymentSpec spec,
-      String commitSha) {
+      String commitSha,
+      boolean declared,
+      List<String> heldRows) {
+    if (!declared && door == Door.RELEASE_EVENT) {
+      refuseUndeclaredSpec(
+          new Release(
+              runId, repository, releasedName, version, commitSha, packageName, causationId),
+          heldRows);
+      return;
+    }
     String applicationName = applicationName(releasedName, spec);
     String failure = null;
 
@@ -1085,6 +1106,76 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
+   * A release that carries no {@link SpecSource#SPEC_PATH} at its tag: <b>recorded, and not
+   * deployed</b>.
+   *
+   * <p><b>Why this exists at all.</b> A docker package is not a service. The release door hears one
+   * event per published image, chosen by nobody, and three of this platform's repositories publish
+   * workspace CONTAINER images — the image a workspace RUNS AS and the two it is built from, with
+   * no port, no health surface and nothing this component can put live. On 2026-09-04 all three
+   * were announced here, read no file, took {@link DeploymentSpec#DEFAULTS}, and were launched as
+   * the swarm services {@code dev-workspace}, {@code dev-workspace-editor} and {@code
+   * dev-workspace-base}, which sat created until the 120s health gate failed them. The defaults
+   * were never wrong; the question they answer was. They mean "deploy it the ordinary way", and the
+   * old build door only ever asked it of repositories the platform already deployed.
+   *
+   * <p><b>So the missing file is read as the answer it is</b>: a repository that declares nothing
+   * has not asked to be deployed. This is deliberately not a parse failure and not a refusal of the
+   * release — the version is real, the image is published, and a repository is free to publish one
+   * and deploy nothing. What it is is a decision, so it is written down where decisions are: a
+   * {@link PdDeploymentRequest} with {@link PdQualityGate#UNMET} and a {@code gate_detail} saying
+   * why, pointing at no deployment. That is the shape the request row's own javadoc describes and
+   * the first thing to ever write it.
+   *
+   * <p><b>Before registration, and that is half the fix.</b> Registering first would create the
+   * catalogue row, the wire alias and the tier link for an application that is not one — which is
+   * exactly what left {@code workspace}, {@code workspace-editor} and {@code workspace-base} in the
+   * catalogue. Nothing is registered, so nothing has to be retired afterwards.
+   *
+   * <p><b>Only on the {@link Door#RELEASE_EVENT} door.</b> The manual door is somebody naming an
+   * application and a version, and one of the things it is for is deploying a tag cut before this
+   * file existed anywhere; refusing that would be refusing the choice. {@link Door} argues it.
+   *
+   * @param heldRows the {@code SPEC_UNREADABLE} deployments a retryable read already wrote for this
+   *     release, if it went that way round — a git host that refused the blob and then answered 404
+   *     has told us the file is absent, so those rows are settled rather than left waiting for an
+   *     answer that has arrived. Empty on the ordinary path, where the first read said so.
+   */
+  private void refuseUndeclaredSpec(Release release, List<String> heldRows) {
+    String detail =
+        "The release declares no "
+            + SpecSource.SPEC_PATH
+            + " at "
+            + SpecSource.tagRev(release.version())
+            + ", so it publishes an image and asks for no deployment. Recorded and not deployed;"
+            + " add the file to deploy it, or announce it through the manual door.";
+    LOG.infof(
+        "%s@%s carries no %s at its tag, so it is recorded and not deployed: a published image is"
+            + " not necessarily a service",
+        release.applicationName(), release.version(), SpecSource.SPEC_PATH);
+    List<PdEnvironment> entry = entryTiers();
+    // Where it WOULD have gone, so the refusal sits on the same tier's page as the deployments it
+    // is standing in for. Null when nothing is designated yet — pd_deployment_request's own null,
+    // and the honest answer when there is no tier to name.
+    String environmentId = entry.isEmpty() ? null : entry.get(0).id;
+    // Not retried, for queue()'s reason: it INSERTs, and a commit whose outcome the connection died
+    // before reporting would be duplicated by a second attempt. Nothing docker-side has happened,
+    // so losing the row drops the event with nothing half-done.
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              PdDeploymentRequest request =
+                  persistRequest(release, release.applicationName(), environmentId);
+              request.qualityGate = PdQualityGate.UNMET;
+              request.gateDetail = detail;
+              request.gateSettledAt = Instant.now();
+            });
+    for (String deploymentId : heldRows) {
+      finishHeld(deploymentId, "[" + detail + "]");
+    }
+  }
+
+  /**
    * A spec read that did not answer, recorded on the places this repository is already registered
    * in — and, when the failure is one a second read may survive, remembered so that second read
    * happens.
@@ -1104,6 +1195,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       UUID causationId,
+      Door door,
       RuntimeException cause) {
     boolean retryable = SpecException.isRetryable(cause);
     String failure = "[deployment spec unreadable: " + cause.getMessage() + "]";
@@ -1136,6 +1228,7 @@ public class DeployService implements ReleaseAnnouncements {
             version,
             packageName,
             causationId,
+            door,
             Instant.now(),
             1,
             List.copyOf(rows)));
@@ -1162,13 +1255,14 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String packageName,
       UUID causationId,
+      Door door,
       Instant since,
       int attempts,
       List<String> rows) {
 
     SpecRetry next() {
       return new SpecRetry(
-          runId, repository, releasedName, version, packageName, causationId, since,
+          runId, repository, releasedName, version, packageName, causationId, door, since,
           attempts + 1, rows);
     }
   }
@@ -1229,8 +1323,11 @@ public class DeployService implements ReleaseAnnouncements {
           held.version(),
           held.packageName(),
           held.causationId(),
+          held.door(),
           read.spec(),
-          read.commitSha());
+          read.commitSha(),
+          read.declared(),
+          held.rows());
     }
   }
 
@@ -1787,7 +1884,8 @@ public class DeployService implements ReleaseAnnouncements {
                 () -> {
                   List<Queued> queued = new ArrayList<>();
                   for (Target target : targets) {
-                    PdDeploymentRequest request = persistRequest(release, target);
+                    PdDeploymentRequest request =
+                        persistRequest(release, target.applicationName(), target.environmentId());
                     Gate verdict = gate(release, target);
                     request.qualityGate = verdict.state();
                     request.gateDetail = verdict.detail();
@@ -1846,17 +1944,24 @@ public class DeployService implements ReleaseAnnouncements {
 
   /**
    * One deployment request. Inside {@link #queue}'s transaction, never on its own — the gate's
-   * answer and the deployment it hands off to are written in the same bracket.
+   * answer and the deployment it hands off to are written in the same bracket. The one other caller
+   * is {@link #refuseUndeclaredSpec}, which writes a request that will never have a deployment and
+   * therefore has no {@link Target} to take the place from.
+   *
+   * <p>It takes the two fields off the target rather than the target itself for exactly that
+   * reason: a refusal knows the application and the tier and nothing else, because there was never
+   * a place computed for it.
    */
-  private PdDeploymentRequest persistRequest(Release release, Target target) {
+  private PdDeploymentRequest persistRequest(
+      Release release, String applicationName, String environmentId) {
     PdDeploymentRequest request = new PdDeploymentRequest();
     request.id = UUID.randomUUID().toString();
     // Set EXPLICITLY, for the reason every row this component writes on the worker is: the
     // CausationStamp listener reads a ThreadLocal the queue hop already left behind.
     request.causationId = release.causationId();
-    request.applicationName = target.applicationName();
+    request.applicationName = applicationName;
     request.version = release.version();
-    request.environmentId = target.environmentId();
+    request.environmentId = environmentId;
     request.packageName = release.packageName();
     request.repoId = release.repository() == null ? null : release.repository().repoId();
     request.projectId = release.repository() == null ? null : release.repository().projectId();

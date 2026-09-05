@@ -5,11 +5,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.eventstream.control.EventFrame;
+import eu.wohlben.qits.platform.deployments.bus.PdSoftwareReleaseSubscriber;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -46,6 +50,9 @@ public class PdSpecRetryTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+
+  /** The bus door, for the one case whose rule is the bus door's — see the method. */
+  @Inject PdSoftwareReleaseSubscriber subscriber;
 
   @BeforeEach
   void reset() {
@@ -149,9 +156,15 @@ public class PdSpecRetryTest {
   @Test
   public void aRepositoryThatCarriesNoSpecAtTheTagDeploysAndIsNotHeld() {
     // A 404 is an answer: the reader turns it into the defaults before this ever sees a failure,
-    // so there is nothing to hold and the release simply deploys — exactly as it did before the
-    // file existed. Pinned here because the 404 arm is what {@code SPEC_UNREADABLE} must NOT catch.
+    // so there is nothing to hold. Pinned here because the 404 arm is what SPEC_UNREADABLE must
+    // NOT catch — a missing file is not a git host that would not answer.
+    //
+    // It deploys because this is the MANUAL door, which is the half of the 2026-09-05 rule that
+    // did not change: somebody named this version, including possibly a tag cut before the file
+    // existed anywhere. The bus door records the same release and deploys nothing, which is
+    // PdBusReleaseIntakeTest's claim.
     String environmentId = createEnvironment("spec-absent");
+    specs.scriptNoSpec("repo-absent");
     postRelease("repo-absent", V_A);
 
     assertEquals("ACTIVE", awaitSettled(environmentId, 1).get(0).get("status"));
@@ -190,6 +203,36 @@ public class PdSpecRetryTest {
     assertEquals("SPEC_UNREADABLE", after.get(1).get("status"), "the held row stayed history");
   }
 
+  @Test
+  public void aHeldReleaseWhoseSpecTurnsOutToBeAbsentIsSettledRatherThanDeployed() {
+    // The two arms meeting, and the only case here that goes through the BUS door — because the
+    // rule it exercises is that door's. A git host that refused the blob holds the release
+    // SPEC_UNREADABLE and re-reads it; when that read finally answers 404 the file is not
+    // unreadable, it is absent. So the held rows are settled with the same sentence rather than
+    // waiting for an answer that has already arrived, and nothing is deployed.
+    String environmentId = createEnvironment("spec-held-absent");
+    String repoId = "repo-held-absent";
+    releaseOnTheBus(repoId, "qits/held-absent-app", V_A);
+    awaitSettled(environmentId, 1); // registered, so a failed read has somewhere to be recorded
+    driver.reset();
+
+    specs.scriptRetryableFailure(repoId, "the git host answered 503");
+    releaseOnTheBus(repoId, "qits/held-absent-app", V_B);
+    assertEquals("SPEC_UNREADABLE", awaitSettled(environmentId, 2).get(0).get("status"));
+
+    specs.recover(repoId);
+    specs.scriptNoSpec(repoId);
+    tick();
+
+    assertEquals(List.of(), driver.pulled(), "an absent file deploys nothing");
+    List<Map<String, Object>> rows = awaitSettled(environmentId, 2);
+    assertEquals("FAILED", rows.get(0).get("status"), "the held row was settled, not left waiting");
+    assertTrue(
+        ((String) rows.get(0).get("detail")).contains(".config/qits/deployments.yml"),
+        "with the reason the wait ended: " + rows.get(0).get("detail"));
+    assertEquals("ACTIVE", rows.get(1).get("status"), "and what was serving is still serving");
+  }
+
   // --- helpers ----------------------------------------------------------------------------------
 
   /**
@@ -216,6 +259,25 @@ public class PdSpecRetryTest {
         .statusCode(201)
         .extract()
         .path("environment.id");
+  }
+
+  /**
+   * One {@code SoftwareRelease} through the bus door, as qits-ci publishes it. The rest of this
+   * class uses the manual door, which is the right door for everything about HOLDING a read; this
+   * exists for the one case that is about the release door's own refusal.
+   */
+  private void releaseOnTheBus(String repoId, String packageName, String version) {
+    subscriber.onFrame(
+        new EventFrame(
+            UUID.randomUUID().toString(),
+            "SoftwareRelease",
+            Instant.now(),
+            ("{\"packageName\":\"%s\",\"packageType\":\"docker\",\"repoId\":\"%s\","
+                    + "\"repository\":\"%s\",\"version\":\"%s\"}")
+                .formatted(packageName, repoId, repoId, version),
+            null,
+            null,
+            null));
   }
 
   private void postRelease(String repoId, String version) {

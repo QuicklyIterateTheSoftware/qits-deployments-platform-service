@@ -134,14 +134,20 @@ public class GitHostSpecSourceTest {
     // A repository carrying no file deploys with every default — unchanged by which URL asked.
     status = 404;
 
-    assertSame(
-        DeploymentSpec.DEFAULTS,
-        source().read(new RepositoryRef(UUID_ID, "qits", "gw"), SHA).spec());
+    SpecSource.SpecRead byName = source().read(new RepositoryRef(UUID_ID, "qits", "gw"), SHA);
+    assertSame(DeploymentSpec.DEFAULTS, byName.spec());
     SpecSource.SpecRead byId = source().read(RepositoryRef.ofId("gw"), SHA);
     assertSame(DeploymentSpec.DEFAULTS, byId.spec());
     // No blob, so no commit: a 404 says nothing about where the rev points, and inventing a sha
     // here would put a commit on the deployment row that nobody resolved.
     assertNull(byId.commitSha());
+    // ...and the defaults arrive marked as nobody's declaration, which is what lets the release
+    // door tell "the file says nothing" from "there is no file". A read that DID find the file
+    // says so — every other case in this class asserts that side by simply deploying.
+    assertFalse(byName.declared(), "a 404 on both arms declared nothing");
+    assertFalse(byId.declared());
+    status = 200;
+    assertTrue(source().read(RepositoryRef.ofId("gw"), SHA).declared(), "a file that was read is");
   }
 
   @Test

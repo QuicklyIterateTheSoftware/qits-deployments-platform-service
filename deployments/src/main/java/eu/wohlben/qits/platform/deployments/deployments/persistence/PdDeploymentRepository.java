@@ -115,6 +115,32 @@ public class PdDeploymentRepository implements PanacheRepositoryBase<PdDeploymen
   }
 
   /**
+   * One application's whole history in ONE PLACE, newest-first — every row {@link #newestForPlace}
+   * would pick the first of.
+   *
+   * <p>It asks the place the way that method does and deliberately not the way {@link
+   * #listByApplication} does: the {@code null} arm is the <b>platform plane</b> ({@code
+   * deployment_target}), not "the rows with no tier". Since V8 a platform deployment names the
+   * designated tier, so the null-tier read answers with pre-V8 rows alone — an operator retiring a
+   * platform application would settle a row years old and leave the one a reader is looking at.
+   *
+   * <p>Whole rather than newest because a retirement has a second row to settle: {@code
+   * SPEC_UNREADABLE} is re-read on the observation's cadence wherever it sits in the history, so
+   * stopping that retry means finding it. See {@code ApplicationRetirement}.
+   */
+  public List<PdDeployment> listForPlaceNewestFirst(String applicationName, String environmentId) {
+    return environmentId == null
+        ? list(
+            "applicationName = ?1 and deploymentTarget = ?2 order by seq desc",
+            applicationName,
+            PdDeploymentTarget.PLATFORM)
+        : list(
+            "applicationName = ?1 and environmentId = ?2 order by seq desc",
+            applicationName,
+            environmentId);
+  }
+
+  /**
    * One application's whole history, newest-first — what a build falls back to when the spec at
    * that sha cannot be read at all.
    */
