@@ -284,12 +284,13 @@ public class PdBusReleaseIntakeTest {
 
   @Test
   public void aDockerReleaseThatDeclaresNoSpecIsRecordedAndNotDeployed() {
-    // The 2026-09-04 accident, in one case. qits-workspace-oci and qits-workspace-editor-oci
-    // publish workspace BASE images — a docker package, a real release, and nothing to put live.
-    // They were announced here, read no deployments.yml, took DeploymentSpec.DEFAULTS and were
-    // launched as the swarm services dev-workspace and dev-workspace-editor, which sat "still
-    // created after 120s" and failed. A published image is not necessarily a service, and a
-    // repository that declares no file has not asked to be deployed.
+    // The 2026-09-04 accident, in one case. qits-workspace-daemon publishes qits/workspace,
+    // qits-workspace-editor-oci publishes qits/workspace-editor and qits-workspace-oci publishes
+    // qits/workspace-base — workspace CONTAINER images, each a docker package and a real release,
+    // none of them a service. All three were announced here, read no deployments.yml, took
+    // DeploymentSpec.DEFAULTS and were launched as dev-workspace, dev-workspace-editor and
+    // dev-workspace-base, which sat "still created after 120s" and failed. A published image is not
+    // necessarily a service, and a repository that declares no file has not asked to be deployed.
     String environmentId = createEntryTier("bus-nospec");
     // Keyed by the ref's applicationName, which for a frame carrying no repoName is the storage
     // id — the same coordinate GitHostSpecSource would address the blob by.

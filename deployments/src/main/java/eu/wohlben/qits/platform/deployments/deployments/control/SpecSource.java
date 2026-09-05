@@ -87,7 +87,7 @@ public interface SpecSource {
      * so for as long as the only announcements this component heard were green builds of services
      * the platform already deployed, the two were the same statement: "deploy it the conventional
      * way". The release door ended that. It hears one event per published DOCKER PACKAGE, and a
-     * repository can publish an image that is not a service at all — a workspace base image, a
+     * repository can publish an image that is not a service at all — a workspace container image, a
      * build image — which the defaults then launch as a swarm service that can never come up. So
      * the intake asks the question the old door never had to: did the repository ASK to be
      * deployed? See {@code DeployService.deployReadSpec}.
