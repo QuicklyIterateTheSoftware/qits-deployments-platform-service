@@ -34,6 +34,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -173,6 +175,16 @@ public class DeployService implements ReleaseAnnouncements {
    * observe-interval-seconds}.
    */
   private static final Duration SPEC_RETRY_DEADLINE = Duration.ofMinutes(60);
+
+  /**
+   * How many SETTLED requests a project's listing carries — see {@link
+   * #projectDeploymentRequests(String)}, which caps nothing else.
+   *
+   * <p>A constant rather than a config key, and rather than a client-supplied {@code ?limit=}: it is
+   * the shape of one screen and not an operational tuning, and a knob would invite a caller to ask
+   * for the year the cap exists to refuse.
+   */
+  private static final int PROJECT_COMPLETED_LIMIT = 10;
 
   @Inject PdDeploymentRepository deployments;
   @Inject PdDeploymentRequestRepository requests;
@@ -2600,6 +2612,18 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
+   * A deployment request together with the deployment it handed off to, or {@code null} where there
+   * is none.
+   *
+   * <p><b>Null is a real answer and is the whole reason this pair exists as a type.</b> A request
+   * the gate refused queued nothing, so it points at no row; so does one whose deployment an
+   * environment teardown has since forgotten. Both are "asked for, and nothing ran", which is
+   * exactly what the request table exists to be able to say — and neither is an error the reader has
+   * to be protected from.
+   */
+  public record RequestWithDeployment(PdDeploymentRequest request, PdDeployment deployment) {}
+
+  /**
    * An environment's deployment REQUESTS, newest-first — what was asked for here, whatever the gate
    * said and whatever became of it.
    *
@@ -2608,11 +2632,96 @@ public class DeployService implements ReleaseAnnouncements {
    * invisible in the deployment listing by construction. {@code applicationName} narrows it to one
    * service and is optional — a null asks about the whole tier.
    */
-  public List<PdDeploymentRequest> deploymentRequestsFor(
+  public List<RequestWithDeployment> deploymentRequestsFor(
       String environmentId, String applicationName) {
-    return applicationName == null || applicationName.isBlank()
-        ? requests.listByEnvironmentNewestFirst(environmentId)
-        : requests.listByEnvironmentAndApplicationNewestFirst(environmentId, applicationName);
+    return withDeployments(
+        applicationName == null || applicationName.isBlank()
+            ? requests.listByEnvironmentNewestFirst(environmentId)
+            : requests.listByEnvironmentAndApplicationNewestFirst(environmentId, applicationName));
+  }
+
+  /**
+   * One PROJECT's deployment requests: <b>every one still moving, and the ten most recent that are
+   * not</b>, merged back into one newest-first list.
+   *
+   * <p>The cap is here and not on the client, and that is the decision worth carrying. A project
+   * that has been releasing for a year has thousands of settled requests and a reader has never once
+   * wanted them; what a project screen is for is "what is happening right now, and what happened
+   * last". So the pending half is complete — a release the platform has not finished with must never
+   * be the one the cap dropped — and the completed half is the ten newest. A client asked to do this
+   * would be one that downloads the year and throws it away.
+   *
+   * <p>{@link RequestLifecycle} is what decides which half a row is in, and the deployments it needs
+   * are batch-loaded rather than fetched per row.
+   *
+   * <p>An unknown project answers with an empty list. This component holds no project rows and
+   * resolves none — see {@code PdDeploymentRequestRepository.listByProjectNewestFirst}.
+   */
+  public List<RequestWithDeployment> projectDeploymentRequests(String projectId) {
+    List<RequestWithDeployment> joined =
+        withDeployments(requests.listByProjectNewestFirst(projectId));
+    List<RequestWithDeployment> answer = new ArrayList<>();
+    int completed = 0;
+    for (RequestWithDeployment entry : joined) {
+      if (RequestLifecycle.isPending(entry.request(), entry.deployment())) {
+        answer.add(entry);
+      } else if (completed < PROJECT_COMPLETED_LIMIT) {
+        completed++;
+        answer.add(entry);
+      }
+    }
+    // The source list is already `seq desc` and both halves are taken from it in order, so appending
+    // preserves that ordering — no re-sort, and no second definition of "newest".
+    return List.copyOf(answer);
+  }
+
+  /**
+   * Every request written for one released version of one repository, newest-first.
+   *
+   * <p>It is the edge a release page follows the other way: qits-projects holds a released version
+   * and a repository and wants to know what this platform did with it. The pair is {@code (repoId,
+   * version)} because that is what the far side has — the application name may be the repository's
+   * or the spec's {@code application:} override, and only this table knows which.
+   *
+   * <p>Empty is a real and common answer: a library or an SPA releases a version that deploys
+   * nothing at all, and there is no request row for it anywhere.
+   */
+  public List<RequestWithDeployment> deploymentRequestsByRelease(String repoId, String version) {
+    return withDeployments(requests.listByRepoAndVersionNewestFirst(repoId, version));
+  }
+
+  /** One request by its own id, with the deployment it produced. Empty for an id nothing wrote. */
+  public Optional<RequestWithDeployment> deploymentRequestById(String id) {
+    return requests
+        .findByIdOptional(id)
+        .map(request -> withDeployments(List.of(request)).get(0));
+  }
+
+  /**
+   * The request → deployment join, in one extra query for the whole listing.
+   *
+   * <p>Plain request-thread Panache, like every other read on this surface: no worker hop and no
+   * transaction bracket. Those exist for the reads the deploy worker makes, where there is no
+   * request context to open a session in; a REST read already has one, and the patience it needs is
+   * {@code PdReadPatience}'s, one layer up in the controller.
+   */
+  private List<RequestWithDeployment> withDeployments(List<PdDeploymentRequest> rows) {
+    Set<String> ids = new HashSet<>();
+    for (PdDeploymentRequest request : rows) {
+      if (request.deploymentId != null) {
+        ids.add(request.deploymentId);
+      }
+    }
+    Map<String, PdDeployment> byId = new HashMap<>();
+    for (PdDeployment deployment : deployments.listByIds(ids)) {
+      byId.put(deployment.id, deployment);
+    }
+    return rows.stream()
+        .map(
+            request ->
+                new RequestWithDeployment(
+                    request, request.deploymentId == null ? null : byId.get(request.deploymentId)))
+        .toList();
   }
 
   /** Drop this environment's recorded deployments — the first step of a teardown. */

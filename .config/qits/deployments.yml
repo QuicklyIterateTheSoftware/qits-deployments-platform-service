@@ -74,18 +74,31 @@ health_path: /platform-deployments/q/health/ready
 routes: /platform-deployments
 
 # WHERE THE EDGE APPEARS THIS APPLICATION IN THE SIDEBAR. One entry per `<slot>.<Label>` pair — an
-# application may hang several rows under one heading, and this one hangs a single row under
-# `platform`, the project-scoped group, as its fourth entry. The label and the position are the whole
-# statement — the host is derived from the application name (`qits-platform-deployments` minus its
-# `qits-platform-` prefix is `deployments`), so there is no `host:` line to keep in step.
+# application may hang several rows under one heading, and this one hangs two rows in two different
+# groups. The label and the position are the whole statement — the host is derived from the
+# application name (`qits-platform-deployments` minus its `qits-platform-` prefix is `deployments`),
+# so there is no `host:` line to keep in step.
+#
+# TWO ENTRIES, AND THE SECOND CARRIES A SUBPATH. The `platform` row is the deployments table at this
+# host's root, which is what it always was. The `project.detail` row is the deployment-requests page
+# — `=deployment-requests` is the path under the derived host, appended to whatever project scope
+# the shell is in. They are two rows because they answer two questions: what is RUNNING in a tier,
+# and what a project has ASKED FOR, which is the only place a release the gate refused is visible at
+# all.
+#
+# The pair is `(slot, label)` and not the slot alone, which is what makes two entries legal here:
+# the parser keyed its duplicate check on the slot for one release, and an application asking for
+# two rows failed its deployment with `deployment spec unreadable` while its build stayed green.
 #
 # This replaces `navigation: Deployments:2`, the flat list every application shared. The old key
 # still parses — a spec is read at the built sha, so it can never become unknown — and maps to
 # `system.Deployments`, which is the wrong group for a page a project scopes.
 #
-# THE PARSER SHIPPED FIRST. A spec is fetched at the BUILT sha and an unknown key fails a
-# deployment, so this key could only land after the deployer that reads it was released.
-navigation-entries: platform.Deployments:4
+# THE PARSER SHIPPED FIRST, and so did the SPA. A spec is fetched at the BUILT sha and an unknown key
+# fails a deployment, so this key could only land after the deployer that reads it was released — and
+# a navigation row that leads to a route the embedded client does not have is a 404 in the menu,
+# which is why this line moves in the same commit as the webui gitlink that carries the page.
+navigation-entries: platform.Deployments:4, project.detail.Deployment Requests:5=deployment-requests
 
 resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream
 

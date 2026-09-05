@@ -40,15 +40,24 @@ public class DeploymentMapper {
   }
 
   /**
-   * The deployment REQUEST's wire shape — a field-for-field copy, and that is the point of it being
-   * here rather than being derived like its sibling above.
+   * The deployment REQUEST's wire shape — a field-for-field copy of the row, plus one field that is
+   * not on it.
    *
    * <p>No {@code applicationId} is computed. The derivation needs the PLANE, a request has no column
    * for one, and inventing {@code platform:} or {@code <tier>:} from the tier alone is exactly the
    * silent mis-join this class's header describes. The name is the join key, and {@link
    * eu.wohlben.qits.platform.deployments.deployments.dto.PdDeploymentRequestDto} says so.
+   *
+   * <p><b>The deployment is a parameter and is nullable, and both halves of that are the point.</b>
+   * A request the gate refused points at nothing, so there is no row to take a status from and the
+   * field is null — the honest answer, and one a client reads as "nothing ran" rather than as "not
+   * yet". And the row arrives as an argument rather than being fetched here, because every caller is
+   * mapping a LIST: the join is one batch query at the caller, and a mapper that loaded per row
+   * would turn a listing into a query per line.
+   *
+   * @param deployment the deployment {@code request.deploymentId} names, or {@code null}
    */
-  public PdDeploymentRequestDto toDto(PdDeploymentRequest request) {
+  public PdDeploymentRequestDto toDto(PdDeploymentRequest request, PdDeployment deployment) {
     return new PdDeploymentRequestDto(
         request.id,
         request.applicationName,
@@ -61,6 +70,7 @@ public class DeploymentMapper {
         request.gateDetail,
         request.deploymentId,
         request.createdAt,
-        request.gateSettledAt);
+        request.gateSettledAt,
+        deployment == null ? null : deployment.status);
   }
 }

@@ -46,6 +46,41 @@ public class PdDeploymentRequestRepository
   }
 
   /**
+   * One PROJECT's requests across every application and every tier, newest-first — the listing the
+   * project-scoped screen reads.
+   *
+   * <p><b>{@code project_id} is a foreign identity and is not resolved here</b>, exactly like {@code
+   * repo_id} beside it: this component holds no project rows and never asks qits-projects whether
+   * one exists. So a project nothing was ever released for answers with an empty list, which is the
+   * honest answer — "no release of this project reached this platform" — rather than a 404 about a
+   * row this schema does not have.
+   *
+   * <p>It is unscoped by tier on purpose. A project's releases enter at whatever tier the platform
+   * designates, and the designation moves; a listing narrowed to today's entry tier would silently
+   * lose everything asked for before it moved.
+   */
+  public List<PdDeploymentRequest> listByProjectNewestFirst(String projectId) {
+    return list("projectId = ?1 order by seq desc", projectId);
+  }
+
+  /**
+   * Every request written for one released version of one repository, newest-first — the join a
+   * release page follows to ask "what did this release deploy".
+   *
+   * <p>The pair is {@code (repo_id, version)} rather than {@code (applicationName, version)} because
+   * the caller is holding a release request over in qits-projects, which knows a repository and a
+   * version and nothing about the name this platform deploys under — the application name may be the
+   * repository's, or the spec's {@code application:} override, and only this table knows which.
+   *
+   * <p>More than one row is an ordinary answer rather than a surprise: one version is asked for once
+   * per place, and a redeploy of the same version writes a second request. Newest first, so the
+   * first result is the one a reader means.
+   */
+  public List<PdDeploymentRequest> listByRepoAndVersionNewestFirst(String repoId, String version) {
+    return list("repoId = ?1 and version = ?2 order by seq desc", repoId, version);
+  }
+
+  /**
    * The newest version this application was ever asked for, whatever the gate said and whatever
    * became of it.
    *

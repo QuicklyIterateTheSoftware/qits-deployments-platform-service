@@ -141,6 +141,182 @@ public class PdDeploymentRequestApiTest {
         .statusCode(404);
   }
 
+  @Test
+  public void aRequestCarriesTheStatusOfTheDeploymentItProduced() {
+    // The join that turns two rows into one lifecycle. The gate lives on the request and the
+    // container lives on the deployment, and a reader asking "is the platform still doing something
+    // about this release" needs both — so the request DTO carries the status of the row it points
+    // at, and a client folding a listing into pending and settled makes no second request.
+    String environmentId = createEnvironment("req-status");
+    release("repo-req-status", V_A, environmentId, 1);
+
+    Map<String, Object> request = onlyRequestOf(environmentId, "repo-req-status");
+    Map<String, Object> deployment =
+        deployments(environmentId).stream()
+            .filter(d -> request.get("deploymentId").equals(d.get("id")))
+            .findFirst()
+            .orElseThrow();
+    assertEquals(
+        deployment.get("status"),
+        request.get("deploymentStatus"),
+        "the request says what became of what it asked for");
+  }
+
+  @Test
+  public void aRequestWhoseDeploymentIsGoneCarriesNoStatus() {
+    // Null is a real answer and not a gap. A refusal queues nothing, and an environment teardown
+    // forgets the deployment rows while the requests outlive them by design — no FK, on purpose —
+    // so both arrive here as "asked for, and there is no row to have a status".
+    String environmentId = createEnvironment("req-orphan");
+    release("repo-req-orphan", V_A, environmentId, 1);
+    // Designating another tier is what makes the first one deletable: tearing down the platform
+    // environment is a 409, because a release would then enter nowhere.
+    createEnvironment("req-orphan-successor");
+    given()
+        .when()
+        .delete("/platform-deployments/api/environments/" + environmentId)
+        .then()
+        .statusCode(204);
+
+    Map<String, Object> request = onlyByRelease("repo-req-orphan", V_A);
+    assertNotNull(request.get("deploymentId"), "the request still names the row it queued");
+    assertNull(request.get("deploymentStatus"), "and there is no row left to have a status");
+  }
+
+  @Test
+  public void aRequestIsReadableByItsOwnIdWithTheDeploymentItProduced() {
+    // The detail read, and the reason the deployment is INLINE: this component has no
+    // deployment-by-id endpoint, and minting one to serve a single screen would put a second,
+    // unscoped door onto pd_deployment.
+    String environmentId = createEnvironment("req-detail");
+    release("repo-req-detail", V_A, environmentId, 1);
+    String id = (String) onlyRequestOf(environmentId, "repo-req-detail").get("id");
+
+    Map<String, Object> answer =
+        given()
+            .when()
+            .get("/platform-deployments/api/deployment-requests/" + id)
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getMap("$");
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> request = (Map<String, Object>) answer.get("deploymentRequest");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> deployment = (Map<String, Object>) answer.get("deployment");
+    assertEquals(id, request.get("id"));
+    assertEquals(V_A, request.get("version"));
+    assertNotNull(deployment, "a met gate queued a deployment and it travels in this answer");
+    assertEquals(request.get("deploymentId"), deployment.get("id"));
+    assertEquals("repo-req-detail", deployment.get("applicationName"));
+  }
+
+  @Test
+  public void anIdNothingWroteIsA404() {
+    given()
+        .when()
+        .get("/platform-deployments/api/deployment-requests/no-such-request")
+        .then()
+        .statusCode(404);
+  }
+
+  @Test
+  public void aProjectListingCarriesEveryPendingRequestAndCapsTheSettledOnesAtTen() {
+    // What a project screen is for: what is happening now, and what happened last. The pending half
+    // is complete — a release the platform has not finished with must never be the one the cap
+    // dropped — and the settled half is the ten newest, capped HERE rather than by a client that
+    // would download a year of history to throw it away.
+    String environmentId = createEnvironment("req-project");
+    String projectId = "project-req-cap";
+    for (int n = 1; n <= 12; n++) {
+      release("repo-req-cap", "2026.903." + (100 + n), environmentId, projectId, n);
+    }
+    // One held release, and it is held on the git host rather than in the gate: SPEC_UNREADABLE is
+    // the one terminal-looking word that is not terminal, so the deployer is still working on it.
+    // The repository has to be registered already — an unreadable spec records failures only where
+    // the catalogue already knows the application — which the twelve above have seen to.
+    specs.scriptRetryableFailure("repo-req-cap", "the git host answered 403");
+    release("repo-req-cap", "2026.903.113", environmentId, projectId, 13);
+
+    List<Map<String, Object>> answer = requestsOfProject(projectId);
+    assertEquals(11, answer.size(), "every pending one, and ten settled");
+    assertEquals(
+        "2026.903.113",
+        answer.get(0).get("version"),
+        "seq desc across the whole answer: the held release is the newest thing asked for");
+    assertEquals("SPEC_UNREADABLE", answer.get(0).get("deploymentStatus"));
+    assertEquals(
+        List.of(
+            "2026.903.112",
+            "2026.903.111",
+            "2026.903.110",
+            "2026.903.109",
+            "2026.903.108",
+            "2026.903.107",
+            "2026.903.106",
+            "2026.903.105",
+            "2026.903.104",
+            "2026.903.103"),
+        answer.stream().skip(1).map(r -> r.get("version")).toList(),
+        "the ten NEWEST settled ones, and the two oldest are the ones dropped");
+
+    // Let the held release go, and it is a requirement of the suite rather than tidiness — the same
+    // one PdSpecRetryTest states: the held set lives on the application-scoped DeployService, so a
+    // release abandoned here would deploy into the NEXT class's tier the moment `specs.reset()`
+    // takes its scripted failure away. The exit taken here is the ordinary one, supersession by a
+    // newer version, which needs nothing but this class's own door.
+    specs.recover("repo-req-cap");
+    release("repo-req-cap", "2026.903.114", environmentId, projectId, 14);
+  }
+
+  @Test
+  public void aProjectNothingWasReleasedForIsAnEmptyListRatherThanA404() {
+    // The asymmetry with the tier filter, and it is the honest one: a tier is this component's own
+    // row and a missing one is a real answer, while a project is qits-projects' row and this
+    // component holds none. "No request here carries that project" is all this surface can say.
+    assertEquals(
+        List.of(),
+        requestsOfProject("project-nothing-was-ever-released-for"),
+        "an empty list, not a claim about a catalogue this service does not read");
+  }
+
+  @Test
+  public void aReleaseIsFoundByTheRepositoryAndVersionItWasCutFrom() {
+    // The edge followed the other way: qits-projects holds a released version and a repository and
+    // asks what this platform did with it. The pair is (repoId, version) because that is what the
+    // far side has — the application name may be the repository's or the spec's `application:`
+    // override, and only this table knows which.
+    String environmentId = createEnvironment("req-release");
+    release("repo-req-release", V_A, environmentId, 1);
+    release("repo-req-release", V_B, environmentId, 2);
+
+    Map<String, Object> found = onlyByRelease("repo-req-release", V_B);
+    assertEquals(V_B, found.get("version"));
+    assertEquals("repo-req-release", found.get("applicationName"));
+    assertEquals(
+        List.of(),
+        byRelease("repo-req-release", "2026.903.99"),
+        "a version nothing was asked for here is empty — a library releases and deploys nothing");
+  }
+
+  @Test
+  public void halfOfTheRepositoryVersionPairIsA400() {
+    // A lone repoId would silently answer with a repository's whole history and a lone version with
+    // every repository's, so neither is a filter this surface accepts.
+    given()
+        .when()
+        .get("/platform-deployments/api/deployment-requests?repoId=repo-req-half")
+        .then()
+        .statusCode(400);
+    given()
+        .when()
+        .get("/platform-deployments/api/deployment-requests?version=" + V_A)
+        .then()
+        .statusCode(400);
+  }
+
   private Map<String, Object> onlyRequestOf(String environmentId, String applicationName) {
     List<Map<String, Object>> mine =
         requests(environmentId, null).stream()
@@ -162,6 +338,39 @@ public class PdDeploymentRequestApiTest {
         .extract()
         .jsonPath()
         .getList("deploymentRequests");
+  }
+
+  /** One project's answer: every pending request, and the ten newest settled ones. */
+  private List<Map<String, Object>> requestsOfProject(String projectId) {
+    return given()
+        .when()
+        .get("/platform-deployments/api/deployment-requests?projectId=" + projectId)
+        .then()
+        .statusCode(200)
+        .extract()
+        .jsonPath()
+        .getList("deploymentRequests");
+  }
+
+  private List<Map<String, Object>> byRelease(String repoId, String version) {
+    return given()
+        .when()
+        .get(
+            "/platform-deployments/api/deployment-requests?repoId="
+                + repoId
+                + "&version="
+                + version)
+        .then()
+        .statusCode(200)
+        .extract()
+        .jsonPath()
+        .getList("deploymentRequests");
+  }
+
+  private Map<String, Object> onlyByRelease(String repoId, String version) {
+    List<Map<String, Object>> found = byRelease(repoId, version);
+    assertEquals(1, found.size(), "requests for " + repoId + "@" + version);
+    return found.get(0);
   }
 
   private List<Map<String, Object>> deployments(String environmentId) {
@@ -190,9 +399,28 @@ public class PdDeploymentRequestApiTest {
 
   /** One release, awaited to a settled deployment — the request is written before it. */
   private void release(String repoId, String version, String environmentId, int expected) {
+    release(repoId, version, environmentId, null, expected);
+  }
+
+  /**
+   * The same, announcing the project the repository belongs to.
+   *
+   * <p>The project travels beside the repository as identity enrichment and is a key to nothing in
+   * the deploy path — {@code repoName} is deliberately left out, so the spec read stays
+   * id-addressed exactly as it is without it.
+   */
+  private void release(
+      String repoId, String version, String environmentId, String projectId, int expected) {
+    Map<String, Object> body = new java.util.HashMap<>();
+    body.put("runId", "run-req");
+    body.put("repoId", repoId);
+    body.put("version", version);
+    if (projectId != null) {
+      body.put("projectId", projectId);
+    }
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("runId", "run-req", "repoId", repoId, "version", version))
+        .body(body)
         .when()
         .post("/platform-deployments/api/events/software-released")
         .then()

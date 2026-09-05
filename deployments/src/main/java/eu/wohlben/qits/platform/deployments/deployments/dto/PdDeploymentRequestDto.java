@@ -1,5 +1,6 @@
 package eu.wohlben.qits.platform.deployments.deployments.dto;
 
+import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdQualityGate;
 import java.time.Instant;
 
@@ -27,6 +28,14 @@ import java.time.Instant;
  * <p>{@code gateSettledAt} is null while nothing has answered. Today's placeholder answers in the
  * same transaction that writes the row, so it is always set; the field exists because the first
  * real gate is the one that will leave it null for a while.
+ *
+ * <p><b>{@code deploymentStatus} is the one field here that is not this row's own</b> — it is
+ * joined from the deployment {@code deploymentId} names, and it is on the request because the
+ * question a reader asks of a request spans both rows: "is the platform still doing something about
+ * this release" is answered by the gate and by the container together, and neither alone. Carrying
+ * it means a client folding a listing into two sections makes no second request, and it is why the
+ * listings batch-load rather than fetch per row. Null means there is no deployment to have a status:
+ * a refusal queued nothing, and a teardown may since have forgotten the row a request points at.
  */
 public record PdDeploymentRequestDto(
     String id,
@@ -40,4 +49,5 @@ public record PdDeploymentRequestDto(
     String gateDetail,
     String deploymentId,
     Instant createdAt,
-    Instant gateSettledAt) {}
+    Instant gateSettledAt,
+    PdDeploymentStatus deploymentStatus) {}
