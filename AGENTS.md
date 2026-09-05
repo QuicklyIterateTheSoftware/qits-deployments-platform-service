@@ -1217,6 +1217,13 @@ the tick off). It is a plain daemon thread — `pd-owed-release-sweep`, the obse
 ordering story is "one worker, in queue order". Nothing is done on that thread but the reading and
 the guards; every announcement lands on the deploy worker.
 
+**Its observer runs at `APPLICATION + 600`, and that is a correctness requirement.** CDI runs
+observers in ascending priority, and `DeployService.onStart` — default priority — runs
+`sweepInFlight()` synchronously: it reads every `QUEUED`/`STARTING` row and settles each as
+interrupted by the previous shutdown. A re-drive queues rows of exactly those statuses. Started
+first, this sweep could put a fresh `QUEUED` row in front of that read and have the predecessor's
+cleanup settle a deployment that is beginning rather than one that was interrupted.
+
 **No story or `@QuarkusTest` runs the ticker** — `onStart` returns early in `LaunchMode.TEST`, the
 observer's arrangement — and `PdOwedReleaseTest` drives `sweep()` directly, staging a dead process by
 writing its row rather than by killing a JVM. `PdSchemaTest` holds the storage half: one obligation

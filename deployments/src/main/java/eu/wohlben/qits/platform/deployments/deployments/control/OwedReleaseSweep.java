@@ -5,10 +5,12 @@ import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeployment
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.Priority;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import jakarta.interceptor.Interceptor;
 import java.time.Duration;
 import java.util.List;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -87,13 +89,22 @@ public class OwedReleaseSweep {
    * The boot pass and the tick, on one thread — the first iteration runs immediately rather than
    * after a sleep, because a start is exactly when this component is behind.
    *
+   * <p><b>It observes at a LOWER priority than {@link DeployService#onStart}, and that ordering is
+   * a correctness requirement rather than tidiness.</b> That observer runs {@code sweepInFlight()}
+   * synchronously — it reads every {@code QUEUED}/{@code STARTING} row and settles each one as
+   * interrupted by the previous shutdown. A re-drive queues rows of exactly those statuses. Started
+   * first, this sweep could put a fresh {@code QUEUED} row in front of that read and have the
+   * predecessor's cleanup settle a deployment that is beginning rather than one that was
+   * interrupted. CDI runs observers in ascending priority, so a higher number here means this
+   * starts only after that sweep has returned.
+   *
    * <p>Nothing here in test mode, for {@link DeployService#onStart}'s reason: a sweep landing behind
    * a test is the non-determinism a suite must not have, and the suite drives {@link #sweep()}
    * itself. Off its own thread for the reason the eventstream library's startup sweep is: boot must
    * not wait for a postgres that is coming up, and nothing about this application depends on the
    * sweep having finished.
    */
-  void onStart(@Observes StartupEvent event) {
+  void onStart(@Observes @Priority(Interceptor.Priority.APPLICATION + 600) StartupEvent event) {
     if (LaunchMode.current() == LaunchMode.TEST) {
       return;
     }
