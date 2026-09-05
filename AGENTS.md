@@ -1898,10 +1898,11 @@ Four things follow, each load-bearing:
   answers EXDEV and the JDK's fallback refuses a non-empty directory, dying with
   `DirectoryNotEmptyException` seconds in. The `cp` re-materialises it in the layer that is about to
   move it, which is why it has to be in that same `RUN`.
-- **`docker build --network host`, never a custom network.** Buildkit is the builder format the
-  platform targets and it refuses custom networks on a build; the ancestor's `--network qits-net`
-  only worked because an older CLI in the step image fell back to the legacy builder. The maven
-  registry URL is derived from `$QITS_REGISTRY` so no address is stated in the file.
+- **The build runs on the PLATFORM BUILDER, and no `--network` flag exists to argue about.**
+  `build: true` + buildctl replaced `docker: true` + `docker build --network host` (the wrapper's
+  qits-buildkit-plan.md): a RUN executes in the builder's namespace on the platform network, so the
+  maven registry rides in as `$QITS_MAVEN_REGISTRY_URL` — the in-network address every step already
+  carries — and the old host-networking doctrine retired with the host-daemon build.
 
 The pipeline also rewrites `package-lock.json`'s `resolved` **origins** before `npm ci`: npm fetches
 tarballs by the absolute URL in the lockfile and ignores the configured registry, and npm's own
