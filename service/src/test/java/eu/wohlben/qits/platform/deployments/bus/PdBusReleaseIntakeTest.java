@@ -283,6 +283,69 @@ public class PdBusReleaseIntakeTest {
   }
 
   @Test
+  public void aDockerReleaseThatDeclaresNoSpecIsRecordedAndNotDeployed() {
+    // The 2026-09-04 accident, in one case. qits-workspace-oci and qits-workspace-editor-oci
+    // publish workspace BASE images — a docker package, a real release, and nothing to put live.
+    // They were announced here, read no deployments.yml, took DeploymentSpec.DEFAULTS and were
+    // launched as the swarm services dev-workspace and dev-workspace-editor, which sat "still
+    // created after 120s" and failed. A published image is not necessarily a service, and a
+    // repository that declares no file has not asked to be deployed.
+    String environmentId = createEntryTier("bus-nospec");
+    // Keyed by the ref's applicationName, which for a frame carrying no repoName is the storage
+    // id — the same coordinate GitHostSpecSource would address the blob by.
+    specs.scriptNoSpec(STORAGE_UUID);
+
+    subscriber.onFrame(dockerFrame(STORAGE_UUID, "qits", "qits/bus-nospec-app", NEWER));
+    awaitWorkerIdle();
+
+    assertEquals(List.of(), driver.applied(), "nothing was launched");
+    assertEquals(List.of(), driver.pulled(), "and nothing was even pulled");
+
+    // Recorded, though — this is a decision and not a silence. The request row is the shape its
+    // own javadoc describes: a settled gate with no deployment behind it.
+    PdDeploymentRequest request = newestRequest("bus-nospec-app");
+    assertNotNull(request, "the release was recorded");
+    assertEquals(NEWER, request.version);
+    assertEquals(environmentId, request.environmentId, "recorded against the tier it would enter");
+    assertEquals(PdQualityGate.UNMET, request.qualityGate);
+    assertNotNull(request.gateSettledAt, "settled, not left open");
+    assertNull(request.deploymentId, "a refused request hands off to nothing");
+    assertTrue(
+        request.gateDetail != null
+            && request.gateDetail.contains(".config/qits/deployments.yml")
+            && request.gateDetail.contains("refs/tags/" + NEWER),
+        "the refusal says what is missing and where it was looked for: " + request.gateDetail);
+
+    // And nothing was registered, which is the other half: registering first is what left
+    // `workspace` and `workspace-editor` in the catalogue with no deployment that ever worked.
+    List<String> services =
+        given()
+            .when()
+            .get("/platform-deployments/api/services")
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getList("services.name");
+    assertFalse(services.contains("bus-nospec-app"), "a base image is not a service: " + services);
+  }
+
+  @Test
+  public void theManualDoorStillDeploysARepositoryThatDeclaresNoSpec() {
+    // The other arm of the same rule, and the reason it is a door split rather than a global
+    // refusal: this door is an operator or a bootstrap naming a version on purpose — including a
+    // rollback to a tag cut before deployments.yml existed anywhere — and refusing that would be
+    // refusing the choice. Same fake, same missing file, opposite answer.
+    createEntryTier("bus-nospec-manual");
+    specs.scriptNoSpec(STORAGE_UUID);
+
+    postRelease("bus-nospec-manual-app", NEWER);
+
+    awaitApplied(1);
+    assertEquals("bus-nospec-manual-app", driver.applied().get(0).applicationName());
+  }
+
+  @Test
   public void aReleaseNamingNoApplicationIsSwallowedToo() {
     // Same reasoning, one step later: the payload parses but its package names nothing this
     // component could deploy. Announcing it would only reach the identifier validation and be

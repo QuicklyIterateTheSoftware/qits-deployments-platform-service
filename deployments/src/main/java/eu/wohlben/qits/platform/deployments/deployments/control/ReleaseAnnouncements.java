@@ -56,6 +56,29 @@ import java.util.UUID;
 public interface ReleaseAnnouncements {
 
   /**
+   * Which door an announcement came through — and the <b>one</b> thing that differs between them.
+   *
+   * <p>The paragraph above says neither door wins and nothing downstream can tell them apart. That
+   * is still the rule for everything that decides HOW a release is deployed; this enum is the one
+   * exception, and it is about WHETHER.
+   *
+   * <p>A {@code SoftwareRelease} is published for every docker package qits-ci pushes, service or
+   * not, and nobody chose it: a workspace base image announces itself exactly as qits-ci does. So
+   * on that door a repository that declares no {@code deployments.yml} at the released tag is
+   * recorded and not deployed — it never asked to be. The manual door is somebody naming an
+   * application and a version on purpose, including a rollback to a tag cut before the file
+   * existed, and refusing that would be refusing the choice. See {@code DeployService}.
+   */
+  enum Door {
+
+    /** {@code bus/PdSoftwareReleaseSubscriber}: every published image, chosen by nobody. */
+    RELEASE_EVENT,
+
+    /** {@code POST /events/software-released}: an operator or a bootstrap, naming this version. */
+    MANUAL
+  }
+
+  /**
    * One released version of one application. Returns as soon as the release is accepted: the
    * deployment runs on this component's own worker, and the announcer — a fire-and-forget POST or a
    * bus subscriber — has nothing to do with the outcome. A bus subscriber in particular must return
@@ -80,6 +103,8 @@ public interface ReleaseAnnouncements {
    *     produces. Null is a rootless announcement — a bootstrap's hand-made POST — and never a
    *     reason to refuse one: causation is advisory and a deployment must not fail over a column
    *     only the trace graph reads.
+   * @param door which intake this came through, and the only thing the two doors do not share —
+   *     see {@link Door}
    * @throws eu.wohlben.qits.platform.deployments.environments.error.BadRequestException if any of
    *     the identifiers could escape an argv or overrun its column
    */
@@ -89,5 +114,21 @@ public interface ReleaseAnnouncements {
       String applicationName,
       String version,
       String packageName,
-      UUID causationId);
+      UUID causationId,
+      Door door);
+
+  /**
+   * The same announcement from the manual door. It is the default because that door is the one
+   * whose behaviour did not change: everything that called this seam before {@link Door} existed
+   * was an operator or a bootstrap naming a version, and this overload is what they keep meaning.
+   */
+  default void announce(
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String version,
+      String packageName,
+      UUID causationId) {
+    announce(runId, repository, applicationName, version, packageName, causationId, Door.MANUAL);
+  }
 }

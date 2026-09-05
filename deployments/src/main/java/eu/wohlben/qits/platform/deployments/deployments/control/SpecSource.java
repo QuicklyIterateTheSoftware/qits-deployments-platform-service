@@ -46,7 +46,10 @@ public interface SpecSource {
    * #tagRev}. The startup sweep's one legacy path passes a sha, because that is what the row it is
    * adopting recorded.
    *
-   * @return {@link DeploymentSpec#DEFAULTS} when the repository carries no such file at that rev
+   * @return the file's contents, or {@link SpecRead#undeclared()} — {@link DeploymentSpec#DEFAULTS}
+   *     with {@link SpecRead#declared()} false — when the repository carries no such file at that
+   *     rev. The two are a different answer and the caller may treat them differently; see {@link
+   *     SpecRead#declared()}.
    * @throws SpecException when the file exists but could not be fetched or understood — the
    *     deployment fails on it rather than guessing a topology
    */
@@ -65,8 +68,45 @@ public interface SpecSource {
    * 404 case: a repository that carries no {@code deployments.yml} gets the defaults and no commit,
    * because a missing blob says nothing about where a tag points. It is a real answer, and {@code
    * pd_deployment.commit_sha} is nullable for it.
+   *
+   * <p><b>{@code declared} separates "the file says nothing" from "there is no file"</b>, which
+   * used to be one answer because for years they meant the same thing — see {@link #declared()}.
    */
-  record SpecRead(DeploymentSpec spec, String commitSha) {}
+  record SpecRead(DeploymentSpec spec, String commitSha, boolean declared) {
+
+    /** The ordinary answer: the repository carries the file, and this is what it says. */
+    public SpecRead(DeploymentSpec spec, String commitSha) {
+      this(spec, commitSha, true);
+    }
+
+    /**
+     * Whether the repository carries {@link #SPEC_PATH} at that rev at all.
+     *
+     * <p><b>{@code spec} is {@link DeploymentSpec#DEFAULTS} either way, and that is exactly why
+     * this flag exists.</b> A file present and empty and a file absent produce the identical spec,
+     * so for as long as the only announcements this component heard were green builds of services
+     * the platform already deployed, the two were the same statement: "deploy it the conventional
+     * way". The release door ended that. It hears one event per published DOCKER PACKAGE, and a
+     * repository can publish an image that is not a service at all — a workspace base image, a
+     * build image — which the defaults then launch as a swarm service that can never come up. So
+     * the intake asks the question the old door never had to: did the repository ASK to be
+     * deployed? See {@code DeployService.deployReadSpec}.
+     *
+     * <p>It says nothing about whether a deployment should happen; it reports what the git host
+     * answered. Every policy built on it lives at the caller, and there is exactly one today.
+     */
+    public boolean declared() {
+      return declared;
+    }
+
+    /**
+     * The 404 arm: no file at that rev, so the defaults, no commit, and nothing declared. A factory
+     * rather than a literal so the three values are stated once, where the reasoning is.
+     */
+    public static SpecRead undeclared() {
+      return new SpecRead(DeploymentSpec.DEFAULTS, null, false);
+    }
+  }
 
   /**
    * What a repository declares about how it is deployed. Every key optional, and the shape a

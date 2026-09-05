@@ -32,6 +32,16 @@ import org.jboss.logging.Logger;
  * false to everything else and those events are stored nowhere at all. That is what keeps the claim
  * ledger proportional to the deployments rather than to the release log.
  *
+ * <p><b>A docker image is still not necessarily a service, and this door is where that stopped
+ * being assumed.</b> {@code qits-workspace-oci} and {@code qits-workspace-editor-oci} publish
+ * workspace BASE images: a docker package, a real release, and nothing to put live. On 2026-09-04
+ * they were announced here, read no {@code deployments.yml}, took {@code DeploymentSpec.DEFAULTS}
+ * and were launched as the swarm services {@code dev-workspace} and {@code dev-workspace-editor},
+ * which sat created and failed the health gate at 120s. So this door announces with {@link
+ * eu.wohlben.qits.platform.deployments.deployments.control.ReleaseAnnouncements.Door#RELEASE_EVENT}
+ * and a release whose tag carries no spec is recorded and not deployed. Nothing about the selection
+ * changed: the event is still consumed, still claimed, still says what happened.
+ *
  * <p><b>The application name comes out of {@code packageName}, not out of the repository.</b> A
  * {@code SoftwareRelease} carries {@code repoId}, {@code repository} (the same string under the
  * platform's newer name for it), an optional {@code projectId} and, since 2026-09-04, an optional
@@ -232,7 +242,12 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
           applicationName,
           release.version(),
           release.packageName(),
-          causeOf(frame));
+          causeOf(frame),
+          // The one thing the two doors do not share. This door hears every docker package qits-ci
+          // publishes, chosen by nobody, so a repository that declares no deployments.yml at the
+          // released tag is recorded and not deployed — it published an image and never asked to
+          // be a service. The manual door keeps the defaults; see ReleaseAnnouncements.Door.
+          ReleaseAnnouncements.Door.RELEASE_EVENT);
     } catch (BadRequestException e) {
       // An identifier this component refuses — a version that could escape an argv, an application
       // name that could escape the image path, a repository id that could escape the blob URL.
