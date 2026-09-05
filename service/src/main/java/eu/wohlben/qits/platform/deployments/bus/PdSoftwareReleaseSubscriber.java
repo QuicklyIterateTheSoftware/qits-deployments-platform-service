@@ -74,6 +74,19 @@ import org.jboss.logging.Logger;
  * catch-up row take one funnel, the claim and this handler commit together, and a duplicate arrival
  * finds the claim and is dropped. So nothing here counts, deduplicates or remembers an event id.
  *
+ * <p>Not given, and this is the one that cost seven releases: <b>anything about what this handler
+ * DOES with the event.</b> The claim commits when {@link #onFrame} returns, and it returns as soon
+ * as the release is a {@code Runnable} on {@code pd-deploy-worker} — an in-memory queue that is
+ * serialized platform-wide, is legitimately an hour deep, and is thrown away by {@code
+ * @PreDestroy}. On 2026-09-05 this component cut itself over repeatedly between 13:00 and 17:15 UTC
+ * and every release sitting in that queue was dropped while the bus's ledger said, correctly, that
+ * the event had been handled; the successor's catch-up found the claim and skipped it. Four
+ * releases were replayed by hand and three were rescued only because a later release folded their
+ * tags. So this door announces through {@link ReleaseAnnouncements#announceDurably}, which writes
+ * the acceptance down before it queues anything and settles it when the worker is finished — see
+ * {@code ReleaseAcceptance} and {@code OwedReleaseSweep}. <b>The bus's durability ends at this
+ * method; that ledger is what carries it the rest of the way.</b>
+ *
  * <p>Not given: order. Catch-up delivers late, so a <b>different, older</b> release can arrive after
  * a newer one is already live — which for this consumer is the difference between a deployment and
  * a rollback nobody asked for. {@link ReleaseTips} is the collapse, and it is mandatory rather than
@@ -232,8 +245,27 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
           frame.name(), frame.id(), applicationName, release.version());
       return;
     }
+    if (isBlank(frame.id())) {
+      // Unreachable through the library — DurableFunnel refuses a frame with no id before it ever
+      // reaches a listener, because there is nothing to key a claim on. Belt, because the durable
+      // door keys its obligation on the same value and a null there would fail the insert and
+      // leave the event owed forever over a frame nothing can identify.
+      LOG.warnf("%s carries no id, so it cannot be accepted durably; it is skipped", frame.name());
+      return;
+    }
     try {
-      announcements.announce(
+      // announceDurably, not announce, and the difference is the whole of this door's durability
+      // below the bus. The library's claim commits when this method returns — and `announce`
+      // returns as soon as the release is a runnable on an in-memory queue that is legitimately an
+      // hour deep and is thrown away at shutdown. The durable door writes the acceptance down
+      // first, so a cutover that drops the queue leaves an obligation the successor re-drives
+      // instead of a claim that says the event was handled. It implies RELEASE_EVENT, which is the
+      // one thing the two doors do not share: this door hears every docker package qits-ci
+      // publishes, chosen by nobody, so a repository that declares no deployments.yml at the
+      // released tag is recorded and not deployed — it published an image and never asked to be a
+      // service. The manual door keeps the defaults; see ReleaseAnnouncements.Door.
+      announcements.announceDurably(
+          frame.id(),
           null,
           // Both coordinates, and the ref picks. A release that carries (projectId, repoName) is
           // read through the public /git/<projectId>/<repoName>; one that carries either half or
@@ -244,12 +276,7 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
           applicationName,
           release.version(),
           release.packageName(),
-          causeOf(frame),
-          // The one thing the two doors do not share. This door hears every docker package qits-ci
-          // publishes, chosen by nobody, so a repository that declares no deployments.yml at the
-          // released tag is recorded and not deployed — it published an image and never asked to
-          // be a service. The manual door keeps the defaults; see ReleaseAnnouncements.Door.
-          ReleaseAnnouncements.Door.RELEASE_EVENT);
+          causeOf(frame));
     } catch (BadRequestException e) {
       // An identifier this component refuses — a version that could escape an argv, an application
       // name that could escape the image path, a repository id that could escape the blob URL.

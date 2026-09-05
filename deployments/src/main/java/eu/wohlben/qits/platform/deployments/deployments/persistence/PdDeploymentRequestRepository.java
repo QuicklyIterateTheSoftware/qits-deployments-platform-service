@@ -91,6 +91,23 @@ public class PdDeploymentRequestRepository
    * deployment rows alone would let a stale catch-up replay a version whose newer sibling never got
    * as far as a container.
    */
+  /**
+   * Whether this exact version of this application has already been asked for anywhere.
+   *
+   * <p><b>The idempotence guard of the acceptance ledger's re-drive</b> ({@code OwedReleaseSweep}):
+   * an obligation whose request row already exists was met by the process that died holding it, and
+   * announcing it again would mint a second request and a second deployment of one version. It is
+   * asked of the requests rather than of the deployments for {@link #newestVersionOf}'s reason — a
+   * request is written the moment a release is accepted for a place, so it records "this was done
+   * here" even for a deployment that then failed.
+   *
+   * <p>Environment-blind on purpose: the question is about the release, and a release accepted for
+   * several places wrote a row per place. One is enough to know it was not lost.
+   */
+  public boolean existsFor(String applicationName, String version) {
+    return count("applicationName = ?1 and version = ?2", applicationName, version) > 0;
+  }
+
   public Optional<String> newestVersionOf(String applicationName) {
     return find("applicationName = ?1 order by seq desc", applicationName)
         .firstResultOptional()

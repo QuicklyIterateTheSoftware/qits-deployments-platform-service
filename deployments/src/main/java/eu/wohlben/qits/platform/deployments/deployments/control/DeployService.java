@@ -196,6 +196,12 @@ public class DeployService implements ReleaseAnnouncements {
   @Inject DeploymentObserver observer;
 
   /**
+   * The acceptance ledger the durable door writes through — see {@link #announceDurably}. Nothing
+   * on the manual path touches it.
+   */
+  @Inject ReleaseAcceptance acceptance;
+
+  /**
    * Where this component's own events leave it ({@link DeployAnnouncer}). An {@code Instance}
    * because zero implementations is a supported configuration: a build without the bus deploys
    * exactly as before and says nothing to anybody.
@@ -916,18 +922,98 @@ public class DeployService implements ReleaseAnnouncements {
     RepositoryRef repo = repository.validated();
     String released = DeploymentIdentifiers.requireApplicationName(applicationName);
     DeploymentIdentifiers.requireVersion(version);
+    submit(null, runId, repo, released, version, packageName, causationId, door);
+  }
+
+  /**
+   * The durable door — see {@link ReleaseAnnouncements#announceDurably} for the whole argument.
+   *
+   * <p><b>The order of the three steps here is the guarantee.</b> The identifiers are validated
+   * first, so a release this component refuses never becomes owed work and the refusal reaches the
+   * caller as it always did. The obligation is written second, in a transaction of its own that
+   * commits before anything is queued. Only then is the release handed to the worker.
+   *
+   * <p><b>The obligation cannot commit with the bus's claim and does not try.</b> {@code
+   * consumed_event} is in the {@code eventstream} database and this row is in {@code
+   * platformdeployments}; both datasources are non-XA and Narayana refuses two of them in one
+   * transaction — the note {@link ReleaseTips} already carries for its floor read. So the ORDER is
+   * what is chosen: obligation first. What that leaves is a duplicate (obligation written, claim
+   * rolled back, event offered again) and never a loss, and a duplicate is what {@code
+   * OwedReleaseSweep}'s guards collapse to a no-op.
+   */
+  @Override
+  public void announceDurably(
+      String eventId,
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String version,
+      String packageName,
+      UUID causationId) {
+    DeploymentIdentifiers.requireRunId(runId);
+    RepositoryRef repo = repository.validated();
+    String released = DeploymentIdentifiers.requireApplicationName(applicationName);
+    DeploymentIdentifiers.requireVersion(version);
+    String owedId =
+        acceptance.accept(
+            new ReleaseAcceptance.Accepted(
+                eventId, runId, repo, released, version, packageName, causationId));
+    submit(owedId, runId, repo, released, version, packageName, causationId, Door.RELEASE_EVENT);
+  }
+
+  /**
+   * Hand one validated release to the worker, and — when it came through the durable door — settle
+   * its obligation with whatever the worker made of it.
+   *
+   * <p><b>Three outcomes, and the two that are not a discharge are the point.</b> A {@code deploy}
+   * that returns having HELD the release on an unreadable spec has not finished with it: the hold
+   * lives in a map that dies with this JVM, so the obligation stays owed and the next process
+   * re-drives it. A {@code deploy} that threw has not finished with it either, and hands the row
+   * back to nobody — so <em>this</em> process's next sweep retries it, without waiting for a
+   * restart. Everything else is a discharge: the spec was read, the request row was written, the
+   * container was cut over, or the release was recorded and refused. All of those are decisions,
+   * and a decision is not owed work.
+   */
+  private void submit(
+      String owedId,
+      String runId,
+      RepositoryRef repo,
+      String released,
+      String version,
+      String packageName,
+      UUID causationId,
+      Door door) {
     worker.submit(
         () -> {
           try {
             deploy(runId, repo, released, version, packageName, causationId, door);
+            if (owedId != null && !isHeldOnSpec(released)) {
+              acceptance.settle(owedId, ReleaseAcceptance.Outcome.DISCHARGED, null);
+            }
           } catch (RuntimeException e) {
             LOG.errorf(
                 e,
                 "The software-release event for %s@%s could not be handled",
                 released,
                 version);
+            if (owedId != null) {
+              acceptance.release(owedId, "[" + e + "]");
+            }
           }
         });
+  }
+
+  /**
+   * Whether this application's release is being held for a spec read that may yet answer — the one
+   * state {@link #deploy} can return in without having finished.
+   *
+   * <p>Read off the map rather than returned from {@code deploy}, because both readers run on the
+   * same single worker thread: {@link #deploy} clears any prior entry for the name before it does
+   * anything and {@link #retrySpecReads()} runs between events, so nothing can put an entry there
+   * between the two lines that ask.
+   */
+  private boolean isHeldOnSpec(String releasedName) {
+    return specRetries.containsKey(releasedName);
   }
 
   /**

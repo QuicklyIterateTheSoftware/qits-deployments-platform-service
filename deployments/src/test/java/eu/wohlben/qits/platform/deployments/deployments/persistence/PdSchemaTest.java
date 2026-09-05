@@ -332,6 +332,72 @@ public class PdSchemaTest {
   }
 
   /** A freshly created, freshly migrated database — one per test, so no test inherits rows. */
+  @Test
+  public void anAcceptedReleaseIsUniqueOnItsEventAndTheOwedQueryReadsOnlyTheUnsettledRows()
+      throws Exception {
+    // V10, the acceptance ledger. Two claims, and both are the storage half of a guarantee the
+    // code makes above it.
+    try (Connection connection = migrated();
+        Statement sql = connection.createStatement()) {
+      owedRelease(sql, "o-1", "ev-1", "qits-ci", "2026.903.93059", "a-dead-process");
+
+      // ONE OBLIGATION PER EVENT. A re-drive re-takes the same row rather than opening a second
+      // one, and the unique index is what makes that true even if two processes accept at once —
+      // which is exactly the shape a duplicate delivery leaves when the bus's claim rolled back
+      // after this row was already written.
+      assertThrows(
+          SQLException.class,
+          () -> owedRelease(sql, "o-2", "ev-1", "qits-ci", "2026.903.93059", "another-process"),
+          "a second obligation for one event is refused by the database");
+
+      // SETTLED IS TERMINAL, and the sweep's query says so rather than trusting a status word.
+      // Without this a discharged obligation would be re-driven on every tick forever.
+      owedRelease(sql, "o-3", "ev-2", "qits-docs", "2026.903.193059", "a-dead-process");
+      sql.execute(
+          "update pd_owed_release set settled_at = now(), outcome = 'DISCHARGED' where id = 'o-3'");
+      assertEquals(
+          List.of("o-1"),
+          rows(
+              sql,
+              "select id from pd_owed_release where settled_at is null"
+                  + " and (accepted_by is null or accepted_by <> 'me') order by seq"),
+          "only the unsettled obligation of a process that is not me is owed work");
+
+      // AND A ROW THIS PROCESS HOLDS IS NOT OWED WORK, however long it sits there: it is on the
+      // deploy queue, which is serialized platform-wide and legitimately an hour deep.
+      sql.execute("update pd_owed_release set accepted_by = 'me' where id = 'o-1'");
+      assertEquals(
+          List.of(),
+          rows(
+              sql,
+              "select id from pd_owed_release where settled_at is null"
+                  + " and (accepted_by is null or accepted_by <> 'me') order by seq"));
+    }
+  }
+
+  private static void owedRelease(
+      Statement sql,
+      String id,
+      String eventId,
+      String applicationName,
+      String version,
+      String acceptedBy)
+      throws SQLException {
+    sql.execute(
+        "insert into pd_owed_release (id, event_id, application_name, version, accepted_by,"
+            + " accepted_at, attempts) values ('"
+            + id
+            + "', '"
+            + eventId
+            + "', '"
+            + applicationName
+            + "', '"
+            + version
+            + "', '"
+            + acceptedBy
+            + "', now(), 1)");
+  }
+
   private static Connection migrated() throws Exception {
     String url = EmbeddedPg.url("pd_deployments_" + UUID.randomUUID().toString().replace("-", ""));
     migrate(url, null);

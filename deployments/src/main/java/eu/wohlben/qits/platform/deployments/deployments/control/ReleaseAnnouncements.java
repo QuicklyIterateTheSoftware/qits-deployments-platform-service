@@ -131,4 +131,55 @@ public interface ReleaseAnnouncements {
       UUID causationId) {
     announce(runId, repository, applicationName, version, packageName, causationId, Door.MANUAL);
   }
+
+  /**
+   * The {@link Door#RELEASE_EVENT} announcement, <b>recorded as an obligation before anything is
+   * queued</b> and discharged only once the worker has finished with it. What the bus door calls,
+   * and what {@code OwedReleaseSweep} calls again for a release an earlier process never deployed.
+   *
+   * <h2>The gap it closes, which the event bus cannot close for itself</h2>
+   *
+   * <p>qits-eventstream is durable up to the point where the handler returns: a {@code
+   * SoftwareRelease} broadcast while this component is down is read back out of the log by the
+   * catch-up sweep and claimed in {@code consumed_event} in the same transaction as the handler.
+   * And {@link #announce} returns as soon as the release is a {@code Runnable} on the in-memory
+   * {@code pd-deploy-worker} queue. That queue is serialized platform-wide so it is legitimately an
+   * hour deep, and {@code @PreDestroy} calls {@code shutdownNow()} on it.
+   *
+   * <p>So a cutover of this component — which it performs on itself, {@code stop-first} — dropped
+   * every release in that queue while the bus's ledger said, correctly, that the event had been
+   * handled: the successor's sweep found the claim and skipped the event, and no deployment request
+   * was ever written. Seven applications' releases went that way on 2026-09-05 between 13:00 and
+   * 17:15 UTC. {@code ReleaseAcceptance} is the ledger that survives that, and {@code
+   * OwedReleaseSweep} is what reads it back.
+   *
+   * <h2>Why the durable door is a second method rather than the default</h2>
+   *
+   * <p>Because {@link Door#MANUAL} does not want it. That door is an operator naming a version on
+   * purpose, including the deliberate choice to go back one, and an obligation ledger that
+   * re-announced a rollback after a restart would be re-answering a question a person already
+   * answered — and would then have it refused by the monotonic collapse for good measure. The bus is
+   * the opposite: nobody is standing there, the sender is a log that has already recorded the event
+   * as consumed, and a release that is not deployed is a defect. The two doors differ in exactly one
+   * more thing than {@link Door} says, and this is it.
+   *
+   * <p><b>It implies {@link Door#RELEASE_EVENT} rather than taking a door</b>, for the same reason:
+   * the obligation and the door are one decision, not two that a caller could combine wrongly.
+   *
+   * @param eventId the {@code SoftwareRelease} frame this announces — the obligation's natural key,
+   *     so a re-drive re-takes the same row rather than opening a second one. Never null: a durable
+   *     announcement that could not be de-duplicated across restarts is not one, and the door with
+   *     no event id is {@link #announce}.
+   * @throws eu.wohlben.qits.platform.deployments.environments.error.BadRequestException if any of
+   *     the identifiers could escape an argv or overrun its column — checked <b>before</b> the
+   *     obligation is written, so a release this component refuses never becomes owed work
+   */
+  void announceDurably(
+      String eventId,
+      String runId,
+      RepositoryRef repository,
+      String applicationName,
+      String version,
+      String packageName,
+      UUID causationId);
 }
