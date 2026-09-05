@@ -36,6 +36,13 @@ components:
           deprecated: true
           items:
             $ref: "#/components/schemas/ApplicationSpec"
+    DeploymentRequestResponse:
+      type: object
+      properties:
+        deploymentRequest:
+          $ref: "#/components/schemas/PdDeploymentRequestDto"
+        deployment:
+          $ref: "#/components/schemas/PdDeploymentDto"
     EnvironmentResponse:
       type: object
       properties:
@@ -170,6 +177,8 @@ components:
           $ref: "#/components/schemas/Instant"
         gateSettledAt:
           $ref: "#/components/schemas/Instant"
+        deploymentStatus:
+          $ref: "#/components/schemas/PdDeploymentStatus"
     PdDeploymentStatus:
       type: string
       enum:
@@ -372,13 +381,26 @@ paths:
         - qits-platform:admin
   /platform-deployments/api/deployment-requests:
     get:
-      summary: "One environment's deployment requests, newest-first — the gate's record"
+      summary: "Deployment requests, newest-first — by environment, by project, or\
+        \ by (repository, version)"
       parameters:
       - name: applicationName
         in: query
         schema:
           type: string
       - name: environmentId
+        in: query
+        schema:
+          type: string
+      - name: projectId
+        in: query
+        schema:
+          type: string
+      - name: repoId
+        in: query
+        schema:
+          type: string
+      - name: version
         in: query
         schema:
           type: string
@@ -390,9 +412,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/ListDeploymentRequestsResponse"
         "400":
-          description: environmentId was not given
+          description: "No filter, or half of the repoId/version pair"
         "404":
           description: No such environment
+        "401":
+          description: Not Authorized
+        "403":
+          description: Not Allowed
+      tags:
+      - Pd Deployment Request Controller
+      security:
+      - SecurityScheme:
+        - qits-platform:admin
+  /platform-deployments/api/deployment-requests/{id}:
+    get:
+      summary: "One deployment request, with the deployment it produced"
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: The request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentRequestResponse"
+        "404":
+          description: No such deployment request
         "401":
           description: Not Authorized
         "403":
@@ -692,4 +741,4 @@ paths:
         - qits-platform:system
 info:
   title: qits-platform-deployments API
-  version: 2026.904.131637
+  version: 2026.904.183030

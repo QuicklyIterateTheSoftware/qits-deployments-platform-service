@@ -1,13 +1,17 @@
 package eu.wohlben.qits.platform.deployments.api;
 
 import eu.wohlben.qits.platform.deployments.deployments.control.DeployService;
+import eu.wohlben.qits.platform.deployments.deployments.control.DeployService.RequestWithDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.control.EnvironmentOperations;
+import eu.wohlben.qits.platform.deployments.deployments.dto.PdDeploymentDto;
 import eu.wohlben.qits.platform.deployments.deployments.dto.PdDeploymentRequestDto;
 import eu.wohlben.qits.platform.deployments.deployments.mapper.DeploymentMapper;
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
+import eu.wohlben.qits.platform.deployments.environments.error.NotFoundException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
@@ -16,8 +20,8 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 
 /**
- * The deployment REQUEST read surface: what a released version asked this platform for, and what the
- * quality gate said about it.
+ * The deployment REQUEST read surface: what a released version asked this platform for, what the
+ * quality gate said about it, and what became of it.
  *
  * <p><b>Why it is not the deployment listing.</b> A request that the gate refused produced no
  * deployment at all — no container, no row, no status word — so it exists nowhere in {@code GET
@@ -26,10 +30,31 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * seen. Today the placeholder gate says yes to everything, which is precisely why the surface goes
  * in now: the readers of a refusal have to exist before the first gate has an opinion.
  *
- * <p><b>The environment is a required filter, the deployment listing's shape verbatim</b> ({@code
- * ?environmentId=}). An unscoped listing would return every request on the instance, and a missing
- * tier answers 404 rather than an empty list. {@code ?applicationName=} narrows it further and is
- * optional — one service's release history in one tier.
+ * <p><b>Three filters, asked in order, and the order is the API.</b> A request is one row reached by
+ * three different questions, and each of them belongs to a different screen:
+ *
+ * <ol>
+ *   <li><b>{@code ?environmentId=}</b> — the tier listing, unchanged. Everything asked for here,
+ *       newest first, optionally narrowed by {@code &applicationName=}. A missing tier is a 404
+ *       rather than an empty list, and the word {@code platform} is not accepted (below).
+ *   <li><b>{@code ?projectId=}</b> — one project's releases: every request still moving, plus the
+ *       ten most recent that are not. The cap is the server's (see {@code
+ *       DeployService.projectDeploymentRequests}).
+ *   <li><b>{@code ?repoId=&version=}</b> — the exact-match join a release page follows the other
+ *       way. <b>Both or neither</b>: half the pair is a 400, because a lone {@code repoId} would
+ *       silently answer with a repository's whole history and a lone {@code version} with every
+ *       repository's.
+ * </ol>
+ *
+ * <p>With none of them, 400 — an unscoped listing would return every request on the instance.
+ *
+ * <p><b>An unknown PROJECT is an empty 200 and a missing TIER is a 404, and the asymmetry is the
+ * honest one.</b> A tier is this component's own row: it either exists here or the caller named
+ * something that does not, and saying so is a real answer. A project is qits-projects' row and this
+ * component holds none — {@code project_id} is a foreign identity stored beside {@code repo_id} and
+ * resolved by nobody — so "no request here carries that project" is all this surface can truthfully
+ * say, and it is exactly what an empty list says. A 404 would be claiming knowledge of a catalogue
+ * this service does not read.
  *
  * <p><b>There is no {@code ?environmentId=platform}.</b> Its sibling accepts that word because a
  * deployment records which plane it is on; a request does not — it is written before the catalogue
@@ -37,6 +62,13 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * deployment does. So the plane's requests come back in that tier's listing, which is where a reader
  * asking "what has been asked for in dev" wants them, and a word this table cannot answer for is not
  * accepted rather than answered emptily.
+ *
+ * <p><b>{@code GET /deployment-requests/{id}} inlines the deployment.</b> The detail screen needs
+ * the request and the row it handed off to, and this component deliberately has no
+ * deployment-by-id endpoint — the deployments listing has always been tier-scoped, and adding a
+ * second door onto {@code pd_deployment} to serve one screen would be a wider surface than the
+ * screen is. So the deployment travels inside this answer, nullable for the refusal that produced
+ * none.
  *
  * <p>Read-only and a person's: {@code qits-platform:admin}, the role qits-gateway forwards, like
  * every other listing the web client polls.
@@ -53,28 +85,85 @@ public class PdDeploymentRequestController {
 
   public record ListDeploymentRequestsResponse(List<PdDeploymentRequestDto> deploymentRequests) {}
 
+  /**
+   * One request and the deployment it produced, in one answer.
+   *
+   * <p>{@code deployment} is null for a request that queued nothing — a refusal, or a row an
+   * environment teardown has since forgotten. It is inlined here rather than fetched from a
+   * deployment-by-id endpoint because there is no such endpoint and minting one to serve this screen
+   * would put a second, unscoped door onto the deployment table.
+   */
+  public record DeploymentRequestResponse(
+      PdDeploymentRequestDto deploymentRequest, PdDeploymentDto deployment) {}
+
   @GET
-  @Operation(summary = "One environment's deployment requests, newest-first — the gate's record")
+  @Operation(
+      summary =
+          "Deployment requests, newest-first — by environment, by project, or by (repository,"
+              + " version)")
   @APIResponse(responseCode = "200", description = "The requests")
-  @APIResponse(responseCode = "400", description = "environmentId was not given")
+  @APIResponse(responseCode = "400", description = "No filter, or half of the repoId/version pair")
   @APIResponse(responseCode = "404", description = "No such environment")
   public ListDeploymentRequestsResponse list(
       @QueryParam("environmentId") String environmentId,
-      @QueryParam("applicationName") String applicationName) {
-    if (environmentId == null || environmentId.isBlank()) {
-      throw new BadRequestException("environmentId is required");
+      @QueryParam("applicationName") String applicationName,
+      @QueryParam("projectId") String projectId,
+      @QueryParam("repoId") String repoId,
+      @QueryParam("version") String version) {
+    if (stated(environmentId)) {
+      // Ordered, and held through a short database outage for the deployment listing's reason: a
+      // lost connection here would turn "which releases were asked for in this tier" into a 404 for
+      // a tier that exists.
+      reads.run("The tier check for " + environmentId, () -> environments.require(environmentId));
+      return listOf(
+          reads.call(
+              "The deployment requests of " + environmentId,
+              () -> deployService.deploymentRequestsFor(environmentId, applicationName)));
     }
-    // Ordered, and held through a short database outage for the deployment listing's reason: a lost
-    // connection here would turn "which releases were asked for in this tier" into a 404 for a tier
-    // that exists.
-    reads.run("The tier check for " + environmentId, () -> environments.require(environmentId));
-    return new ListDeploymentRequestsResponse(
+    if (stated(projectId)) {
+      // No existence check, and none is possible: this component holds no project rows. An
+      // unknown project is an empty list rather than a 404 — see the class javadoc.
+      return listOf(
+          reads.call(
+              "The deployment requests of project " + projectId,
+              () -> deployService.projectDeploymentRequests(projectId)));
+    }
+    if (stated(repoId) || stated(version)) {
+      if (!stated(repoId) || !stated(version)) {
+        throw new BadRequestException(
+            "repoId and version are asked together — a release is a (repository, version) pair");
+      }
+      return listOf(
+          reads.call(
+              "The deployment requests of " + repoId + "@" + version,
+              () -> deployService.deploymentRequestsByRelease(repoId, version)));
+    }
+    throw new BadRequestException(
+        "one of environmentId, projectId or the repoId/version pair is required");
+  }
+
+  @GET
+  @Path("/{id}")
+  @Operation(summary = "One deployment request, with the deployment it produced")
+  @APIResponse(responseCode = "200", description = "The request")
+  @APIResponse(responseCode = "404", description = "No such deployment request")
+  public DeploymentRequestResponse byId(@PathParam("id") String id) {
+    RequestWithDeployment found =
         reads
-            .call(
-                "The deployment requests of " + environmentId,
-                () -> deployService.deploymentRequestsFor(environmentId, applicationName))
-            .stream()
-            .map(mapper::toDto)
-            .toList());
+            .call("The deployment request " + id, () -> deployService.deploymentRequestById(id))
+            .orElseThrow(() -> new NotFoundException("No deployment request " + id));
+    return new DeploymentRequestResponse(
+        mapper.toDto(found.request(), found.deployment()),
+        found.deployment() == null ? null : mapper.toDto(found.deployment()));
+  }
+
+  private ListDeploymentRequestsResponse listOf(List<RequestWithDeployment> rows) {
+    return new ListDeploymentRequestsResponse(
+        rows.stream().map(row -> mapper.toDto(row.request(), row.deployment())).toList());
+  }
+
+  /** A query parameter a caller actually wrote — an empty one is not a filter. */
+  private static boolean stated(String value) {
+    return value != null && !value.isBlank();
   }
 }

@@ -1131,17 +1131,49 @@ rows written before that.)
   in the queueing transaction before a real gate has an opinion, or the first one arrives as a
   migration over live history. Whatever asks a question later answers in that one method — it takes
   the release AND the target, because a real gate is about a (version, place) pair.
-- **It is a read surface too**: `GET /platform-deployments/api/deployment-requests?environmentId=…`
-  (`PdDeploymentRequestController`, `qits-platform:admin`, optional `&applicationName=`), newest
-  first, 400 without the filter and 404 for a tier that does not exist. It is a separate resource
-  from the deployment listing and not a richer answer to it, for the reason the table exists at all:
-  **a refused request queues nothing**, so it has no deployment row to be seen through, and a client
-  reading only the deployments would draw that release as never having happened. Note it takes **no
-  `platform` value** where the deployment listing does — a request records no plane, and a platform
-  service's request names the tier it deploys into, so it comes back in that tier's answer. The
-  deployments frontend polls it beside the deployments and folds each request into its application's
-  row by NAME; `PdDeploymentRequestDto` deliberately derives no `applicationId`, because deriving
-  `platform:` or `<tier>:` from a row with no plane column would be a guess.
+- **It is a read surface too** (`PdDeploymentRequestController`, `qits-platform:admin`, every read
+  wrapped in `PdReadPatience`), and it is a separate resource from the deployment listing rather
+  than a richer answer to it, for the reason the table exists at all: **a refused request queues
+  nothing**, so it has no deployment row to be seen through, and a client reading only the
+  deployments would draw that release as never having happened.
+
+  **Three filters, asked in ORDER, and the order is the API.** A request is one row three different
+  screens reach by three different questions:
+
+  | filter | answer |
+  | --- | --- |
+  | `?environmentId=` (`&applicationName=` optional) | one tier's, newest first — the front page's fold-by-name |
+  | `?projectId=` | one project's: **every pending request plus the ten newest settled**, capped in `DeployService` |
+  | `?repoId=&version=` | the exact-match join a release page follows — **both or neither**, half is a 400 |
+
+  None of them is a 400 too. `GET /deployment-requests/{id}` sits beside the listing and **inlines
+  the deployment**, because there is no deployment-by-id endpoint and minting one to serve a single
+  screen would be a wider surface than the screen is.
+
+  **An unknown PROJECT is an empty 200 where a missing TIER is a 404**, and the asymmetry is the
+  honest one: a tier is this component's own row, a project is qits-projects' and this schema holds
+  none — `project_id` sits beside `repo_id` as a foreign identity resolved by nobody. Say that in
+  the javadoc of anything that adds a filter over a foreign identity.
+
+  Note it takes **no `platform` value** where the deployment listing does — a request records no
+  plane, and a platform service's request names the tier it deploys into, so it comes back in that
+  tier's answer. `PdDeploymentRequestDto` deliberately derives no `applicationId`, because deriving
+  `platform:` or `<tier>:` from a row with no plane column would be a guess; the frontend folds each
+  request into its application's row by NAME.
+- **Every request DTO carries `deploymentStatus`, joined from the row it points at**, on every path
+  including the tier listing. The question a reader asks of a request spans two rows — the gate is
+  on the request, the container is on the deployment — and neither answers it alone. Null is a real
+  answer: a refusal queued nothing, and an environment teardown forgets deployment rows while the
+  requests outlive them by design. **The join is one batch query per listing**
+  (`PdDeploymentRepository.listByIds`), never a fetch per row, and `DeploymentMapper.toDto` takes
+  the deployment as a nullable ARGUMENT so it cannot become one.
+- **`control/RequestLifecycle` is the single spelling of pending-versus-completed**, and it states
+  the rule as a POSITIVE list of the statuses that are still moving (`QUEUED`, `STARTING`,
+  `SPEC_UNREADABLE`) plus an unanswered gate. `PdDeploymentStatus` is a varchar with no check
+  constraint precisely so the vocabulary can grow, so a `!= ACTIVE`-shaped rule would read the next
+  terminal word as in-flight. **The SPA mirrors it** (`isCompletedRequest` in the frontend's
+  `api/dto.ts`) because the client draws the two sections and decides whether to keep polling; move
+  one, move both.
 
 ### Where a release lands: the ENTRY TIER, not a branch
 

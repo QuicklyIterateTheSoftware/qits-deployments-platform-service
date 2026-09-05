@@ -5,6 +5,7 @@ import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatu
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.hibernate.orm.panache.PanacheRepositoryBase;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -123,6 +124,25 @@ public class PdDeploymentRepository implements PanacheRepositoryBase<PdDeploymen
 
   public List<PdDeployment> listByStatus(PdDeploymentStatus status) {
     return list("status = ?1", status);
+  }
+
+  /**
+   * The deployments a set of requests point at, in one query — the batch half of the request →
+   * deployment join.
+   *
+   * <p>It exists so that a listing of N requests costs one query rather than N. The alternative
+   * shape, a {@code findById} per row, is the one that reads fine in a test with three rows and
+   * turns a project's release history into a hundred round trips on a real platform.
+   *
+   * <p><b>Unordered on purpose</b>, which is the one place this class departs from its own {@code
+   * seq desc} rule: the caller already holds the requests in their order and is building a map by
+   * id, so an order here would be sorted work nobody reads. An empty collection answers with an
+   * empty list without asking the database — {@code in ()} is not valid SQL, and a request set with
+   * no deployments at all (every one of them refused) is an ordinary answer rather than an edge
+   * case.
+   */
+  public List<PdDeployment> listByIds(Collection<String> ids) {
+    return ids.isEmpty() ? List.of() : list("id in ?1", ids);
   }
 
   // `newestInPlaces` lived here, and it went with BuildTips: a build resolved a branch to a set of
