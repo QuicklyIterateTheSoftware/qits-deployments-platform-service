@@ -10,10 +10,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * The suite's stand-in for the git host — {@code @Mock}, so no {@code @QuarkusTest} in this module
  * ever makes cd's one outbound HTTP call.
  *
- * <p><b>Its default answer is {@link DeploymentSpec#DEFAULTS}</b>, and that is the backward
- * compatibility contract in one line: a repository that declares nothing behaves exactly as every
- * repository did before the file existed. A test that wants a spec scripts one for its repository
- * by name.
+ * <p><b>Its default answer is a DECLARED {@link DeploymentSpec#DEFAULTS}</b> — a repository that
+ * carries the file and sets nothing in it — which is the backward compatibility contract in one
+ * line: it behaves exactly as every repository did before the file existed. A test that wants a
+ * spec scripts one for its repository by name.
+ *
+ * <p><b>A repository with NO FILE is a different answer and is scripted separately</b> ({@link
+ * #scriptNoSpec}). The two produce the same spec and the release door treats them differently: a
+ * file that says nothing asks for the conventional deployment, and no file asks for none. Keeping
+ * the default on the declared side is what keeps every test that only wants "and then it deploys"
+ * saying that.
  *
  * <p>Application-scoped and therefore shared: reset it in {@code @BeforeEach} and use distinct
  * repository ids per test. State is read through methods only — the injected reference is a CDI
@@ -45,6 +51,9 @@ public class FakeSpecSource implements SpecSource {
   /** Which scripted failures say "read me again" — see {@link #scriptRetryableFailure}. */
   private final Set<String> retryable = ConcurrentHashMap.newKeySet();
 
+  /** Which applications carry no file at all — see {@link #scriptNoSpec}. */
+  private final Set<String> undeclared = ConcurrentHashMap.newKeySet();
+
   /** How often each application's spec has been read, so a retry is countable rather than timed. */
   private final Map<String, Integer> reads = new ConcurrentHashMap<>();
 
@@ -54,6 +63,7 @@ public class FakeSpecSource implements SpecSource {
     revs.clear();
     refs.clear();
     retryable.clear();
+    undeclared.clear();
     reads.clear();
   }
 
@@ -103,6 +113,19 @@ public class FakeSpecSource implements SpecSource {
     retryable.add(applicationName);
   }
 
+  /**
+   * Script this application as carrying <b>no</b> {@link #SPEC_PATH} at all — the git host's 404,
+   * which is a clean answer and not a failure.
+   *
+   * <p>It is the shape a repository that publishes a docker image and is not a service has: a
+   * workspace base image, a build image. The read answers the defaults, as it always did, and says
+   * that nobody declared them.
+   */
+  public void scriptNoSpec(String applicationName) {
+    undeclared.add(applicationName);
+    specs.remove(applicationName);
+  }
+
   /** Stop failing this application's read — what a git host that has come back looks like. */
   public void recover(String applicationName) {
     failures.remove(applicationName);
@@ -134,6 +157,11 @@ public class FakeSpecSource implements SpecSource {
     String failure = failures.get(repository.applicationName());
     if (failure != null) {
       throw new SpecException(failure, retryable.contains(repository.applicationName()));
+    }
+    if (undeclared.contains(repository.applicationName())) {
+      // The 404 arm, verbatim: the defaults, no commit — a missing blob says nothing about where
+      // the tag points — and nothing declared.
+      return SpecRead.undeclared();
     }
     return new SpecRead(
         specs.getOrDefault(repository.applicationName(), DeploymentSpec.DEFAULTS),

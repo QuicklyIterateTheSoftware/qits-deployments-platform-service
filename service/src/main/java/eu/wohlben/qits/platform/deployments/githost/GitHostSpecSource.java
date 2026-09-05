@@ -51,7 +51,9 @@ import org.jboss.logging.Logger;
  * resolution was a second client with a second failure mode. The merge left this one.
  *
  * <p><b>404 is an answer, not a failure.</b> A repository that carries no spec gets every default
- * and deploys exactly as it did before the file existed. Every other outcome — a refused
+ * — and, since 2026-09-05, gets them marked as nobody's declaration ({@link SpecRead#declared()}),
+ * so the release intake can tell a repository that asked for the conventional deployment from one
+ * that published an image and never asked to be deployed at all. Every other outcome — a refused
  * connection, a 500, a 403, a timeout, an unparseable file — raises {@link SpecException} and stops
  * the deployment: the spec decides where the container runs and what may reach it, and a guess
  * there is worse than a recorded failure.
@@ -130,8 +132,11 @@ public class GitHostSpecSource implements SpecSource {
           "%s carries no %s at %s — deploying with the defaults",
           repository.applicationName(), SPEC_PATH, rev);
       // No blob, so no commit: a 404 says nothing about where the rev points, and inventing a sha
-      // here would put a commit on the row that nobody resolved.
-      return new SpecRead(DeploymentSpec.DEFAULTS, null);
+      // here would put a commit on the row that nobody resolved. And no blob is reported AS no
+      // blob — SpecRead.undeclared() carries the defaults and the fact that nothing declared them,
+      // which is the difference between a repository that asked for the conventional deployment
+      // and one that never asked to be deployed at all.
+      return SpecRead.undeclared();
     }
     if (response.statusCode() != 200) {
       throw statusFailure(url, response.statusCode());
