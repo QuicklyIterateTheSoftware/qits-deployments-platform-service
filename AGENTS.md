@@ -1160,6 +1160,68 @@ the `eventstream` datasource — so every read of *this* component's database in
 Narayana refuses), which is what `ReleaseTips` does. And `announce` returns as soon as the release
 is queued, which it must: the handler is holding that transaction open while it runs.
 
+### The bus's durability ends at the handler — `pd_owed_release` carries it the rest (2026-09-05)
+
+**The library claims a `SoftwareRelease` the moment `onFrame` returns, and `announce` returns as
+soon as the release is a `Runnable` on `pd-deploy-worker`.** That queue is in memory, it is
+serialized platform-wide so it is legitimately an hour deep, and `DeployService`'s `@PreDestroy`
+calls `shutdownNow()` on it. So a cutover of this component — which it performs on itself,
+`stop-first` — dropped the whole queue while the bus's ledger said, correctly, that the events had
+been handled: the successor's catch-up found the claims and skipped them, and no deployment request
+was ever written. **Seven applications went that way between 13:00 and 17:15 UTC on 2026-09-05.**
+Four were replayed by hand through the manual door; three were rescued only because a later release
+folded their tags. Nothing on the bus will ever offer such an event again — that is what makes it a
+loss rather than a delay.
+
+`ReleaseAcceptance` + `OwedReleaseSweep` + `pd_owed_release` (V10) are the second ledger. The bus
+door calls **`ReleaseAnnouncements.announceDurably`**, which validates, writes the obligation, and
+only then queues; the worker settles it when `deploy()` has returned. Six things about it, each easy
+to undo by accident:
+
+- **It cannot commit with the bus's claim and does not try.** `consumed_event` is in the
+  `eventstream` database and this row is in `platformdeployments`; both datasources are non-XA and
+  Narayana refuses two in one transaction — the note `ReleaseTips` already carries. So the ORDER is
+  what is chosen: **obligation first**. What that leaves is a duplicate (obligation written, claim
+  rolled back) and never a loss, and a duplicate is what the re-drive guards collapse to a no-op.
+- **The re-drive predicate is `accepted_by`, a uuid minted per JVM**, and it is exact rather than
+  heuristic: a row carrying this process's id is on its queue and is left alone however long it sits
+  there; a row carrying anybody else's belonged to a queue that did not survive. **A time-based
+  predicate cannot work here** — any grace period longer than a legitimate hour-deep queue is longer
+  than the outage it would be covering. Null is "held by nobody", which is what the worker leaves a
+  row it could not discharge in, so this process's own next tick retries it.
+- **`instanceId` is an INSTANCE field, not a static one.** `service/` compiles to a native image and
+  a static initializer is evaluated at build time and baked into the image heap — every container of
+  one image would then share one "process" id and no row would ever look orphaned.
+- **The sweep re-drives through the SAME door and never around it.** A version already requested is
+  settled `ALREADY_REQUESTED` (the idempotence guard, asked of `pd_deployment_request` for
+  `ReleaseTips`' reason); one a newer release has overtaken is settled `SUPERSEDED` rather than
+  deployed, which is the one thing a re-drive must never be able to cause; everything else is an
+  ordinary `announceDurably` — same identifier validation, same spec read at the released tag, same
+  `Door.RELEASE_EVENT` refusal of a release that declares no file.
+- **`announceDurably` is a second method rather than the default, because `Door.MANUAL` does not want
+  it.** That door is an operator naming a version on purpose, including a rollback, and a ledger that
+  re-announced one after a restart would be re-answering a question a person already answered — and
+  would then have it refused by the monotonic collapse for good measure. It **implies**
+  `RELEASE_EVENT` rather than taking a door: the obligation and the door are one decision.
+- **A release held on an unreadable spec is NOT settled**, and a `deploy` that threw is handed back
+  rather than settled. `specRetries` lives in a map that dies with the JVM, so an obligation still
+  held there has to outlive the process that is holding it. `MAX_ATTEMPTS` (5) bounds the whole
+  thing: an obligation that fails identically on every boot is parked `EXHAUSTED` with an ERROR
+  naming the manual door, rather than announced at every boot forever — the poison-event shape the
+  bus library warns about, one layer down.
+
+**The tick is the belt and the boot pass is the cure**
+(`qits.platform.deployments.owed-release-sweep-seconds`, 60; `0` keeps the boot pass and switches
+the tick off). It is a plain daemon thread — `pd-owed-release-sweep`, the observation ticker's shape
+— and not `quarkus-scheduler`, for the reason `DeploymentObserver` gives: this component's whole
+ordering story is "one worker, in queue order". Nothing is done on that thread but the reading and
+the guards; every announcement lands on the deploy worker.
+
+**No story or `@QuarkusTest` runs the ticker** — `onStart` returns early in `LaunchMode.TEST`, the
+observer's arrangement — and `PdOwedReleaseTest` drives `sweep()` directly, staging a dead process by
+writing its row rather than by killing a JVM. `PdSchemaTest` holds the storage half: one obligation
+per `event_id`, and a settled row is invisible to the owed query.
+
 ### The deployment REQUEST, and the gate in front of the queue
 
 `pd_deployment_request` (V6) is the row a release writes **before** anything is queued: application,
