@@ -1098,13 +1098,14 @@ public class DeployService implements ReleaseAnnouncements {
    * deployed</b>.
    *
    * <p><b>Why this exists at all.</b> A docker package is not a service. The release door hears one
-   * event per published image, chosen by nobody, and two of this platform's repositories publish
-   * workspace BASE images — an image other containers are built FROM, with no port, no health
-   * surface and nothing to put live. On 2026-09-04 both were announced here, read no file, took
-   * {@link DeploymentSpec#DEFAULTS}, and were launched as the swarm services {@code dev-workspace}
-   * and {@code dev-workspace-editor}, which sat created until the 120s health gate failed them.
-   * The defaults were never wrong; the question they answer was. They mean "deploy it the ordinary
-   * way", and the old build door only ever asked it of repositories the platform already deployed.
+   * event per published image, chosen by nobody, and three of this platform's repositories publish
+   * workspace CONTAINER images — the image a workspace RUNS AS and the two it is built from, with
+   * no port, no health surface and nothing this component can put live. On 2026-09-04 all three
+   * were announced here, read no file, took {@link DeploymentSpec#DEFAULTS}, and were launched as
+   * the swarm services {@code dev-workspace}, {@code dev-workspace-editor} and {@code
+   * dev-workspace-base}, which sat created until the 120s health gate failed them. The defaults
+   * were never wrong; the question they answer was. They mean "deploy it the ordinary way", and the
+   * old build door only ever asked it of repositories the platform already deployed.
    *
    * <p><b>So the missing file is read as the answer it is</b>: a repository that declares nothing
    * has not asked to be deployed. This is deliberately not a parse failure and not a refusal of the
@@ -1116,8 +1117,8 @@ public class DeployService implements ReleaseAnnouncements {
    *
    * <p><b>Before registration, and that is half the fix.</b> Registering first would create the
    * catalogue row, the wire alias and the tier link for an application that is not one — which is
-   * exactly what left {@code workspace} and {@code workspace-editor} in the menu. Nothing is
-   * registered, so nothing has to be retired afterwards.
+   * exactly what left {@code workspace}, {@code workspace-editor} and {@code workspace-base} in the
+   * catalogue. Nothing is registered, so nothing has to be retired afterwards.
    *
    * <p><b>Only on the {@link Door#RELEASE_EVENT} door.</b> The manual door is somebody naming an
    * application and a version, and one of the things it is for is deploying a tag cut before this

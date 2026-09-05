@@ -63,10 +63,10 @@ public interface ReleaseAnnouncements {
    * exception, and it is about WHETHER.
    *
    * <p>A {@code SoftwareRelease} is published for every docker package qits-ci pushes, service or
-   * not, and nobody chose it: a workspace base image announces itself exactly as qits-ci does. So
-   * on that door a repository that declares no {@code deployments.yml} at the released tag is
-   * recorded and not deployed — it never asked to be. The manual door is somebody naming an
-   * application and a version on purpose, including a rollback to a tag cut before the file
+   * not, and nobody chose it: a workspace container image announces itself exactly as qits-ci
+   * does. So on that door a repository that declares no {@code deployments.yml} at the released
+   * tag is recorded and not deployed — it never asked to be. The manual door is somebody naming
+   * an application and a version on purpose, including a rollback to a tag cut before the file
    * existed, and refusing that would be refusing the choice. See {@code DeployService}.
    */
   enum Door {

@@ -33,10 +33,12 @@ import org.jboss.logging.Logger;
  * ledger proportional to the deployments rather than to the release log.
  *
  * <p><b>A docker image is still not necessarily a service, and this door is where that stopped
- * being assumed.</b> {@code qits-workspace-oci} and {@code qits-workspace-editor-oci} publish
- * workspace BASE images: a docker package, a real release, and nothing to put live. On 2026-09-04
- * they were announced here, read no {@code deployments.yml}, took {@code DeploymentSpec.DEFAULTS}
- * and were launched as the swarm services {@code dev-workspace} and {@code dev-workspace-editor},
+ * being assumed.</b> Three of this platform's repositories publish workspace CONTAINER images —
+ * {@code qits/workspace} from qits-workspace-daemon, {@code qits/workspace-editor} from
+ * qits-workspace-editor-oci, {@code qits/workspace-base} from qits-workspace-oci. Each is a docker
+ * package and a real release; none is a service. On 2026-09-04 all three were announced here, read
+ * no {@code deployments.yml}, took {@code DeploymentSpec.DEFAULTS} and were launched as the swarm
+ * services {@code dev-workspace}, {@code dev-workspace-editor} and {@code dev-workspace-base},
  * which sat created and failed the health gate at 120s. So this door announces with {@link
  * eu.wohlben.qits.platform.deployments.deployments.control.ReleaseAnnouncements.Door#RELEASE_EVENT}
  * and a release whose tag carries no spec is recorded and not deployed. Nothing about the selection
