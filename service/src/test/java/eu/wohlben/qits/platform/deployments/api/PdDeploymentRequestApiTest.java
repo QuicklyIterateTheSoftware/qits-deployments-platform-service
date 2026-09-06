@@ -163,6 +163,22 @@ public class PdDeploymentRequestApiTest {
   }
 
   @Test
+  public void aRequestCarriesThePriorityTheReleaseDeclaredAndNullWhenItDeclaredNone() {
+    // The read surface half of the priority: it comes off qits-projects' release request, through
+    // qits-ci, onto this row, and out here for a client to draw a badge from. Nothing on this
+    // surface orders anything by it — the worker is FIFO — so the claim is exactly that the value
+    // arrives, and that its absence is a null rather than an invented default.
+    String environmentId = createEnvironment("req-priority");
+    release("repo-req-priority", V_A, environmentId, null, "BLOCKING", 1);
+    release("repo-req-plain-priority", V_A, environmentId, null, null, 2);
+
+    assertEquals("BLOCKING", onlyRequestOf(environmentId, "repo-req-priority").get("priority"));
+    assertNull(
+        onlyRequestOf(environmentId, "repo-req-plain-priority").get("priority"),
+        "a release that declared none says none, on the wire as in the row");
+  }
+
+  @Test
   public void aRequestWhoseDeploymentIsGoneCarriesNoStatus() {
     // Null is a real answer and not a gap. A refusal queues nothing, and an environment teardown
     // forgets the deployment rows while the requests outlive them by design — no FK, on purpose —
@@ -411,12 +427,26 @@ public class PdDeploymentRequestApiTest {
    */
   private void release(
       String repoId, String version, String environmentId, String projectId, int expected) {
+    release(repoId, version, environmentId, projectId, null, expected);
+  }
+
+  /** The same again, declaring the priority the release request carried. Null states none. */
+  private void release(
+      String repoId,
+      String version,
+      String environmentId,
+      String projectId,
+      String priority,
+      int expected) {
     Map<String, Object> body = new java.util.HashMap<>();
     body.put("runId", "run-req");
     body.put("repoId", repoId);
     body.put("version", version);
     if (projectId != null) {
       body.put("projectId", projectId);
+    }
+    if (priority != null) {
+      body.put("priority", priority);
     }
     given()
         .contentType(ContentType.JSON)

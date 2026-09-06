@@ -88,6 +88,26 @@ public class PdDeploymentRequest extends PanacheEntityBase implements CausedRow 
   @Column(name = "package_name", length = 255)
   public String packageName;
 
+  /**
+   * What the release request declared its priority to be, carried down from qits-projects through
+   * qits-ci's release join — <b>recorded, and read by nothing that decides anything</b>. The deploy
+   * worker is FIFO and stays FIFO; this is the column the queue-ordering feature will read the day
+   * there is one, and until then it is what a person sees on the request.
+   *
+   * <p><b>A display-only String rather than an enum, and no check constraint</b>: the vocabulary
+   * ({@code LOWEST … BLOCKING}) is qits-projects' and a copy here would be a second spelling of
+   * somebody else's decision. A word this component has never heard of is stored verbatim, exactly
+   * as {@link PdDeploymentStatus}'s column takes a status this build did not know about.
+   *
+   * <p><b>Nullable, never backfilled, and never validated in a way that could refuse a release.</b>
+   * Null means "the release stated none" — every release cut before the field existed, every event
+   * replayed from before it, and every announcement through the manual door that did not bother. An
+   * advisory badge must not be able to fail a deployment, so an overlong value is dropped with a
+   * WARN one layer up rather than throwing; see {@code ReleasePriorities}.
+   */
+  @Column(length = 32)
+  public String priority;
+
   /** The repository the release came from, in the git host's own storage key. Resolved by nobody. */
   @Column(name = "repo_id")
   public String repoId;

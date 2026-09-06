@@ -73,6 +73,12 @@ public class PdEventController {
    * <p>{@code runId} is optional and drives nothing: it is recorded on each deployment this queues
    * so a reader can walk from a deployment row to {@code /ci/runs/<runId>}. A release event carries
    * none, so the ordinary path records null and this door exists to let a replay supply one.
+   *
+   * <p><b>{@code priority} is optional and drives nothing either</b> — it is the value the release
+   * request declared, recorded on the request row for a reader and for the queue-ordering feature
+   * that comes later. The deploy worker is FIFO, so naming a priority here reorders nothing and
+   * omitting one refuses nothing: null is the honest answer for a replay of a release cut before
+   * qits-projects had the field, which is most of what this door is used for.
    */
   public record SoftwareReleasedEvent(
       String runId,
@@ -80,7 +86,8 @@ public class PdEventController {
       String projectId,
       String repoName,
       String application,
-      @NotBlank String version) {
+      @NotBlank String version,
+      String priority) {
 
     /**
      * What this release deploys under: what the caller stated, else the repository's name, else its
@@ -122,6 +129,7 @@ public class PdEventController {
         event.applicationName(),
         event.version(),
         null,
+        event.priority(),
         CausationScope.current());
     return Response.accepted().build();
   }

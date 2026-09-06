@@ -99,6 +99,11 @@ public interface ReleaseAnnouncements {
    * @param packageName the package the release announced, verbatim and registry-unqualified, or
    *     null when the door named an application directly. Recorded on the request row so the
    *     derivation above is visible rather than re-performed.
+   * @param priority what the release request declared, carried down the chain from qits-projects and
+   *     <b>recorded, never acted on</b>: the deploy worker is FIFO and stays FIFO. A verbatim String
+   *     rather than an enum — the vocabulary is qits-projects' — and nullable everywhere, because
+   *     null is the honest answer for every release cut before the field existed. It is advisory, so
+   *     it is never validated in a way that could refuse a release; see {@link ReleasePriorities}.
    * @param causationId the event this announcement is the effect of, recorded on every row it
    *     produces. Null is a rootless announcement — a bootstrap's hand-made POST — and never a
    *     reason to refuse one: causation is advisory and a deployment must not fail over a column
@@ -114,6 +119,7 @@ public interface ReleaseAnnouncements {
       String applicationName,
       String version,
       String packageName,
+      String priority,
       UUID causationId,
       Door door);
 
@@ -128,8 +134,17 @@ public interface ReleaseAnnouncements {
       String applicationName,
       String version,
       String packageName,
+      String priority,
       UUID causationId) {
-    announce(runId, repository, applicationName, version, packageName, causationId, Door.MANUAL);
+    announce(
+        runId,
+        repository,
+        applicationName,
+        version,
+        packageName,
+        priority,
+        causationId,
+        Door.MANUAL);
   }
 
   /**
@@ -166,6 +181,11 @@ public interface ReleaseAnnouncements {
    * <p><b>It implies {@link Door#RELEASE_EVENT} rather than taking a door</b>, for the same reason:
    * the obligation and the door are one decision, not two that a caller could combine wrongly.
    *
+   * <p><b>The obligation carries the priority with everything else it carries</b>, and it has to:
+   * {@code OwedReleaseSweep} rebuilds the announcement from the row alone, in another process, with
+   * the event long since claimed and nothing left to ask. A field the ledger did not store is a
+   * field a re-driven release loses.
+   *
    * @param eventId the {@code SoftwareRelease} frame this announces — the obligation's natural key,
    *     so a re-drive re-takes the same row rather than opening a second one. Never null: a durable
    *     announcement that could not be de-duplicated across restarts is not one, and the door with
@@ -181,5 +201,6 @@ public interface ReleaseAnnouncements {
       String applicationName,
       String version,
       String packageName,
+      String priority,
       UUID causationId);
 }

@@ -95,7 +95,14 @@ public class ReleaseAcceptance {
     EXHAUSTED
   }
 
-  /** One acceptance, in exactly the arguments {@link ReleaseAnnouncements#announce} takes. */
+  /**
+   * One acceptance, in exactly the arguments {@link ReleaseAnnouncements#announce} takes.
+   *
+   * <p><b>Including the priority, and that is not decoration.</b> {@link OwedReleaseSweep} rebuilds
+   * the announcement from the stored row alone — another process, hours later, with the event
+   * claimed and nothing left to ask — so a field this record does not carry is a field a re-driven
+   * release deploys without.
+   */
   public record Accepted(
       String eventId,
       String runId,
@@ -103,6 +110,7 @@ public class ReleaseAcceptance {
       String applicationName,
       String version,
       String packageName,
+      String priority,
       UUID causationId) {}
 
   /** An obligation read back out of the ledger: what it is, and how often it has been tried. */
@@ -145,6 +153,7 @@ public class ReleaseAcceptance {
             row.applicationName = acceptance.applicationName();
             row.version = acceptance.version();
             row.packageName = acceptance.packageName();
+            row.priority = acceptance.priority();
             row.repoId = acceptance.repository().repoId();
             row.projectId = acceptance.repository().projectId();
             row.repoName = acceptance.repository().repoName();
@@ -224,6 +233,7 @@ public class ReleaseAcceptance {
             row.applicationName,
             row.version,
             row.packageName,
+            row.priority,
             row.causationId),
         row.attempts);
   }

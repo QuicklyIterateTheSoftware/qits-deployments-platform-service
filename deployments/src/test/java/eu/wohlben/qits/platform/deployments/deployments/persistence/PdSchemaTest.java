@@ -375,6 +375,56 @@ public class PdSchemaTest {
     }
   }
 
+  @Test
+  public void bothLedgersRecordAReleasePriorityAndBothTakeNoneAtAll() throws Exception {
+    // V11, on BOTH tables, and the second one is the load-bearing half rather than symmetry:
+    // OwedReleaseSweep re-drives an obligation by rebuilding the whole announcement from its row,
+    // in a process that never saw the event, so a column the ledger lacks is a field every
+    // recovered release loses.
+    try (Connection connection = migrated();
+        Statement sql = connection.createStatement()) {
+      request(sql, "rq-prio", "qits-ci", "2026.906.1", "'BLOCKING'");
+      request(sql, "rq-none", "qits-ci", "2026.906.2", "null");
+      // No check constraint, V1's rule for every enum-shaped column here — and one step stronger:
+      // the vocabulary is qits-projects', so a word this build has never heard of has to store.
+      request(sql, "rq-unknown", "qits-ci", "2026.906.3", "'SOMETHING-NEWER-THAN-THIS-BUILD'");
+
+      assertEquals(
+          List.of("rq-none|", "rq-prio|BLOCKING", "rq-unknown|SOMETHING-NEWER-THAN-THIS-BUILD"),
+          rows(
+              sql,
+              "select id || '|' || coalesce(priority, '') from pd_deployment_request order by id"),
+          "the request records what the release declared, none at all, or a word from the future");
+
+      owedRelease(sql, "o-prio", "ev-prio", "qits-ci", "2026.906.1", "a-dead-process", "'HIGHER'");
+      owedRelease(sql, "o-none", "ev-none", "qits-ci", "2026.906.2", "a-dead-process", "null");
+
+      assertEquals(
+          List.of("o-none|", "o-prio|HIGHER"),
+          rows(
+              sql,
+              "select id || '|' || coalesce(priority, '') from pd_owed_release order by id"),
+          "and the obligation carries it, which is what a re-drive reads it back out of");
+    }
+  }
+
+  private static void request(
+      Statement sql, String id, String applicationName, String version, String priority)
+      throws SQLException {
+    // Named columns, not positional: a later migration adding one must not become a change here.
+    sql.execute(
+        "insert into pd_deployment_request (id, application_name, version, quality_gate, priority,"
+            + " created_at) values ('"
+            + id
+            + "', '"
+            + applicationName
+            + "', '"
+            + version
+            + "', 'MET', "
+            + priority
+            + ", now())");
+  }
+
   private static void owedRelease(
       Statement sql,
       String id,
@@ -383,9 +433,21 @@ public class PdSchemaTest {
       String version,
       String acceptedBy)
       throws SQLException {
+    owedRelease(sql, id, eventId, applicationName, version, acceptedBy, "null");
+  }
+
+  private static void owedRelease(
+      Statement sql,
+      String id,
+      String eventId,
+      String applicationName,
+      String version,
+      String acceptedBy,
+      String priority)
+      throws SQLException {
     sql.execute(
         "insert into pd_owed_release (id, event_id, application_name, version, accepted_by,"
-            + " accepted_at, attempts) values ('"
+            + " priority, accepted_at, attempts) values ('"
             + id
             + "', '"
             + eventId
@@ -395,7 +457,9 @@ public class PdSchemaTest {
             + version
             + "', '"
             + acceptedBy
-            + "', now(), 1)");
+            + "', "
+            + priority
+            + ", now(), 1)");
   }
 
   private static Connection migrated() throws Exception {
