@@ -48,7 +48,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * deployment listing is where the result is read. <b>The third is 200</b>: it issues no docker call
  * at all, so there is nothing for it to queue behind and nothing to promise.
  *
- * <p><b>All three take {@code qits-platform:admin}, the reader's role, and that is a decision.</b> This
+ * <p><b>All three take {@code qits:admin}, the reader's role, and that is a decision.</b> This
  * is a person's operational action, driven from this component's own web client through the
  * platform edge's forwarded {@code X-Qits-Roles} header — the same caller every read on this surface
  * has. The machine role {@code qits-platform:system} is deliberately NOT granted: the two sets do
@@ -62,7 +62,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  */
 @Path("/applications")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed("qits-platform:admin")
+@jakarta.annotation.security.RolesAllowed("qits:admin")
 public class PdApplicationController {
 
   @Inject ServiceCatalog catalog;

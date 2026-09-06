@@ -35,7 +35,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * and a person do.
  *
  * <p><b>Both writes take {@code qits-platform:system} and call {@link MachineAuth#require()}; the
- * read takes {@code qits-platform:admin} and does not.</b> The writes are a machine's, so the role
+ * read takes {@code qits:admin} and does not.</b> The writes are a machine's, so the role
  * is the one an idp-minted token carries; the read is driven by people through the client, so the
  * role is the one the edge asserts for an admin session. See the class javadoc of {@link
  * PdEnvironmentController} for the whole split.
@@ -132,7 +132,7 @@ public class PdServiceController {
   @GET
   @Operation(summary = "Every service, with the environments each is linked into")
   @APIResponse(responseCode = "200", description = "The services")
-  @jakarta.annotation.security.RolesAllowed("qits-platform:admin")
+  @jakarta.annotation.security.RolesAllowed("qits:admin")
   public ListServicesResponse list() {
     return new ListServicesResponse(
         reads.call("The service catalogue listing", catalog::list).stream()

@@ -94,7 +94,7 @@ public class PlatformOverviewIT {
   @UserStoryDescription(
       """
       Nothing on this surface is open, and the role says who a caller is meant to be: every read
-      here takes qits-platform:admin, which reaches this service only as a forwarded X-Qits-Roles
+      here takes qits:admin, which reaches this service only as a forwarded X-Qits-Roles
       header from an authenticated admin session. A machine bearer never carries it, so the read
       half is a person's and stays one.
 

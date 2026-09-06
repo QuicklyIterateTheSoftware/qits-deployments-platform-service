@@ -34,7 +34,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  *
  * <p><b>Read-only, and a machine peer's rather than a person's.</b> It takes {@code
  * qits-platform:system} — the role an idp-minted machine token carries — and not the {@code
- * qits-platform:admin} the environment and deployment listings take, because its one caller is
+ * qits:admin} the environment and deployment listings take, because its one caller is
  * qits-platform-artifacts' collector and no browser has business here. The collector's own idp
  * client is granted this service's audience and that role, so the credential exists to present.
  */

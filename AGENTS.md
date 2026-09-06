@@ -376,7 +376,7 @@ Eight things about it, each easy to undo by accident:
   recorded `ACTIVE` with nothing running behind it. Mounts, networks and ports stay absent for the
   reason they always were: those are SHAPE, and this is state.
 
-**The role is `qits-platform:admin`, the reader's**, and that is a decision rather than an
+**The role is `qits:admin`, the reader's**, and that is a decision rather than an
 oversight: this is a person's operational action driven from this component's own client through the
 edge's forwarded header. `qits-platform:system` is deliberately not granted — nothing on the
 platform should be able to stop an application as a side effect of holding a service token, and the
@@ -439,7 +439,7 @@ Six things about it:
   what makes the retirement re-runnable. There is one stamp format on a deployment row and one place
   that knows it.
 
-**Role: `qits-platform:admin`**, for the reason the other two levers carry it — a service bearer must
+**Role: `qits:admin`**, for the reason the other two levers carry it — a service bearer must
 no more be able to declare an application retired than to stop one. `MachineGuardEnforcedTest` arms
 it in both directions.
 
@@ -1049,10 +1049,10 @@ carries a `@RolesAllowed`, and there are exactly two roles:
 
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
-| `qits-platform:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
+| `qits:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
 | `qits-platform:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all |
 
-The two sets do not overlap and must not. A machine token never carries `qits-platform:admin`, so
+The two sets do not overlap and must not. A machine token never carries `qits:admin`, so
 the read surface is a person's; a browser session never carries `qits-platform:system`, so the
 machine surface is a machine's. **The read half is a change** — reads were open until the surface
 was protected, on the reasoning both ancestors gave — and the collector that reads the pins is a
@@ -1249,7 +1249,7 @@ rows written before that.)
   in the queueing transaction before a real gate has an opinion, or the first one arrives as a
   migration over live history. Whatever asks a question later answers in that one method — it takes
   the release AND the target, because a real gate is about a (version, place) pair.
-- **It is a read surface too** (`PdDeploymentRequestController`, `qits-platform:admin`, every read
+- **It is a read surface too** (`PdDeploymentRequestController`, `qits:admin`, every read
   wrapped in `PdReadPatience`), and it is a separate resource from the deployment listing rather
   than a richer answer to it, for the reason the table exists at all: **a refused request queues
   nothing**, so it has no deployment row to be seen through, and a client reading only the

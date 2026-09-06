@@ -333,7 +333,7 @@ paths:
       - Pd Application Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/applications/{applicationId}/decommission:
     post:
       summary: "Retire an application — its current row becomes DECOMMISSIONED, nothing\
@@ -366,7 +366,7 @@ paths:
       - Pd Application Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/applications/{applicationId}/restart:
     post:
       summary: "Restart an application in place — its tasks are replaced, its deployment\
@@ -394,7 +394,7 @@ paths:
       - Pd Application Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/applications/{applicationId}/scale:
     post:
       summary: "Scale an application's workload — 0 stops it, 1 runs it"
@@ -428,7 +428,7 @@ paths:
       - Pd Application Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/deployment-requests:
     get:
       summary: "Deployment requests, newest-first — by environment, by project, or\
@@ -473,7 +473,7 @@ paths:
       - Pd Deployment Request Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/deployment-requests/{id}:
     get:
       summary: "One deployment request, with the deployment it produced"
@@ -500,7 +500,7 @@ paths:
       - Pd Deployment Request Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/deployments:
     get:
       summary: "One plane's recorded deployments, newest-first — an environment id,\
@@ -529,7 +529,7 @@ paths:
       - Pd Deployment Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/environments:
     get:
       summary: List environments
@@ -548,7 +548,7 @@ paths:
       - Pd Environment Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
     post:
       summary: "Create an environment: a name and a bundle network"
       requestBody:
@@ -636,7 +636,7 @@ paths:
       - Pd Environment Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
     delete:
       summary: "Tear an environment down (rows, containers, networks)"
       parameters:
@@ -688,7 +688,7 @@ paths:
       - Pd Environment Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/pins:
     get:
       summary: "The image shas deployments pin: what serves, and what a rollback restores"
@@ -727,7 +727,7 @@ paths:
       - Pd Service Controller
       security:
       - SecurityScheme:
-        - qits-platform:admin
+        - qits:admin
   /platform-deployments/api/services/{name}:
     put:
       summary: "Register or update one service, replacing its environment links"

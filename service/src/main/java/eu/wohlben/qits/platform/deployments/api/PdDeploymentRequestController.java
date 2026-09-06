@@ -70,12 +70,12 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * screen is. So the deployment travels inside this answer, nullable for the refusal that produced
  * none.
  *
- * <p>Read-only and a person's: {@code qits-platform:admin}, the role qits-gateway forwards, like
+ * <p>Read-only and a person's: {@code qits:admin}, the role qits-gateway forwards, like
  * every other listing the web client polls.
  */
 @Path("/deployment-requests")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed("qits-platform:admin")
+@jakarta.annotation.security.RolesAllowed("qits:admin")
 public class PdDeploymentRequestController {
 
   @Inject DeployService deployService;
