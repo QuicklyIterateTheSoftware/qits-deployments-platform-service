@@ -1,0 +1,32 @@
+-- THE RELEASE'S PRIORITY, RECORDED AND ACTED ON BY NOBODY.
+--
+-- qits-projects puts a priority on each participating BRANCH of a release request (LOWEST, LOW,
+-- MEDIUM, HIGH, HIGHER, BLOCKING; the request's effective value is the max over its branches),
+-- qits-ci transcribes that value through its release join onto `SoftwareRelease`, and this component
+-- writes it down. Nothing here reorders anything: the deploy worker is single-threaded and strictly
+-- FIFO, and it stays that way — queue ordering is the next feature and this column is what it will
+-- read when it arrives. Until then the value is for a person looking at a deployment request.
+--
+-- A VARCHAR AND NOT AN ENUM, with no check constraint — V1's rule for every enum-shaped column in
+-- this schema, and one step stronger here: the vocabulary belongs to qits-projects, so a word this
+-- build has never heard of has to store rather than fail. This component holds no copy of the enum
+-- and should not grow one (the no-shared-vocabulary stance the whole intake path already takes).
+--
+-- NULLABLE, WITH NO BACKFILL AND NO DEFAULT. Null means "the release stated none", which is every
+-- release cut before qits-projects grew the field, every event replayed from before it, and every
+-- announcement through the manual door that did not bother to name one. A default would invent a
+-- priority for history that never had one; a backfill would do it permanently. There is nothing
+-- decidable to backfill FROM, which is the same test V7's `version` was held to and failed.
+--
+-- LENGTH 32 is qits-projects' own column width for the enum it stores. A value that will not fit is
+-- dropped with a WARN one layer up (`ReleasePriorities`) rather than refusing the release: this is
+-- an advisory badge that reaches no argv, no URL and no image path, and it must never be able to
+-- stop a green release going live.
+alter table pd_deployment_request add column priority varchar(32);
+
+-- BOTH TABLES, and the second one is the load-bearing half rather than symmetry. `pd_owed_release`
+-- is the acceptance ledger V10 added, and `OwedReleaseSweep` re-drives an obligation by
+-- reconstructing the WHOLE announcement from the row alone — another process, after a cutover, with
+-- the event already claimed on the bus and nothing left to ask. A field the ledger does not store is
+-- a field every re-driven release quietly loses.
+alter table pd_owed_release add column priority varchar(32);

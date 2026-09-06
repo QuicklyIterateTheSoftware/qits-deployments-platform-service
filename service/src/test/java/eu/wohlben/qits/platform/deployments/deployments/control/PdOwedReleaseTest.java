@@ -115,6 +115,7 @@ public class PdOwedReleaseTest {
             "owed-held-app",
             NEWER,
             "qits/owed-held-app",
+            null,
             null));
 
     assertEquals(0, sweep.sweep(), "nothing was orphaned");
@@ -153,6 +154,45 @@ public class PdOwedReleaseTest {
     assertEquals(ReleaseAcceptance.Outcome.DISCHARGED.name(), row.outcome);
     assertEquals(acceptance.instanceId(), row.acceptedBy, "this process took the obligation over");
     assertEquals(2, row.attempts, "the dead process's attempt and this one's");
+  }
+
+  @Test
+  public void theObligationCarriesThePriorityAndAReDriveDeploysWithIt() {
+    // WHY pd_owed_release HAS THE COLUMN AT ALL. A re-drive rebuilds the whole announcement from
+    // this row — another process, after a cutover, with the event already claimed on the bus and
+    // nothing left to ask — so a field the ledger does not store is a field the recovered release
+    // silently deploys without. Both halves in one case: the door writes it down, and the sweep
+    // hands exactly that value to the request row the lost release never wrote.
+    createEntryTier("owed-priority");
+    String eventId = UUID.randomUUID().toString();
+
+    subscriber.onFrame(dockerFrame(eventId, "qits/owed-priority-app", NEWER, "BLOCKING"));
+    awaitApplied(1);
+    awaitWorkerIdle();
+
+    assertEquals("BLOCKING", obligation(eventId).priority, "the acceptance recorded it");
+    assertEquals("BLOCKING", newestRequest("owed-priority-app").priority);
+
+    // And the recovery path, off a row a dead process left behind.
+    createEntryTier("owed-priority-redrive");
+    String orphaned =
+        orphan(
+            "owed-priority-redrive-app",
+            NEWER,
+            "qits/owed-priority-redrive-app",
+            RepositoryRef.ofId(STORAGE_UUID),
+            1,
+            "HIGHER");
+
+    assertEquals(1, sweep.sweep());
+    awaitApplied(2);
+    awaitWorkerIdle();
+
+    assertEquals(
+        "HIGHER",
+        newestRequest("owed-priority-redrive-app").priority,
+        "the re-driven release deployed with the priority the lost one carried");
+    assertEquals(ReleaseAcceptance.Outcome.DISCHARGED.name(), obligation(orphaned).outcome);
   }
 
   @Test
@@ -303,6 +343,16 @@ public class PdOwedReleaseTest {
       String packageName,
       RepositoryRef repository,
       int attempts) {
+    return orphan(applicationName, version, packageName, repository, attempts, null);
+  }
+
+  private String orphan(
+      String applicationName,
+      String version,
+      String packageName,
+      RepositoryRef repository,
+      int attempts,
+      String priority) {
     String eventId = UUID.randomUUID().toString();
     QuarkusTransaction.requiringNew()
         .run(
@@ -313,6 +363,7 @@ public class PdOwedReleaseTest {
               row.applicationName = applicationName;
               row.version = version;
               row.packageName = packageName;
+              row.priority = priority;
               row.repoId = repository.repoId();
               row.projectId = repository.projectId();
               row.repoName = repository.repoName();
@@ -329,13 +380,24 @@ public class PdOwedReleaseTest {
   }
 
   private static EventFrame dockerFrame(String eventId, String packageName, String version) {
+    return dockerFrame(eventId, packageName, version, null);
+  }
+
+  /** Canonical JSON is alphabetical and NON_NULL, so a null priority is an absent key. */
+  private static EventFrame dockerFrame(
+      String eventId, String packageName, String version, String priority) {
     return new EventFrame(
         eventId,
         "SoftwareRelease",
         Instant.now(),
-        ("{\"packageName\":\"%s\",\"packageType\":\"docker\",\"projectId\":\"qits\","
+        ("{\"packageName\":\"%s\",\"packageType\":\"docker\",%s\"projectId\":\"qits\","
                 + "\"repoId\":\"%s\",\"repository\":\"%s\",\"version\":\"%s\"}")
-            .formatted(packageName, STORAGE_UUID, STORAGE_UUID, version),
+            .formatted(
+                packageName,
+                priority == null ? "" : "\"priority\":\"" + priority + "\",",
+                STORAGE_UUID,
+                STORAGE_UUID,
+                version),
         null,
         null,
         null);

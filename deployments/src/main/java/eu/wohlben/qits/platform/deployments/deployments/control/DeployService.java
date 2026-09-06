@@ -916,13 +916,18 @@ public class DeployService implements ReleaseAnnouncements {
       String applicationName,
       String version,
       String packageName,
+      String priority,
       UUID causationId,
       Door door) {
     DeploymentIdentifiers.requireRunId(runId);
     RepositoryRef repo = repository.validated();
     String released = DeploymentIdentifiers.requireApplicationName(applicationName);
     DeploymentIdentifiers.requireVersion(version);
-    submit(null, runId, repo, released, version, packageName, causationId, door);
+    // Made recordable rather than validated, and that asymmetry is deliberate: the priority is an
+    // advisory badge that reaches no argv and no URL, so it is dropped with a WARN when it will not
+    // fit rather than refusing a release somebody is waiting for. See ReleasePriorities.
+    String recorded = ReleasePriorities.recorded(priority, released + "@" + version);
+    submit(null, runId, repo, released, version, packageName, recorded, causationId, door);
   }
 
   /**
@@ -949,16 +954,22 @@ public class DeployService implements ReleaseAnnouncements {
       String applicationName,
       String version,
       String packageName,
+      String priority,
       UUID causationId) {
     DeploymentIdentifiers.requireRunId(runId);
     RepositoryRef repo = repository.validated();
     String released = DeploymentIdentifiers.requireApplicationName(applicationName);
     DeploymentIdentifiers.requireVersion(version);
+    // Made recordable BEFORE the obligation is written, so the ledger holds a value the column can
+    // take and a re-drive hands back exactly what the live path recorded.
+    String recorded = ReleasePriorities.recorded(priority, released + "@" + version);
     String owedId =
         acceptance.accept(
             new ReleaseAcceptance.Accepted(
-                eventId, runId, repo, released, version, packageName, causationId));
-    submit(owedId, runId, repo, released, version, packageName, causationId, Door.RELEASE_EVENT);
+                eventId, runId, repo, released, version, packageName, recorded, causationId));
+    submit(
+        owedId, runId, repo, released, version, packageName, recorded, causationId,
+        Door.RELEASE_EVENT);
   }
 
   /**
@@ -981,12 +992,13 @@ public class DeployService implements ReleaseAnnouncements {
       String released,
       String version,
       String packageName,
+      String priority,
       UUID causationId,
       Door door) {
     worker.submit(
         () -> {
           try {
-            deploy(runId, repo, released, version, packageName, causationId, door);
+            deploy(runId, repo, released, version, packageName, priority, causationId, door);
             if (owedId != null && !isHeldOnSpec(released)) {
               acceptance.settle(owedId, ReleaseAcceptance.Outcome.DISCHARGED, null);
             }
@@ -1087,6 +1099,7 @@ public class DeployService implements ReleaseAnnouncements {
       String releasedName,
       String version,
       String packageName,
+      String priority,
       UUID causationId,
       Door door) {
     // Whatever this application was waiting to re-read, this release replaces: a newer version is
@@ -1103,7 +1116,7 @@ public class DeployService implements ReleaseAnnouncements {
       read = specs.read(repository, SpecSource.tagRev(version));
     } catch (RuntimeException e) {
       recordUnreadableSpec(
-          runId, repository, releasedName, version, packageName, causationId, door, e);
+          runId, repository, releasedName, version, packageName, priority, causationId, door, e);
       return;
     }
     deployReadSpec(
@@ -1112,6 +1125,7 @@ public class DeployService implements ReleaseAnnouncements {
         releasedName,
         version,
         packageName,
+        priority,
         causationId,
         door,
         read.spec(),
@@ -1140,6 +1154,7 @@ public class DeployService implements ReleaseAnnouncements {
       String releasedName,
       String version,
       String packageName,
+      String priority,
       UUID causationId,
       Door door,
       DeploymentSpec spec,
@@ -1149,7 +1164,14 @@ public class DeployService implements ReleaseAnnouncements {
     if (!declared && door == Door.RELEASE_EVENT) {
       refuseUndeclaredSpec(
           new Release(
-              runId, repository, releasedName, version, commitSha, packageName, causationId),
+              runId,
+              repository,
+              releasedName,
+              version,
+              commitSha,
+              packageName,
+              priority,
+              causationId),
           heldRows);
       return;
     }
@@ -1172,7 +1194,14 @@ public class DeployService implements ReleaseAnnouncements {
     List<Queued> queued =
         queue(
             new Release(
-                runId, repository, applicationName, version, commitSha, packageName, causationId),
+                runId,
+                repository,
+                applicationName,
+                version,
+                commitSha,
+                packageName,
+                priority,
+                causationId),
             targets);
     if (failure != null) {
       for (Queued row : queued) {
@@ -1280,6 +1309,7 @@ public class DeployService implements ReleaseAnnouncements {
       String releasedName,
       String version,
       String packageName,
+      String priority,
       UUID causationId,
       Door door,
       RuntimeException cause) {
@@ -1291,7 +1321,14 @@ public class DeployService implements ReleaseAnnouncements {
     List<Queued> queued =
         queue(
             new Release(
-                runId, repository, releasedName, version, null, packageName, causationId),
+                runId,
+                repository,
+                releasedName,
+                version,
+                null,
+                packageName,
+                priority,
+                causationId),
             alreadyRegistered(releasedName));
     List<String> rows = new ArrayList<>();
     for (Queued row : queued) {
@@ -1313,6 +1350,7 @@ public class DeployService implements ReleaseAnnouncements {
             releasedName,
             version,
             packageName,
+            priority,
             causationId,
             door,
             Instant.now(),
@@ -1340,6 +1378,7 @@ public class DeployService implements ReleaseAnnouncements {
       String releasedName,
       String version,
       String packageName,
+      String priority,
       UUID causationId,
       Door door,
       Instant since,
@@ -1348,7 +1387,7 @@ public class DeployService implements ReleaseAnnouncements {
 
     SpecRetry next() {
       return new SpecRetry(
-          runId, repository, releasedName, version, packageName, causationId, door, since,
+          runId, repository, releasedName, version, packageName, priority, causationId, door, since,
           attempts + 1, rows);
     }
   }
@@ -1408,6 +1447,7 @@ public class DeployService implements ReleaseAnnouncements {
           held.releasedName(),
           held.version(),
           held.packageName(),
+          held.priority(),
           held.causationId(),
           held.door(),
           read.spec(),
@@ -1486,6 +1526,7 @@ public class DeployService implements ReleaseAnnouncements {
       String version,
       String commitSha,
       String packageName,
+      String priority,
       UUID causationId) {}
 
   /**
@@ -2049,6 +2090,9 @@ public class DeployService implements ReleaseAnnouncements {
     request.version = release.version();
     request.environmentId = environmentId;
     request.packageName = release.packageName();
+    // Recorded and never read by anything that decides: the worker is FIFO, and this row is where a
+    // person (and the queue-ordering feature after it) reads what the release request declared.
+    request.priority = release.priority();
     request.repoId = release.repository() == null ? null : release.repository().repoId();
     request.projectId = release.repository() == null ? null : release.repository().projectId();
     request.qualityGate = PdQualityGate.UNMET;
