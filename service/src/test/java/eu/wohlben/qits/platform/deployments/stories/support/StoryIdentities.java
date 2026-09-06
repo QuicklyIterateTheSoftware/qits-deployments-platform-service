@@ -14,7 +14,7 @@ import io.restassured.specification.RequestSpecification;
  *       bearer: qits-platform-idp copies a client's granted roles into the token's {@code groups}
  *       claim and quarkus-oidc reads it as roles with no configuration at all. It opens the build
  *       intake, every topology write and the rollback pins.
- *   <li><b>{@code qits-platform:admin} is a PERSON's</b>, and it arrives only as the {@code
+ *   <li><b>{@code qits:admin} is a PERSON's</b>, and it arrives only as the {@code
  *       X-Qits-User} / {@code X-Qits-Roles} pair the platform edge asserts for an authenticated
  *       admin session. It opens every read of this surface — the applications, the services, the
  *       tiers and the deployment listing.
@@ -50,7 +50,7 @@ public final class StoryIdentities {
   public static final String MACHINE_ROLE = "qits-platform:system";
 
   /** The person's role, which reaches this service only as a forwarded header. */
-  public static final String HUMAN_ROLE = "qits-platform:admin";
+  public static final String HUMAN_ROLE = "qits:admin";
 
   /** The header the edge names the logged-in person in. */
   public static final String USER_HEADER = "X-Qits-User";

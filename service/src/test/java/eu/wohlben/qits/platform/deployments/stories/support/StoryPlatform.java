@@ -26,7 +26,7 @@ import java.util.Set;
  *
  * <p>The tier is created with a MACHINE bearer and read back with the PERSON's header pair, because
  * that is what each door takes: a topology write is {@code qits-platform:system}'s and the
- * deployment listing is {@code qits-platform:admin}'s. A fixture that presented one credential
+ * deployment listing is {@code qits:admin}'s. A fixture that presented one credential
  * everywhere would be a fixture that could not exist against the running service.
  *
  * <h2>Provisioned once, for whichever story class runs first</h2>

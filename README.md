@@ -369,7 +369,7 @@ serving, and the sha a rollback would put back.
   `qits-deployments-config` volume, which already holds the push token and the idp secrets. No
   statement containing a password is ever logged, and no failure message names one.
 - **Every endpoint carries a role, and the role says who the caller is meant to be.** The reads
-  need `qits-platform:admin`, which reaches this service only as a forwarded header — an admin
+  need `qits:admin`, which reaches this service only as a forwarded header — an admin
   session through the edge, or the bootstrap's own hop. The pins, the topology writes and the
   build-succeeded intake need `qits-platform:system`, which qits-platform-idp puts in a machine
   token's `groups` claim. The two sets do not overlap: a machine cannot read the surface and a

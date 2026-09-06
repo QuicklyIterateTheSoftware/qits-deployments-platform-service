@@ -36,7 +36,7 @@ import org.junit.jupiter.api.TestMethodOrder;
  *
  * <p>Every endpoint of this surface carries a {@code @RolesAllowed} and there are exactly two roles.
  * {@code qits-platform:system} is a machine's and arrives only in an idp-minted bearer; it opens the
- * build intake, every topology write and the rollback pins. {@code qits-platform:admin} is a
+ * build intake, every topology write and the rollback pins. {@code qits:admin} is a
  * person's and arrives only as the {@code X-Qits-Roles} header the platform edge asserts for an
  * authenticated admin session; it opens every read.
  *
@@ -137,7 +137,7 @@ public class AccessRefusalIT {
   @UserStoryDescription(
       """
       The mirror image, and it is the half that would be tempting to soften. An administrator is the
-      most privileged person on this platform, and their session carries qits-platform:admin —
+      most privileged person on this platform, and their session carries qits:admin —
       which opens every read here and not one write.
 
       The machine surface is a machine's because of what is behind it: the intake queues a

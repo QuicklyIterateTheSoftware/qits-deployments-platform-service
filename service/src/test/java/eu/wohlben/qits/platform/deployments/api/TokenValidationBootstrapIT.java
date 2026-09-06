@@ -59,7 +59,7 @@ import org.junit.jupiter.api.TestMethodOrder;
  *
  * <p><b>The route both stories drive is {@code GET /platform-deployments/api/pins}</b>, and it is
  * chosen because it is the one guarded read here whose caller is a MACHINE: {@link PdPinController}
- * takes {@code qits-platform:system} rather than the {@code qits-platform:admin} the environment
+ * takes {@code qits-platform:system} rather than the {@code qits:admin} the environment
  * and deployment listings take, its one caller is qits-platform-artifacts' OCI garbage collector,
  * and it reads nothing but deployment rows — so what it answers is a fact about this instance's
  * own history and never about a peer this IT would then have to stand in for. A write would have
@@ -229,7 +229,7 @@ public class TokenValidationBootstrapIT {
         .as("wrong-audience-refused");
 
     // The third door, and the one that is this service's own shape rather than the fleet's: the
-    // roles say who a caller is meant to be, and qits-platform:admin is the PERSON's — it reaches
+    // roles say who a caller is meant to be, and qits:admin is the PERSON's — it reaches
     // this service only as a forwarded X-Qits-Roles header from an admin session, never in a
     // token. Minted into one anyway it authenticates perfectly and still covers nothing here.
     //

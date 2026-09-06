@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
  * @RolesAllowed} now, and the role is what says who the caller is meant to be:
  *
  * <ul>
- *   <li><b>{@code qits-platform:admin}</b> — the reads. It reaches this service only through the
+ *   <li><b>{@code qits:admin}</b> — the reads. It reaches this service only through the
  *       forwarded {@code X-Qits-Roles} header: the platform edge asserts it for an authenticated
  *       admin session, and the bootstrap asserts it on its own hop over qits-net. A machine token
  *       never carries it, which is the point — the read surface is a person's.
@@ -287,7 +287,7 @@ class MachineGuardEnforcedTest {
         .then()
         .statusCode(200);
 
-    // A machine holds qits-platform:system and never qits-platform:admin, so the token that just
+    // A machine holds qits-platform:system and never qits:admin, so the token that just
     // created the environment cannot read it back. That asymmetry is the contract, not an oversight.
     machine().when().get(ENVIRONMENTS).then().statusCode(403);
     machine().when().get(SERVICES).then().statusCode(403);
@@ -355,6 +355,6 @@ class MachineGuardEnforcedTest {
   private static RequestSpecification admin() {
     return given()
         .header("X-Qits-User", "qits-bootstrap")
-        .header("X-Qits-Roles", "qits-platform:admin");
+        .header("X-Qits-Roles", "qits:admin");
   }
 }
