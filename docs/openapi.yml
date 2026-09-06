@@ -163,6 +163,8 @@ components:
           type: string
         packageName:
           type: string
+        priority:
+          type: string
         repoId:
           type: string
         projectId:
@@ -791,4 +793,4 @@ paths:
         - qits-platform:system
 info:
   title: qits-platform-deployments API
-  version: 2026.904.183030
+  version: 2026.906.23838

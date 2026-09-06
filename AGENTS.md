@@ -1285,6 +1285,28 @@ rows written before that.)
   requests outlive them by design. **The join is one batch query per listing**
   (`PdDeploymentRepository.listByIds`), never a fetch per row, and `DeploymentMapper.toDto` takes
   the deployment as a nullable ARGUMENT so it cannot become one.
+- **`priority` is RECORDED and acted on by nobody, and that is the whole feature for now** (V11).
+  qits-projects declares a priority per participating BRANCH of a release request (`LOWEST` …
+  `BLOCKING`, effective value = the max over the branches), qits-ci transcribes it onto
+  `SoftwareRelease`, and this component writes it on `pd_deployment_request`. **The deploy worker is
+  FIFO and stays FIFO** — queue ordering is the next feature and this column is what it will read.
+  Four things about it, each easy to undo by accident:
+  - **A display-only `String`, no enum, no check constraint.** The vocabulary is qits-projects' and
+    a copy here would be a second spelling of somebody else's decision — the no-shared-vocabulary
+    stance the rest of the intake path already takes. A word this build never heard of is stored.
+  - **Nullable everywhere, never backfilled.** Null is "the release stated none": every release cut
+    before the field existed, every event replayed from before it, and every manual-door POST that
+    did not name one. `CanonicalJson` is `NON_NULL`, so on the wire the absence is a missing key and
+    the subscriber must tolerate it **forever**, not merely across a rollout.
+  - **It can never refuse a release.** `deployments/control/ReleasePriorities` is a LENIENT helper —
+    trim, blank → null, longer than the column → null and a WARN — deliberately not
+    `DeploymentIdentifiers`, which throws and guards values that reach an argv, a URL or an image
+    path. This one reaches a column and a DTO field, so an advisory badge failing a green release
+    would be the regression.
+  - **`pd_owed_release` carries it too, and that is the load-bearing half.** `OwedReleaseSweep`
+    rebuilds the whole announcement from that row — another process, after a cutover, with the event
+    already claimed — so a field the acceptance ledger does not store is a field every re-driven
+    release silently loses. Anything added to `ReleaseAnnouncements.announce` goes in both.
 - **`control/RequestLifecycle` is the single spelling of pending-versus-completed**, and it states
   the rule as a POSITIVE list of the statuses that are still moving (`QUEUED`, `STARTING`,
   `SPEC_UNREADABLE`) plus an unanswered gate. `PdDeploymentStatus` is a varchar with no check

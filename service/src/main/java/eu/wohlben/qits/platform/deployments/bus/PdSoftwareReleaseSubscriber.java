@@ -155,6 +155,14 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
    * existed — or replayed from before it — carries no {@code repoName}. Both bind to null, and null
    * is a complete answer: {@link RepositoryRef} falls back to the id route, which is what this door
    * did for every release it has ever handled.
+   *
+   * <p><b>{@code priority} is the newest field and is bound for RECORDING only.</b> qits-projects
+   * declares it on a release request's participating branches and qits-ci transcribes the effective
+   * value here; this component writes it on the rows the release produces and nothing reads it to
+   * decide anything — the deploy worker is FIFO. Its absence must be tolerated <em>forever</em>,
+   * not merely during a rollout: qits-ci publishes {@code NON_NULL}, so a release whose request
+   * declared nothing carries no key at all, and every event in the log from before the field existed
+   * is replayed without one. Both bind to null, and null is what an older release genuinely means.
    */
   public record SoftwareReleasePayload(
       String repoId,
@@ -162,7 +170,8 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
       String repoName,
       String version,
       String packageType,
-      String packageName) {}
+      String packageName,
+      String priority) {}
 
   @Inject ReleaseAnnouncements announcements;
 
@@ -276,6 +285,10 @@ public class PdSoftwareReleaseSubscriber implements QitsDurableEventListener {
           applicationName,
           release.version(),
           release.packageName(),
+          // Absent on every release cut before qits-projects grew the field, and on every release
+          // whose request declared nothing — NON_NULL means no key rather than a null one. It is
+          // recorded and acted on by nobody, so an absence costs a badge and never a deployment.
+          release.priority(),
           causeOf(frame));
     } catch (BadRequestException e) {
       // An identifier this component refuses — a version that could escape an argv, an application

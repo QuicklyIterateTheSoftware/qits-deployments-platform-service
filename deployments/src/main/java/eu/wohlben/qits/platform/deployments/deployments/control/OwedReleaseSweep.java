@@ -208,6 +208,10 @@ public class OwedReleaseSweep {
           application,
           version,
           accepted.packageName(),
+          // Off the row, because there is nothing else left to read it from: the event was claimed
+          // by a process that is gone. A field the ledger did not store is one a re-driven release
+          // deploys without, which is why pd_owed_release carries this column at all.
+          accepted.priority(),
           accepted.causationId());
       return true;
     } catch (BadRequestException e) {

@@ -64,6 +64,7 @@ public class DeploymentMapper {
         request.version,
         request.environmentId,
         request.packageName,
+        request.priority,
         request.repoId,
         request.projectId,
         request.qualityGate,

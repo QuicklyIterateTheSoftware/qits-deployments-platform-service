@@ -29,6 +29,11 @@ import java.time.Instant;
  * same transaction that writes the row, so it is always set; the field exists because the first
  * real gate is the one that will leave it null for a while.
  *
+ * <p><b>{@code priority} is what the release request declared and is display-only.</b> It arrives
+ * from qits-projects through qits-ci and this component records it; nothing here orders anything by
+ * it — the deploy worker is FIFO. Null is a complete answer and the common one: the release stated
+ * none, which is every release cut before the field existed. A client renders a badge or nothing.
+ *
  * <p><b>{@code deploymentStatus} is the one field here that is not this row's own</b> — it is
  * joined from the deployment {@code deploymentId} names, and it is on the request because the
  * question a reader asks of a request spans both rows: "is the platform still doing something about
@@ -43,6 +48,7 @@ public record PdDeploymentRequestDto(
     String version,
     String environmentId,
     String packageName,
+    String priority,
     String repoId,
     String projectId,
     PdQualityGate qualityGate,

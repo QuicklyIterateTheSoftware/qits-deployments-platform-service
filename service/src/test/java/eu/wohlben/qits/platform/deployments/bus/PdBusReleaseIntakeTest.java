@@ -187,6 +187,47 @@ public class PdBusReleaseIntakeTest {
   }
 
   @Test
+  public void theDeclaredPriorityIsRecordedOnTheRequestAndReordersNothing() {
+    // The priority a release request declared, carried down from qits-projects through qits-ci and
+    // written on the request row. It is RECORDED and nothing else: the worker is FIFO, so what this
+    // asserts is a column and an ordinary deployment beside it.
+    createEntryTier("bus-priority");
+
+    subscriber.onFrame(priorityFrame("qits/bus-priority-app", NEWER, "HIGHER"));
+
+    awaitApplied(1);
+    assertEquals("bus-priority-app", driver.applied().get(0).applicationName());
+    assertEquals("HIGHER", newestRequest("bus-priority-app").priority);
+  }
+
+  @Test
+  public void anAbsentPriorityIsNullAndAnOverlongOneCostsTheBadgeRatherThanTheRelease() {
+    // Two absences that are the same answer. qits-ci publishes NON_NULL, so a release whose request
+    // declared nothing carries no `priority` key at all — and so does every event in the log from
+    // before the field existed, which is what a catch-up replays forever. Null is what those mean.
+    createEntryTier("bus-nopriority");
+
+    subscriber.onFrame(dockerFrame(STORAGE_UUID, "qits", "qits/bus-nopriority-app", NEWER));
+
+    awaitApplied(1);
+    assertNull(
+        newestRequest("bus-nopriority-app").priority,
+        "an absent key is `the release stated none`, not a value to invent");
+
+    // And the other end: a value too long for varchar(32). It is an advisory badge that reaches no
+    // argv and no image path, so it is dropped with a WARN — a release must never fail to deploy
+    // over a word somebody typed into a priority field.
+    subscriber.onFrame(priorityFrame("qits/bus-longpriority-app", NEWER, "X".repeat(64)));
+
+    awaitApplied(2);
+    assertEquals(
+        "bus-longpriority-app",
+        driver.applied().get(1).applicationName(),
+        "the release deployed exactly as it would have with no priority at all");
+    assertNull(newestRequest("bus-longpriority-app").priority);
+  }
+
+  @Test
   public void onlyDockerArtifactsAreEvenLookedAt() {
     // One release publishes a jar, an npm package, a docs bundle and an image as four events. Only
     // the image names something this component can put live; the rest select false and are stored
@@ -371,6 +412,18 @@ public class PdBusReleaseIntakeTest {
   private static EventFrame dockerFrame(
       String repoId, String projectId, String packageName, String version) {
     return releaseFrame(repoId, projectId, "docker", packageName, version);
+  }
+
+  /**
+   * The same release with a priority on it — canonical JSON is alphabetical, so the key sits
+   * between {@code packageType} and {@code projectId} exactly as qits-ci's mapper writes it.
+   */
+  private static EventFrame priorityFrame(String packageName, String version, String priority) {
+    return frame(
+        ("{\"packageName\":\"%s\",\"packageType\":\"docker\",\"priority\":\"%s\","
+                + "\"projectId\":\"qits\",\"repoId\":\"%s\",\"repository\":\"%s\","
+                + "\"version\":\"%s\"}")
+            .formatted(packageName, priority, STORAGE_UUID, STORAGE_UUID, version));
   }
 
   private static EventFrame releaseFrame(

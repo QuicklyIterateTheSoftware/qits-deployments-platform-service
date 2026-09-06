@@ -84,6 +84,18 @@ public class PdOwedRelease extends PanacheEntityBase implements CausedRow {
   @Column(name = "package_name", length = 255)
   public String packageName;
 
+  /**
+   * What the release request declared, carried here because <b>the re-drive reconstructs the whole
+   * announcement from this row</b> — in another process, with the event long since claimed and
+   * nothing left to ask. A column the ledger lacked would be a field a re-driven release silently
+   * deploys without.
+   *
+   * <p>Nullable, never backfilled, never validated: null is "the release stated none", which is
+   * every release cut before qits-projects grew the field. See {@code ReleasePriorities}.
+   */
+  @Column(length = 32)
+  public String priority;
+
   /** The repository's storage key — the coordinate the spec is read by. */
   @Column(name = "repo_id")
   public String repoId;
