@@ -39,6 +39,12 @@ class ConfigHostExtrasSourceTest {
 
   private static final ExtrasBearer NONE = Optional::empty;
 
+  /** The tier this deployment is going into — a path segment of the resolved read's address. */
+  private static final String ENV = "dev";
+
+  /** The released coordinate the overrides are resolved against — the read's query parameter. */
+  private static final String VERSION = "2026.903.113443";
+
   private ExtrasStub stub;
 
   @BeforeEach
@@ -68,10 +74,13 @@ class ConfigHostExtrasSourceTest {
   void noExtrasUrlIsTheFileBehaviourByteForByte() {
     // Unset is the shipped state and the whole compatibility claim: nothing is fetched, nothing is
     // parsed, and the answer is the config volume's file over the boot config exactly as before.
+    // The tier and the version are handed in and IGNORED here, which is not an oversight — a
+    // properties file on a volume has one answer per key, so an address with more in it would name
+    // a file that does not exist. This arm stayed byte-identical when the served one grew.
     ConfigHostExtrasSource source =
         ExtrasStub.source(boot(Map.of(P + "qits-ci.env.FOO", "bar")), NO_FILE, NONE, null);
 
-    assertEquals(List.of("FOO=bar"), env(source.forApplication("qits-ci")));
+    assertEquals(List.of("FOO=bar"), env(source.forDeployment("qits-ci", ENV, VERSION)));
     assertTrue(stub.paths().isEmpty(), "an unset url must reach nothing");
   }
 
@@ -81,11 +90,33 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
     assertEquals(
-        List.of("QITS_EVENTS_URL=http://dev-qits-events:8080"), env(source.forApplication("qits-ci")));
+        List.of("QITS_EVENTS_URL=http://dev-qits-events:8080"),
+        env(source.forDeployment("qits-ci", ENV, VERSION)));
+    // ADDRESSED BY THE PLACE AND THE RELEASE. The tier is a path segment because one application's
+    // configuration in dev is a different document from its configuration in prod, and the version
+    // is a parameter because it selects which declaration the overrides resolve against — which is
+    // what makes deploying an older version give that version's configuration back.
     assertEquals(
-        List.of("/configuration/api/applications/qits-ci/resolved"),
-        stub.paths(),
-        "the resolved read is one GET per argv, at the application's own path");
+        List.of("/configuration/api/applications/qits-ci/envs/dev/resolved?version=" + VERSION),
+        stub.targets(),
+        "the resolved read is one GET per argv, at this deployment's own address");
+  }
+
+  @Test
+  void anEnvironmentNameThatIsNotOneIsRefusedRatherThanEscaped() {
+    // The belt at the boundary, now on two segments rather than one: every tier name reaching here
+    // came out of the topology, where PdIdentifiers holds it to the dns-label charset, so a name
+    // that would need escaping is a name this component could not have stored. Refusing beats
+    // escaping, and it beats building the url and letting the peer decide.
+    ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
+
+    assertThrows(
+        ServiceExtras.Refused.class,
+        () -> source.forDeployment("qits-ci", "../prod", VERSION));
+    assertThrows(
+        ServiceExtras.Refused.class,
+        () -> source.forDeployment("qits-ci", ENV, "2026.903 113443"));
+    assertTrue(stub.paths().isEmpty(), "a refused address must reach nothing");
   }
 
   @Test
@@ -108,7 +139,7 @@ class ConfigHostExtrasSourceTest {
 
     assertEquals(
         List.of("QITS_EVENTS_URL=http://dev-qits-events:8080"),
-        env(source.forApplication("qits-ci")),
+        env(source.forDeployment("qits-ci", ENV, VERSION)),
         "the served map is the whole of it: the file's own key must not reach the argv");
   }
 
@@ -122,7 +153,7 @@ class ConfigHostExtrasSourceTest {
             boot(Map.of(P + "qits-ci.env.FOO", "stale")), NO_FILE, NONE, unreachable);
 
     ServiceExtras.Refused refused =
-        assertThrows(ServiceExtras.Refused.class, () -> source.forApplication("qits-ci"));
+        assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
 
     assertTrue(refused.getMessage().contains(unreachable), refused.getMessage());
   }
@@ -134,7 +165,7 @@ class ConfigHostExtrasSourceTest {
         stub.source(boot(Map.of(P + "qits-ci.env.FOO", "stale")), NO_FILE, NONE);
 
     ServiceExtras.Refused refused =
-        assertThrows(ServiceExtras.Refused.class, () -> source.forApplication("qits-ci"));
+        assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
 
     assertTrue(refused.getMessage().contains(stub.url()), refused.getMessage());
     assertTrue(refused.getMessage().contains("500"), refused.getMessage());
@@ -148,7 +179,7 @@ class ConfigHostExtrasSourceTest {
     stub.answers(404, "{}");
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forApplication("qits-ci"));
+    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
   }
 
   @Test
@@ -157,7 +188,7 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
     ServiceExtras.Refused refused =
-        assertThrows(ServiceExtras.Refused.class, () -> source.forApplication("qits-ci"));
+        assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
 
     assertTrue(refused.getMessage().contains(stub.url()), refused.getMessage());
   }
@@ -169,7 +200,7 @@ class ConfigHostExtrasSourceTest {
     stub.answers(200, "{\"headRevision\":9}");
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forApplication("qits-ci"));
+    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
   }
 
   @Test
@@ -178,7 +209,7 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source =
         stub.source(boot(Map.of()), NO_FILE, () -> Optional.of("a-machine-token"));
 
-    source.forApplication("qits-ci");
+    source.forDeployment("qits-ci", ENV, VERSION);
 
     assertEquals(List.of("Bearer a-machine-token"), stub.authorizations());
   }
@@ -191,7 +222,7 @@ class ConfigHostExtrasSourceTest {
     stub.resolves(1);
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    source.forApplication("qits-ci");
+    source.forDeployment("qits-ci", ENV, VERSION);
 
     assertEquals(1, stub.authorizations().size());
     assertNull(stub.authorizations().get(0));
@@ -204,7 +235,7 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
     source.attempts = 2;
 
-    assertEquals(List.of("FOO=bar"), env(source.forApplication("qits-ci")));
+    assertEquals(List.of("FOO=bar"), env(source.forDeployment("qits-ci", ENV, VERSION)));
     assertEquals(2, stub.paths().size(), "the second attempt is the one that answered");
   }
 
@@ -214,7 +245,7 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
     source.attempts = 3;
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forApplication("qits-ci"));
+    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
 
     assertEquals(3, stub.paths().size(), "spent, not unbounded");
   }
@@ -227,7 +258,7 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
     source.attempts = 3;
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forApplication("qits-ci"));
+    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
 
     assertEquals(1, stub.paths().size());
   }
@@ -242,7 +273,7 @@ class ConfigHostExtrasSourceTest {
     stub.resolves(42, P + "qits-ci.env.FOO", "bar");
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    List<String> logged = capture(() -> source.forApplication("qits-ci"));
+    List<String> logged = capture(() -> source.forDeployment("qits-ci", ENV, VERSION));
 
     assertTrue(
         logged.stream().anyMatch(line -> line.contains("config-revision=42")),

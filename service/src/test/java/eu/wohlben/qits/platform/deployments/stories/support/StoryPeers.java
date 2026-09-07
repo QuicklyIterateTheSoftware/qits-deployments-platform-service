@@ -36,10 +36,18 @@ import java.util.Optional;
  *       the spec read that decides <i>which places exist</i>. It is read at the BUILT sha, which is
  *       why an unknown key in an old commit's file is a failed deployment and why every retired key
  *       stays tolerated;
- *   <li><b>qits-configuration</b> — {@code GET /configuration/api/applications/<app>/resolved}, read
- *       ONCE PER ARGV. Where the url is set the service is <i>authoritative</i>, meaning sole: the
- *       config volume's file is not read at all, and a service that cannot be read REFUSES the
- *       deployment rather than falling back to a value that may be months stale;
+ *   <li><b>the git host, a second time</b> — the same address one file over, {@code
+ *       .config/qits/configuration.yml}: what the application declares about its own configuration,
+ *       read at the released tag and handed on unparsed. A repository that carries none answers 404
+ *       here, which is most of them and is a real request rather than an absence;
+ *   <li><b>qits-configuration</b> — {@code GET
+ *       /configuration/api/applications/<app>/envs/<env>/resolved}, read ONCE PER ARGV, and {@code
+ *       POST /configuration/api/applications/<app>/declarations/<version>}, written once per
+ *       release before its deployment is scheduled. Where the url is set the service is
+ *       <i>authoritative</i>, meaning sole: the config volume's file is not read at all, a service
+ *       that cannot be read REFUSES the deployment rather than falling back to a value that may be
+ *       months stale, and a declaration it will not take refuses the deployment before anything
+ *       runs;
  *   <li><b>qits-platform-idp</b> — {@code POST /idp/token}, the machine credential the read above
  *       presents. It is the {@code configuration} NAMED oidc client, and the peer count is one.
  * </ul>
@@ -106,6 +114,13 @@ public final class StoryPeers {
   /** Where the spec of one repository lives, at one commit — the path qits-ci reads a pipeline at. */
   public static final String SPEC_PATH = ".config/qits/deployments.yml";
 
+  /**
+   * The second file the git host serves at the same rev: what an application DECLARES about its own
+   * configuration. It is read through this component and belongs to qits-configuration, which is
+   * why the stub answers it as bytes and nobody here has an opinion about them.
+   */
+  public static final String DECLARATION_PATH = ".config/qits/configuration.yml";
+
   /** The one key qits-configuration states for {@link #CONFIGURED}, in the deployer's own grammar. */
   public static final String EXTRA_ENV_KEY = "env.QITS_FEATURE_FLAGS";
 
@@ -154,6 +169,31 @@ public final class StoryPeers {
   /** The application no pipeline ever published an image for. */
   public static final String UNPUBLISHED = "story-unpublished";
 
+  /** The application that carries a configuration declaration and has it seeded before it runs. */
+  public static final String DECLARED = "story-declared";
+
+  /**
+   * The application whose declaration qits-configuration refuses, every time.
+   *
+   * <p>A name rather than a flag, {@link #MISCONFIGURED}'s arrangement and its argument: carrying a
+   * declaration the store will not take is this application's whole identity in the catalogue, so
+   * the answer must not depend on what ran before it.
+   */
+  public static final String BROKEN_DECLARATION = "story-broken-declaration";
+
+  /** The status a store that has READ a declaration and refused it answers with. */
+  public static final int DECLARATION_REFUSED_STATUS = 422;
+
+  /**
+   * What each repository declares about its own configuration, at every rev — the second blob.
+   *
+   * <p>Only the two declaration stories carry one. Every other story application answers 404 here,
+   * which is the ordinary state of this platform: a repository that has not migrated its
+   * configuration yet seeds nothing and deploys exactly as it did. That 404 is a real request and
+   * shows up as a real edge, because it is one.
+   */
+  private static final Map<String, String> DECLARATIONS = new LinkedHashMap<>();
+
   static {
     SPECS.put(
         WEB,
@@ -179,6 +219,34 @@ public final class StoryPeers {
         """
         deployment_target: environment
         health_path: /q/health/ready
+        """);
+    SPECS.put(
+        DECLARED,
+        """
+        deployment_target: environment
+        health_path: /q/health/ready
+        """);
+    SPECS.put(
+        BROKEN_DECLARATION,
+        """
+        deployment_target: environment
+        health_path: /q/health/ready
+        """);
+
+    // The declaration bytes. Nothing in the deployer parses them — qits-configuration owns the
+    // grammar — so what a story can watch is that these exact characters travelled from one peer to
+    // the other, which is the whole of what a courier can be asked to prove.
+    DECLARATIONS.put(
+        DECLARED,
+        """
+        defaults:
+          QITS_FEATURE_FLAGS: trace-headers
+        """);
+    DECLARATIONS.put(
+        BROKEN_DECLARATION,
+        """
+        defaults:
+        	QITS_FEATURE_FLAGS: trace-headers
         """);
   }
 
@@ -232,14 +300,26 @@ public final class StoryPeers {
     String contentType = "application/json";
     String body = "{}";
 
-    String spec = specFor(path);
-    if (spec != null) {
+    String blob = blobFor(path);
+    String seeding = declarationSeedFor(method, path);
+    if (blob != null) {
       status = 200;
       contentType = "text/plain; charset=utf-8";
-      body = spec;
+      body = blob;
       // What the real git host answers every blob read with — the commit the rev resolved to, and
       // the only way a released deployment learns one.
       exchange.getResponseHeaders().add("Git-Commit-Sha", RESOLVED_COMMIT);
+    } else if (seeding != null) {
+      // The other direction, and the only write any peer here takes: a released version's
+      // declaration going INTO qits-configuration before its deployment is scheduled. 201 is the
+      // ordinary answer; one application is refused because that refusal is what it is for.
+      if (BROKEN_DECLARATION.equals(seeding)) {
+        status = DECLARATION_REFUSED_STATUS;
+        body = "{\"error\":\"line 2: found a tab character where an indentation space is expected\"}";
+      } else {
+        status = 201;
+        body = "{\"created\":true}";
+      }
     } else if (isTokenRequest(method, path)) {
       status = 200;
       // An hour, so the mint lands in exactly one story of the run — see the class javadoc.
@@ -280,26 +360,62 @@ public final class StoryPeers {
    * and a story that fell back to the id-addressed url would be documenting the compatibility arm
    * rather than the flow.
    */
-  private static String specFor(String path) {
+  private static String blobFor(String path) {
     String[] segments = path.split("/");
-    // ["", "git", project, repo, "blob", sha, ".config", "qits", "deployments.yml"]
-    if (segments.length != 9
-        || !"git".equals(segments[1])
-        || !"blob".equals(segments[4])
-        || !path.endsWith(SPEC_PATH)) {
+    // ["", "git", project, repo, "blob", rev, ".config", "qits", "<file>.yml"]
+    if (segments.length != 9 || !"git".equals(segments[1]) || !"blob".equals(segments[4])) {
       return null;
     }
-    return SPECS.get(segments[3]);
+    // ONE endpoint, two files, and which one is asked for is the last segment. The deployer reads
+    // both at the same rev through the same address, so a stub that served one and 404'd the other
+    // by construction would be describing a git host nobody runs.
+    if (path.endsWith(SPEC_PATH)) {
+      return SPECS.get(segments[3]);
+    }
+    if (path.endsWith(DECLARATION_PATH)) {
+      return DECLARATIONS.get(segments[3]);
+    }
+    return null;
   }
 
-  /** The application one {@code …/applications/<name>/resolved} asks about, or null. */
+  /**
+   * The application one {@code …/applications/<name>/envs/<env>/resolved} asks about, or null.
+   *
+   * <p><b>The tier is in the path now</b>, which is what makes one qits-configuration able to answer
+   * for every environment: the read used to be addressed by the application alone and a platform
+   * therefore needed one store per tier to tell dev's configuration from prod's.
+   */
   private static String resolvedApplication(String path) {
     String[] segments = path.split("/");
-    // ["", "configuration", "api", "applications", name, "resolved"]
-    if (segments.length != 6
+    // ["", "configuration", "api", "applications", name, "envs", env, "resolved"]
+    if (segments.length != 8
         || !"configuration".equals(segments[1])
         || !"applications".equals(segments[3])
-        || !"resolved".equals(segments[5])) {
+        || !"envs".equals(segments[5])
+        || !"resolved".equals(segments[7])) {
+      return null;
+    }
+    return segments[4];
+  }
+
+  /**
+   * The application one {@code POST …/applications/<name>/declarations/<version>} is seeding, or
+   * null.
+   *
+   * <p>The METHOD is half the match and not decoration: this is the one write any peer here takes,
+   * and a stub that answered a GET on the same path would let a bug that read where it should have
+   * written pass unnoticed.
+   */
+  private static String declarationSeedFor(String method, String path) {
+    if (!"POST".equals(method)) {
+      return null;
+    }
+    String[] segments = path.split("/");
+    // ["", "configuration", "api", "applications", name, "declarations", version]
+    if (segments.length != 7
+        || !"configuration".equals(segments[1])
+        || !"applications".equals(segments[3])
+        || !"declarations".equals(segments[5])) {
       return null;
     }
     return segments[4];
@@ -315,7 +431,11 @@ public final class StoryPeers {
    * real answer too — an application qits-configuration knows and which asks for nothing.
    */
   private static String resolvedBody(String application) {
-    if (!CONFIGURED.equals(application)) {
+    // Two applications state the key and they state it for different reasons: CONFIGURED because a
+    // platform put it there, DECLARED because the release seeded a declaration that resolves to it.
+    // The document is the same either way, which is the point — a deployment cannot tell where a
+    // resolved value came from, and must not be able to.
+    if (!CONFIGURED.equals(application) && !DECLARED.equals(application)) {
       return "{\"headRevision\":1,\"properties\":{}}";
     }
     return "{\"headRevision\":4,\"properties\":{\"qits.platform.deployments.extras."
@@ -360,10 +480,72 @@ public final class StoryPeers {
             + status);
   }
 
-  /** The label an answered configuration read renders as. */
-  public static String resolvedLabel(String application, int status) {
+  /** The label an answered DECLARATION read renders as — the second blob, at the same rev. */
+  public static String declarationLabel(String repository, String version, int status) {
     return Labels.scrub(
-        "GET /configuration/api/applications/" + application + "/resolved -> " + status);
+        "GET /git/"
+            + StoryTarget.PROJECT
+            + "/"
+            + repository
+            + "/blob/refs%2Ftags%2F"
+            + version
+            + "/"
+            + DECLARATION_PATH
+            + " -> "
+            + status);
+  }
+
+  /**
+   * The TWO labels a repository that carries no declaration produces — and two is the claim.
+   *
+   * <p>A name-addressed 404 is not believed on its own. The name route resolves through
+   * qits-projects and its database, so a read that lands while that service is being cut over gets
+   * a false miss — and here a false miss means seeding nothing for a version that really does
+   * declare something, leaving the store resolving an older declaration under a newer version. The
+   * id route needs no resolver, so the miss is checked there before it is taken as an answer. It is
+   * the spec read's own fallback, one file over, and this is where a diagram shows it costing a
+   * second request on every repository that has not migrated yet.
+   */
+  public static List<String> declarationMissLabels(
+      String repository, String repoId, String version) {
+    return List.of(
+        declarationLabel(repository, version, 404),
+        Labels.scrub(
+            "GET /git/"
+                + repoId
+                + "/blob/refs%2Ftags%2F"
+                + version
+                + "/"
+                + DECLARATION_PATH
+                + " -> 404"));
+  }
+
+  /**
+   * The label an answered configuration read renders as.
+   *
+   * <p>The tier is in it because the tier is in the address; the version is not, because it is a
+   * query parameter and the recording keeps paths. That is the same line the retry count sits on
+   * the far side of: a diagram says which dependencies exist, and the rest belongs to the log.
+   */
+  public static String resolvedLabel(String application, String environmentName, int status) {
+    return Labels.scrub(
+        "GET /configuration/api/applications/"
+            + application
+            + "/envs/"
+            + environmentName
+            + "/resolved -> "
+            + status);
+  }
+
+  /** The label the seed of one released version's declaration renders as. */
+  public static String declarationSeedLabel(String application, String version, int status) {
+    return Labels.scrub(
+        "POST /configuration/api/applications/"
+            + application
+            + "/declarations/"
+            + version
+            + " -> "
+            + status);
   }
 
   /** The label the deployer's own credential mint renders as. */

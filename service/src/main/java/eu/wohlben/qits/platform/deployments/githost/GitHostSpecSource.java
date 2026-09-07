@@ -23,6 +23,13 @@ import org.jboss.logging.Logger;
  * GET &lt;git-host-url&gt;/git/&lt;repoId&gt;/blob/&lt;rev&gt;/.config/qits/deployments.yml
  * </pre>
  *
+ * <p><b>It reads TWO files now, and they are one read twice rather than two readers.</b> Beside the
+ * spec sits {@link SpecSource#DECLARATION_PATH}, the configuration a repository declares for its own
+ * application, fetched at the same rev through the same address pair and handed on <b>unparsed</b> —
+ * qits-configuration owns that grammar. Everything below the file name is shared: the encoding of
+ * the rev, the name-then-id fallback, the 404-is-an-answer stance and the retryable-versus-permanent
+ * classification. See {@link #readDeclaration}.
+ *
  * <p><b>The rev is the RELEASED TAG, and it is fully qualified.</b> A deployment is a version now,
  * so the file that decides where its container runs has to be the file that version was cut from —
  * {@code refs/tags/2026.903.113443}, never the tip of a branch and never a bare tag name (a branch
@@ -104,7 +111,7 @@ public class GitHostSpecSource implements SpecSource {
 
   @Override
   public SpecRead read(RepositoryRef repository, String rev) {
-    String url = blobUrl(address(repository), rev);
+    String url = blobUrl(address(repository), rev, SPEC_PATH);
     HttpResponse<String> response = get(url);
 
     if (response.statusCode() == 404) {
@@ -116,7 +123,7 @@ public class GitHostSpecSource implements SpecSource {
       // id-addressed route needs no resolver, so a name-addressed miss is retried there before it
       // is believed. A true no-spec repository 404s on both and still gets the defaults.
       if (repository.nameAddressed()) {
-        String idUrl = blobUrl(repository.repoId(), rev);
+        String idUrl = blobUrl(repository.repoId(), rev, SPEC_PATH);
         HttpResponse<String> byId = get(idUrl);
         if (byId.statusCode() == 200) {
           return new SpecRead(
@@ -145,6 +152,60 @@ public class GitHostSpecSource implements SpecSource {
         DeploymentSpecParser.parse(
             response.body(), SPEC_PATH + " of " + repository.applicationName() + "@" + rev),
         commitShaOf(response));
+  }
+
+  /**
+   * The second blob, at the same two addresses and with the same classification: {@link
+   * SpecSource#DECLARATION_PATH}, returned <b>unparsed</b>.
+   *
+   * <pre>
+   * GET &lt;git-host-url&gt;/git/&lt;projectId&gt;/&lt;repoName&gt;/blob/&lt;rev&gt;/.config/qits/configuration.yml
+   * GET &lt;git-host-url&gt;/git/&lt;repoId&gt;/blob/&lt;rev&gt;/.config/qits/configuration.yml
+   * </pre>
+   *
+   * <p><b>Nothing here reads the body.</b> qits-configuration owns the declaration grammar and is
+   * the one thing that validates it — this hands the bytes on as the body of one POST. So there is
+   * no parse arm, and therefore no permanent-failure arm that is this component's own: every failure
+   * this can raise is a failure of the HOP, which is why the classification below is {@link
+   * #statusFailure}'s unchanged.
+   *
+   * <p><b>The name-then-id fallback is {@link #read}'s, for {@link #read}'s reason</b> — the name
+   * route resolves through qits-projects and can answer a false 404 while that service is being cut
+   * over, and believing one here would seed nothing for a version that really does declare
+   * something. A double 404 is {@link DeclarationRead#absent()}: a repository that has not been
+   * migrated yet, which is most of them and is a clean answer.
+   *
+   * <p><b>No {@code Git-Commit-Sha} is wanted from this read.</b> The commit is the spec read's
+   * answer and the row already has it; asking twice would be two sources for one fact.
+   */
+  @Override
+  public DeclarationRead readDeclaration(RepositoryRef repository, String rev) {
+    String url = blobUrl(address(repository), rev, DECLARATION_PATH);
+    HttpResponse<String> response = get(url);
+
+    if (response.statusCode() == 404) {
+      if (repository.nameAddressed()) {
+        String idUrl = blobUrl(repository.repoId(), rev, DECLARATION_PATH);
+        HttpResponse<String> byId = get(idUrl);
+        if (byId.statusCode() == 200) {
+          return new DeclarationRead(byId.body());
+        }
+        if (byId.statusCode() != 404) {
+          throw statusFailure(idUrl, byId.statusCode());
+        }
+      }
+      LOG.debugf(
+          "%s carries no %s at %s — nothing to seed, which is what a repository that has not"
+              + " migrated its configuration yet looks like",
+          repository.applicationName(), DECLARATION_PATH, rev);
+      return DeclarationRead.absent();
+    }
+    if (response.statusCode() != 200) {
+      throw statusFailure(url, response.statusCode());
+    }
+    // Verbatim. Anything done to these bytes here is a difference between what the repository wrote
+    // and what the platform stores.
+    return new DeclarationRead(response.body());
   }
 
   /**
@@ -195,19 +256,24 @@ public class GitHostSpecSource implements SpecSource {
    * A rev is ONE path segment to the git host, whose route regex is {@code [^/]+} and whose own
    * charset refuses a literal slash — so {@code refs/tags/<version>} has to arrive percent-encoded.
    * Package-private so {@code GitHostSpecSourceTest} can spell the expected url without a socket.
+   *
+   * <p><b>The FILE is a parameter now</b>, because the same blob endpoint serves two of them: the
+   * deployment spec this class parses, and the configuration declaration it hands on unread. One
+   * builder rather than two keeps the rev encoding — the thing that was got wrong once and cost
+   * every release-tag read a 404 — spelled in a single place.
    */
-  static String blobUrl(String gitHostUrl, String addressSegment, String rev) {
+  static String blobUrl(String gitHostUrl, String addressSegment, String rev, String path) {
     return trimTrailingSlash(gitHostUrl)
         + "/git/"
         + addressSegment
         + "/blob/"
         + rev.replace("/", "%2F")
         + "/"
-        + SPEC_PATH;
+        + path;
   }
 
-  private String blobUrl(String addressSegment, String rev) {
-    return blobUrl(gitHostUrl, addressSegment, rev);
+  private String blobUrl(String addressSegment, String rev, String path) {
+    return blobUrl(gitHostUrl, addressSegment, rev, path);
   }
 
   private HttpResponse<String> get(String url) {

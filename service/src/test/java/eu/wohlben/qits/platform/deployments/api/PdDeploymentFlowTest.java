@@ -2,10 +2,12 @@ package eu.wohlben.qits.platform.deployments.api;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeclarationSeed;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
@@ -43,9 +45,21 @@ public class PdDeploymentFlowTest {
   private static final String V_A = "2026.903.93059";
   private static final String V_B = "2026.903.193059";
 
+  /**
+   * A repository's configuration declaration, as the git host serves it. Bytes rather than a
+   * document: nothing in this component parses one, so what a test asserts is that these exact
+   * characters reached the store.
+   */
+  private static final String DECLARATION =
+      """
+      defaults:
+        QITS_FEATURE_FLAGS: trace-headers
+      """;
+
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeDeclarationSeed declarations;
   @Inject DeployService deployService;
   @Inject PdDeploymentRepository deployments;
 
@@ -54,6 +68,7 @@ public class PdDeploymentFlowTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    declarations.reset();
   }
 
   /**
@@ -746,6 +761,165 @@ public class PdDeploymentFlowTest {
     awaitWorkerIdle();
     awaitDeployments(environmentId, 0);
     assertEquals(List.of(), driver.pulled());
+  }
+
+  // --- the declaration, seeded before anything is scheduled ---------------------------------------
+
+  @Test
+  public void theDeclarationIsSeededBeforeTheContainerIsAskedFor() {
+    // The ordering IS the feature. The extras this deployment is about to read are qits-configuration
+    // resolving THIS version's declaration, so a seed that happened after the argv would put a
+    // container live against the previous version's configuration — green, silent, and wrong until
+    // somebody noticed. So the store has the file before the orchestrator is asked for anything.
+    String environmentId = createEnvironment("flow-declared");
+    specs.scriptDeclaration("repo-declared", DECLARATION);
+
+    postRelease("repo-declared", V_A);
+    assertEquals("ACTIVE", awaitDeployments(environmentId, 1).get(0).get("status"));
+
+    List<FakeDeclarationSeed.Seeded> seeded = declarations.seeded();
+    assertEquals(1, seeded.size(), "one release, one seed: " + seeded);
+    assertEquals("repo-declared", seeded.get(0).applicationName());
+    assertEquals(V_A, seeded.get(0).version(), "seeded under the version it was released at");
+    // Byte-identical. Nothing on this side parses the file — the store owns the grammar — so a
+    // difference between what the git host served and what the store was handed could only be
+    // introduced here.
+    assertEquals(DECLARATION, seeded.get(0).yaml());
+    // ...and the plane the spec asked for, which is what the store resolves the overrides against.
+    assertEquals(PdDeploymentTarget.ENVIRONMENT, seeded.get(0).target());
+  }
+
+  @Test
+  public void oneReleaseSeedsOnceHoweverManyPlacesItLandsIn() {
+    // The seed sits OUTSIDE the loop that queues rows, and that is the claim. The POST is addressed
+    // by (application, version) and is idempotent by content hash, so a declaration is a statement
+    // about a released VERSION and says nothing about where it lands — a fan-out that seeded per row
+    // would be one file POSTed n times to be told n-1 times that it was already stored.
+    //
+    // Today's fan-out is one row, because entryTiers() answers with the one designated tier; the
+    // structural claim is that this number follows the release rather than the places, so it stays
+    // one when a promotion ladder makes places plural.
+    String environmentId = createEnvironment("flow-declared-plane");
+    specs.script(
+        "repo-declared-plane",
+        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    specs.scriptDeclaration("repo-declared-plane", DECLARATION);
+
+    postRelease("repo-declared-plane", V_A);
+    awaitApplied(1);
+    awaitWorkerIdle();
+
+    List<FakeDeclarationSeed.Seeded> seeded = declarations.seeded();
+    assertEquals(1, seeded.size(), "one seed for the whole event: " + seeded);
+    assertEquals(
+        PdDeploymentTarget.PLATFORM,
+        seeded.get(0).target(),
+        "the plane reaches the store, because a platform declaration resolves against the"
+            + " platform's own overrides");
+  }
+
+  @Test
+  public void aRepositoryThatDeclaresNoConfigurationDeploysAndSeedsNothing() {
+    // The ordinary case for a long while, and it must cost nothing: every repository on this
+    // platform predates the file. An absent declaration is a clean answer — "not migrated yet" —
+    // not an empty declaration and not a refusal.
+    String environmentId = createEnvironment("flow-undeclared-config");
+
+    postRelease("repo-undeclared-config", V_A);
+
+    assertEquals("ACTIVE", awaitDeployments(environmentId, 1).get(0).get("status"));
+    assertEquals(List.of(), declarations.seeded(), "nothing was seeded");
+  }
+
+  @Test
+  public void aDeclarationTheStoreRefusesStopsTheDeploymentBeforeAnythingRuns() {
+    // The file was READ by the store and refused, which is the repository's problem: the commit
+    // carries a broken configuration.yml and the fix is a new release. The deployment is recorded
+    // rather than attempted — the rows exist, so the refusal is readable where every other outcome
+    // is, and nothing was created that has to be undone.
+    String environmentId = createEnvironment("flow-declaration-broken");
+    specs.scriptDeclaration("repo-declaration-broken", DECLARATION);
+    declarations.refuseBroken(
+        "repo-declaration-broken",
+        "qits-configuration refused the declaration of repo-declaration-broken@"
+            + V_A
+            + " (.config/qits/configuration.yml): 422 — line 3: mapping values are not allowed"
+            + " here. The file at the released tag is broken; fix it and cut a new release.");
+
+    postRelease("repo-declaration-broken", V_A);
+
+    Map<String, Object> row = awaitDeployments(environmentId, 1).get(0);
+    assertEquals("DECLARATION_REFUSED", row.get("status"));
+    assertEquals(V_A, row.get("version"));
+    assertTrue(
+        ((String) row.get("detail")).contains("fix it and cut a new release"),
+        "the row sends a person to the repository: " + row.get("detail"));
+    // Nothing reached the orchestrator at all: the seed is pre-scheduling, so a refusal here has
+    // pulled nothing and applied nothing.
+    assertEquals(List.of(), driver.pulled());
+    assertEquals(List.of(), driver.applied());
+  }
+
+  @Test
+  public void aStoreThatCannotBeReachedRefusesTheDeploymentRatherThanRunningWithoutIt() {
+    // The other flavour, one word and a different first line. Nothing read the file, so nothing is
+    // being claimed about the repository — what this says is that qits-configuration is down and
+    // the deployment was decided rather than left waiting. Deploying anyway is the one thing it
+    // must not do: the container would come up against whatever the store last resolved.
+    String environmentId = createEnvironment("flow-declaration-down");
+    specs.scriptDeclaration("repo-declaration-down", DECLARATION);
+    declarations.refuseUnavailable(
+        "repo-declaration-down",
+        "http://qits-configuration:8080 could not accept the declaration of"
+            + " repo-declaration-down@"
+            + V_A
+            + " after 2 attempts: it answered 503. qits-configuration is unreachable — the"
+            + " deployment is refused rather than run against config it could not seed.");
+
+    postRelease("repo-declaration-down", V_A);
+
+    Map<String, Object> row = awaitDeployments(environmentId, 1).get(0);
+    assertEquals(
+        "DECLARATION_REFUSED",
+        row.get("status"),
+        "one word for both flavours — to everything downstream this means exactly one thing");
+    assertTrue(
+        ((String) row.get("detail")).contains("qits-configuration is unreachable"),
+        "the row names the platform's failure rather than the repository's: " + row.get("detail"));
+    assertEquals(List.of(), driver.applied());
+  }
+
+  @Test
+  public void aRefusedDeclarationReadsAsACompletedRequestCarryingThatWord() {
+    // The join two rows away: the gate is on the request and the container is on the deployment, and
+    // a reader asking "is the platform still doing something about this release" needs both. A
+    // refused declaration is COMPLETED — nothing re-asks it, unlike SPEC_UNREADABLE — which is
+    // RequestLifecycle's positive in-flight list answering correctly about a word it never heard of.
+    String environmentId = createEnvironment("flow-declaration-request");
+    specs.scriptDeclaration("repo-declaration-request", DECLARATION);
+    declarations.refuseBroken("repo-declaration-request", "422 — the file at the tag is broken");
+
+    postRelease("repo-declaration-request", V_A);
+    awaitDeployments(environmentId, 1);
+
+    List<Map<String, Object>> requests =
+        given()
+            .when()
+            .get(
+                "/platform-deployments/api/deployment-requests?environmentId="
+                    + environmentId
+                    + "&applicationName=repo-declaration-request")
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .getList("deploymentRequests");
+
+    assertEquals(1, requests.size(), "one release, one request: " + requests);
+    assertEquals("DECLARATION_REFUSED", requests.get(0).get("deploymentStatus"));
+    assertNotNull(
+        requests.get(0).get("deploymentId"),
+        "the gate was met and a deployment WAS queued — what was refused came after it");
   }
 
   @Test

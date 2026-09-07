@@ -1263,7 +1263,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // belong to the membership while everything else belongs to the flags below it, and one
     // snapshot is what keeps every reading of one deployment in agreement.
     ServiceExtras extras =
-        ServiceExtras.of(extrasSource.forApplication(spec.applicationName()), spec.applicationName());
+        ServiceExtras.of(
+            extrasSource.forDeployment(
+                spec.applicationName(), spec.environmentName(), spec.version()),
+            spec.applicationName());
     List<String> argv =
         new ArrayList<>(
             List.of(
@@ -1414,7 +1417,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // One snapshot for this argv, as the create's is: an update states the environment and nothing
     // else, so this is the whole of what deployment config contributes here.
     ServiceExtras extras =
-        ServiceExtras.of(extrasSource.forApplication(spec.applicationName()), spec.applicationName());
+        ServiceExtras.of(
+            extrasSource.forDeployment(
+                spec.applicationName(), spec.environmentName(), spec.version()),
+            spec.applicationName());
     for (String variable : extras.env()) {
       // After this component's own, which is the precedence rule: the last assignment of a key
       // wins, so what config says outranks what this component defaults.

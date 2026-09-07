@@ -331,6 +331,14 @@ public interface DeploymentDriver {
    * is the deployment's own identity — the sha the row was created with and the image was addressed
    * by — and it becomes the service's {@code service.version} resource attribute.
    *
+   * <p>{@code version} is the released CalVer coordinate, and it is here because the <b>extras read
+   * is addressed by it</b> now: a deployment's configuration is resolved for one (application,
+   * environment, version) rather than for an application in the abstract, so an implementation
+   * building an argv has to be able to say which release it is building it for. It is a second
+   * field rather than a reuse of the one above because they answer different questions — the
+   * coordinate the release published, and the commit it resolved to, which may legitimately be
+   * null.
+   *
    * <p>{@code networks} is the <b>full membership</b>, primary first, and declaring it whole is
    * what lets an orchestrator that cannot join afterwards do the job at all: every swarm {@code
    * --network-add} recreates the task, so a hub-and-spoke model built out of joins would turn one
@@ -375,6 +383,7 @@ public interface DeploymentDriver {
       String applicationName,
       String deploymentId,
       String commitSha,
+      String version,
       String deploymentName,
       String wireAlias,
       List<String> networks,

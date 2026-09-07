@@ -25,10 +25,23 @@ import org.eclipse.microprofile.config.Config;
 public interface DeploymentExtrasSource {
 
   /**
-   * The config this application's extras are read out of, as it reads now.
+   * The config this deployment's extras are read out of, as it reads now.
+   *
+   * <p><b>One call is one snapshot for one DEPLOYMENT</b>, which is the invariant above narrowed to
+   * what it always meant. The answer used to be addressed by the application alone, which read as
+   * "this application's configuration" and could only ever be one thing per platform; it is
+   * addressed by the tier and the released version too, because a configuration that cannot differ
+   * between {@code dev} and {@code prod} is not configuration, and one that cannot differ between
+   * releases makes rolling a version back a config change nobody made. The seam still returns a
+   * fixed {@link Config} and a caller still takes exactly one per argv build.
    *
    * @param application the deployed application's name — the segment in the key family
+   * @param environmentName the tier this deployment is going into. A platform-plane service has one
+   *     too: it is deployed into the designated environment like everything else, and what stays the
+   *     plane's own is its address rather than where it runs.
+   * @param version the released coordinate — what the image is tagged with and what the declaration
+   *     was seeded under
    * @throws ServiceExtras.Refused the extras could not be read
    */
-  Config forApplication(String application);
+  Config forDeployment(String application, String environmentName, String version);
 }

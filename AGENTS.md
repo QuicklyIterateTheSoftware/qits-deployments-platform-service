@@ -9,14 +9,18 @@ build → registration → health-gated cutover). This file is the working conve
 `mvn install` elsewhere, no credentials, **no network**. That is why the poms duplicate versions
 instead of inheriting them, and why every seam that reaches outside the process is faked rather than
 skipped: `FakeDeploymentDriver` behind `DeploymentDriver` (the orchestrator), `FakeSpecSource` behind
-`SpecSource` (the git host) and `FakeResourceProvisioner` behind `ResourceProvisioner` (the
-platform's postgres). **Three fakes** — the ancestor's fourth, a stub HTTP server for the topology,
-dissolved when the topology became a repository query.
+`SpecSource` (the git host), `FakeResourceProvisioner` behind `ResourceProvisioner` (the
+platform's postgres) and `FakeDeclarationSeed` behind `DeclarationSeed` (qits-configuration's
+declaration intake). **Four fakes** — the ancestor's stub HTTP server for the topology dissolved
+when the topology became a repository query, and the fourth arrived with the seed.
 
-**The fourth seam, `DeploymentExtrasSource`, has no `@Mock` fake and that is deliberate** — it
+**One seam, `DeploymentExtrasSource`, has no `@Mock` fake and that is deliberate** — it
 returns a `Config` rather than holding a conversation, so a test states one in a lambda. Nothing
 about it reaches the network in the shipped state either: `qits.platform.deployments.extras-url` is
 unset, so the suite reads the same config it always read. See the extras section below.
+**`DeclarationSeed` is the same peer and takes the opposite shape**, which is the distinction worth
+keeping: it POSTs a body and is answered with a decision, and the two decisions end a deployment
+differently — a thing to script and to read back, which is a bean rather than a lambda.
 
 The one thing the suite does start is a **postgres of its own**: the component's store is one now,
 and `testdb/EmbeddedPg` spawns zonky's real binaries as a child process. A maven dependency, not a
@@ -73,8 +77,9 @@ Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
 - **`deployments/`** (`…deployments.*`) — the execution: `DeployService`, `EnvironmentOperations`,
   `RollbackPins`, `DeploymentSpecParser`, `DeploymentIdentifiers` (what only reaches an argv),
   `ImageRefs`, `ContainerNames`, `PdProcess`, `ResourceProvisioning` and `BootResourceRegistration`,
-  and the four seams `DeploymentDriver` / `SpecSource` / `ResourceProvisioner` /
-  `DeploymentExtrasSource` plus the announcement port `ReleaseAnnouncements` and the ordering
+  and the five seams `DeploymentDriver` / `SpecSource` / `ResourceProvisioner` /
+  `DeploymentExtrasSource` / `DeclarationSeed` plus the announcement port `ReleaseAnnouncements` and
+  the ordering
   collapse `ReleaseTips` behind it (with `Versions` and `PackageNames`), and the outgoing port
   `DeployAnnouncer`.
 - **`deployments-events/`** (`…deployments.events.*`) — the event VOCABULARY: four plain records
@@ -104,13 +109,14 @@ containers. The concrete consequence is `EnvironmentOperations`: creating a tier
 (`environments`) *and* a network (`deployments`), so the composition lives on the execution side and
 `EnvironmentService` stays socketless. Do not put a driver call in `environments/`.
 
-**The seam rule is one rule, applied four times.** Everything the domain modules cannot do — shell
-out to docker, fetch a file over HTTP, speak DDL to somebody else's server — is an interface there
-and an implementation in `service/`, with a scripted double in the suite. `ResourceProvisioner` was
-the third; **`DeploymentExtrasSource` is the fourth** and took the shape unchanged. Do not put a
-client in a domain module.
+**The seam rule is one rule, applied five times.** Everything the domain modules cannot do — shell
+out to docker, fetch a file over HTTP, speak DDL to somebody else's server, hand a file to a store —
+is an interface there and an implementation in `service/`, with a scripted double in the suite.
+`ResourceProvisioner` was the third; `DeploymentExtrasSource` is the fourth and took the shape
+unchanged; **`DeclarationSeed` is the fifth**, and it is the first that WRITES to a peer. Do not put
+a client in a domain module.
 
-**The fourth one's double is a lambda, not a `@Mock` bean, and that is the seam's own shape.**
+**The extras seam's double is a lambda, not a `@Mock` bean, and that is the seam's own shape.**
 `DeploymentExtrasSource` is a `@FunctionalInterface` returning a `Config`, so a test that wants the
 file behaviour writes `application -> ExtrasSnapshot.over(boot, file)` and a test that wants a
 served one writes the map. There is no `FakeDeploymentExtrasSource` to reset, because nothing here
@@ -118,6 +124,14 @@ is a conversation to script. What IS scripted is the HTTP — `confighost/Extras
 server on a real socket — and only for `ConfigHostExtrasSource`'s own tests, where the request is
 what is under test: the url it is built at, the headers it carries and the patience it spends. A
 fake at the seam there would assert this suite's model of a client.
+
+**`DeclarationSeed`'s double IS a `@Mock` bean, and the asymmetry is the argument rather than an
+inconsistency.** That seam holds a conversation: a body goes out, a status comes back, and a 409 or
+a 422 ends the deployment differently from a 503 that outlasted the budget. A test wants both
+directions — script the answer, then read back what was sent, the bytes included — and a lambda
+gives neither. So `FakeDeclarationSeed` sits beside the other three, reset in `@BeforeEach`, while
+`confighost/ExtrasStub` grew a declarations arm and keeps holding the HTTP half for
+`ConfigHostDeclarationSeedTest`, where the request itself is what is under test.
 
 ## What the merge dissolved (do not bring it back)
 
@@ -628,6 +642,7 @@ Three of the five outcomes `FAILED` used to cover have their own word, one write
 | `SUPERSEDED` | a restart interrupted this in-flight row and a newer sha is serving its place | the startup sweep's verdict |
 | `GONE` | a formerly `ACTIVE` row whose container two observation passes found absent | `DeploymentObserver.demote` |
 | `SCALED_TO_ZERO` | the workload is **deliberately stopped** — somebody scaled the application to 0 | `ApplicationScaling` on the operator's own action, and `DeploymentObserver.pause` for a scale performed by hand |
+| `DECLARATION_REFUSED` | the release's `.config/qits/configuration.yml` was not seeded into qits-configuration, so the deployment was **never scheduled** | `DeployService.deployReadSpec`, off `DeclarationRefused` — see the declaration section below |
 | `FAILED` | the attempt ended and **nothing is known to serve the place** | everything else — refused apply, image pull error, convergence failure with no rollback, interrupted row with no successor |
 
 Four things that are decisions rather than details:
@@ -649,6 +664,15 @@ Four things that are decisions rather than details:
   and the sweep's `listByStatus(QUEUED|STARTING)`: every status query here is a **positive** list, so
   a new word leaks into none of them. Keep it that way — a `status != ACTIVE` filter would be the
   regression.
+
+  **`DECLARATION_REFUSED` was audited against that claim rather than assumed into it**, and the
+  audit is the shape to repeat for the next word: `RequestLifecycle.IN_FLIGHT`, the observer's
+  candidate and recoverable sets, `RollbackPins.SERVED`, the sweep's two `listByStatus` queries and
+  the retirement door's two refusal sets are all positive lists, so the new word is completed,
+  unobserved, unpinned and retirable without a line changing. The one negative test on a write path
+  is `ApplicationScaling`'s `!= QUEUED && != STARTING`, and it is unreachable here for a structural
+  reason rather than a lucky one: the scale door refuses an application whose current row names no
+  service, and a deployment refused before it was scheduled never named one.
 
 ## The health gate is patient, and that is not a tuning choice
 
@@ -868,12 +892,22 @@ stale value the whole thing exists to kill and would ship a green deployment car
 ### The file is the cold-boot source, and qits-configuration is the source
 
 **`qits.platform.deployments.extras-url` is optional and UNSET SHIPPED**, and unset is the file
-behaviour above byte for byte: no request, no parse, nothing to configure. Set — a deployment sends
-`QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL=http://dev-qits-configuration:8080` — **that service is
+behaviour above byte for byte: no request, no parse, nothing to configure — and, since the
+declaration seed, nothing seeded either: unset means there is no store at all. Set — a deployment
+sends `QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL=http://qits-configuration:8080` — **that service is
 AUTHORITATIVE**, read once per argv build at
-`GET <url>/configuration/api/applications/<application>/resolved`, whose `properties` map arrives in
-the full `qits.platform.deployments.extras.<app>.*` spelling. `ServiceExtras` stays the single
-parser of the grammar — nothing in `confighost` translates a key.
+`GET <url>/configuration/api/applications/<app>/envs/<env>/resolved?version=<version>`, whose
+`properties` map arrives in the full `qits.platform.deployments.extras.<app>.*` spelling.
+`ServiceExtras` stays the single parser of the grammar — nothing in `confighost` translates a key.
+
+**The address grew a tier and a version, and the example lost its tier prefix in the same change.**
+It used to be `.../applications/<app>/resolved` against `http://dev-qits-configuration:8080` — a
+read addressed by the application alone, which could only tell dev's configuration from prod's by
+being a different service per tier. The tier is a path segment now and the version is a query
+parameter, so **one qits-configuration answers for the whole platform**: the segment is what makes
+two tiers two documents, and the parameter is what makes deploying an older version give back that
+version's configuration rather than the newest one's. Same key, same `Optional` semantics, same
+body — `{headRevision, properties}` is unchanged, and so is everything above the seam.
 
 **AUTHORITATIVE MEANS SOLE, and that is the 2026-08-17 correction.** With the url set the file is
 **not read at all**: the served map over this process's boot config is the whole snapshot. It was
@@ -931,6 +965,60 @@ This component's own env flags (`QITS_ENVIRONMENT`, `QITS_APPLICATION`, `OTEL_RE
 and its `QUARKUS_`-spelled twin) are written **before** the deployment's own, and docker keeps the
 **last** assignment of a repeated key — measured, not assumed. So they are defaults an operator
 overrides, and the ordering is the precedence rule: never reorder them past the extras.
+
+### The declaration goes the OTHER way, and it goes before the deployment (2026-09-07)
+
+**Everything above is the read. This is the write, and it is the only one this component makes to a
+peer.** What qits-configuration RESOLVES is an application's own declaration with the platform's
+overrides layered over it — and that declaration is a file in the repository,
+`.config/qits/configuration.yml`, beside the deployment spec. So a release seeds it: the file is
+fetched at the released tag (above) and POSTed to the store before the deployment it belongs to is
+scheduled.
+
+    POST <extras-url>/configuration/api/applications/<app>/declarations/<version>?deploymentTarget=<platform|environment>
+    Content-Type: application/yaml
+    <the file, verbatim>
+
+Seven things about it, each easy to undo by accident:
+
+- **The ORDER is the feature.** The seed sits in `DeployService.deployReadSpec` between `queue` and
+  the execute loop: after the rows exist, so a refusal has somewhere to be recorded and is readable
+  on the tier's listing where every other outcome is; and before anything is scheduled, so the
+  container that comes up resolves against **its own version's** declaration. Seeded after the argv,
+  a deployment would go green against the previous version's configuration — invisibly, which is
+  the failure class this whole line of work exists to end. It is still pre-scheduling: `queue`
+  writes rows, `execute` is what asks an orchestrator for anything.
+- **ONE seed per deployment EVENT, not per row.** The POST is addressed by (application, version)
+  and is idempotent by content hash, so a fan-out shares it — a declaration is a statement about a
+  released version and says nothing about where it lands. That is why the call is outside the loop
+  that queues rows, and it stays one when a promotion ladder makes places plural. Today
+  `entryTiers()` answers with one tier, so the difference is structural rather than observable.
+- **A refusal is `DECLARATION_REFUSED` and it is TERMINAL**, unlike `SPEC_UNREADABLE`. Both of its
+  flavours were *answered*: the store read the file and refused it (409/422 — the released tag
+  carries a broken file, and reading it again says the same), or the store outlasted the patience
+  budget and the deployment had to be decided. Nothing re-asks either. The detail's **first line**
+  is what distinguishes them, because they ask different things of a person — one names the
+  repository and the remedy, the other names the url that would not answer.
+- **The status map is asked in two halves.** 2xx is done (201 created, 200 the idempotent no-op).
+  409 and 422 are `DECLARATION_BROKEN` **immediately and never retried**. 5xx, a timeout and a
+  refused connection are `SERVICE_UNAVAILABLE` after the budget. **Any other 4xx is
+  `SERVICE_UNAVAILABLE` with no retry** — a 404 on a path this component built is a mis-deployed
+  store, not patience material, and it is deliberately not `DECLARATION_BROKEN` because nothing read
+  the file: sending a person to a repository over a 401 would be the wrong repository.
+- **It shares the extras read's WHOLE posture and adds no key of its own** — the same
+  `extras-url` base, the same `X-Qits-User`/`X-Qits-Roles` pair, the same `ExtrasBearer`, the same
+  `extras-timeout-seconds`/`extras-attempts` budget. That is not economy: it is the same peer, and
+  **the peer count stays one**. A second url key would let a platform seed one store and resolve
+  against another, which is a deployment configured by a document nobody wrote; a second credential
+  would be a second peer and would want the argument the first one made.
+- **Unset `extras-url` is a NO-OP, and it has to be.** Unset means the extras are the config
+  volume's file — there is no store — so a refusal there would be every file-mode platform
+  failing every deployment for the absence of something it was never configured to have. It logs
+  at debug and the deployment proceeds.
+- **The adoption sweep neither fetches nor seeds**, and `legacySnapshot` says so in its own javadoc.
+  An adopted row's declaration was seeded before its own deployment was queued, by the instance that
+  ran it; the sweep runs at boot, seconds after a cutover, and its whole design is to reach no peer
+  it does not have to. Its one spec read is already the exception and is bounded for that reason.
 
 ### An update states removals now, and a hand `--env-add` no longer survives one
 
@@ -1450,6 +1538,29 @@ the id-addressed URL it always used. Half a pair is no pair and takes the id rou
 package-private fields, so no `@QuarkusTest` is involved — and it holds both arms, the 404 answer and
 the 5xx refusal.
 
+**It reads TWO blobs now, and it is one read twice rather than a second reader.** Beside the spec
+sits `SpecSource.DECLARATION_PATH` — `.config/qits/configuration.yml`, what the application declares
+about its own configuration — fetched at the same rev through the same address pair and returned
+**unparsed**. Everything below the file name is shared and deliberately so: the percent-encoded rev
+(the half that was got wrong once and 404'd every release-tag read), the name-then-id fallback, the
+404-is-an-answer stance, and `statusFailure`'s retryable-versus-permanent verdict. So a declaration
+the git host would not serve **holds the release `SPEC_UNREADABLE`** exactly as a spec would, and
+the row's message names which of the two files did not answer.
+
+**Nothing on this side parses the declaration, and that is the seam rather than an omission.**
+qits-configuration owns the grammar; a parser here would be a second opinion about somebody else's
+document, and the two would disagree on the day that grammar grows a key — which is the day a
+deployment refuses a file the store takes perfectly well. There is therefore no permanent-failure
+arm on the declaration read at all: every failure it can raise is a failure of the hop.
+
+**The second read is only made when the FIRST one declared something.** A release that carries no
+`deployments.yml` is a published image that asked for no deployment, and is recorded and stopped a
+few lines later; fetching a declaration for it would be a second request on the deploy worker for a
+version nothing will deploy. And a repository that carries the spec and no declaration is the
+ordinary case for a long while — every repository predates the file — so the two 404s that costs
+(name route, then id route) are the visible price of not believing a false miss, and they show up as
+two edges in every userflow diagram.
+
 **`qits.platform.deployments.git-host-url` shipped a WRONG default for several releases**
 (`http://qits-platform-artifacts:8080/artifacts`, the address the byte plane answered on before the
 git host was split out of it). It is `http://qits-githost:8080` now, the sibling qits-ci's spelling.
@@ -1915,7 +2026,7 @@ against.
 
 ### The userflow catalogue
 
-Twelve `@UserStory` methods in five classes, so `mvn verify -DskipITs=false` also emits
+Fourteen `@UserStory` methods in five classes, so `mvn verify -DskipITs=false` also emits
 `service/target/userstories/` — a story log plus a mermaid **network** diagram each — which the
 non-gating second step of `.config/qits/ci-event-release-request.yml` publishes, once per release
 request fold, as the docs bundle `@userflows/qits-deployments`. They are **browserless** (an `Interactions` parameter and no `Flow`),
@@ -1924,7 +2035,7 @@ so qits-userflows-javalib's transitive Playwright never launches anything.
 | class | category | what it is about |
 | --- | --- | --- |
 | `api.TokenValidationBootstrapIT` | `authentication` | the boot-time JWKS fetch and the three doors of the pin ledger |
-| `stories.configuration.DeploymentConfigurationIT` | `configuration` | the extras read with the deployer's own credential, and the refusal when it cannot be read |
+| `stories.configuration.DeploymentConfigurationIT` | `configuration` | the extras read with the deployer's own credential, the refusal when it cannot be read, the declaration seeded before anything is scheduled, and the refusal when the store will not take it |
 | `stories.deployment.BuildDeploymentIT` | `deployments` | a green build end to end — create, replace in place, and an image nobody published |
 | `stories.operations.PlatformOverviewIT` | `operations` | what an operator reads, and the keep-set qits-platform-artifacts reads |
 | `stories.refusals.AccessRefusalIT` | `refusals` | the two role sets, and the fact that they do not overlap |

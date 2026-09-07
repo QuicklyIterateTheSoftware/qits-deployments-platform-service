@@ -52,6 +52,14 @@ class SwarmDeploymentDriverTest {
 
   private static final String IMAGE = "qits-platform-artifacts:8080/qits/qits-gateway:abc1234";
 
+  /**
+   * The released coordinate this spec deploys. It reaches the extras read, which is addressed by
+   * (application, environment, version) — so it is a value with a claim on it here rather than
+   * scenery: {@code theExtrasAreAskedForThisDeploymentsOwnPlaceAndRelease} pins that the argv
+   * builder hands the source the spec's own three and not something it derived.
+   */
+  private static final String VERSION = "2026.903.113443";
+
   /** When the scripted deployment issued its update — the qits-docs incident's own instant. */
   private static final Instant ISSUED = Instant.parse("2026-08-13T10:21:12.698Z");
 
@@ -96,7 +104,7 @@ class SwarmDeploymentDriverTest {
     // The file half of the seam, which is what every argv assertion below is about: the boot config
     // plus the config volume's file, one snapshot per call. The service half is
     // ConfigHostExtrasSourceTest's, and the two argvs it reaches are two tests of their own.
-    return driver(application -> ExtrasSnapshot.over(boot, extrasFile));
+    return driver((application, environmentName, version) -> ExtrasSnapshot.over(boot, extrasFile));
   }
 
   private SwarmDeploymentDriver driver(DeploymentExtrasSource extras) {
@@ -145,6 +153,7 @@ class SwarmDeploymentDriverTest {
         "qits-gateway",
         "dep-id",
         "abc1234",
+        VERSION,
         platform ? "qits-pd-qits-gateway-dep" : "qits-pd-dev-qits-gateway-dep",
         platform ? "qits-gateway" : "dev-qits-gateway",
         platform
@@ -694,6 +703,26 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void theExtrasAreAskedForThisDeploymentsOwnPlaceAndRelease() {
+    // The read is addressed by (application, environment, version) now, and all three have to be
+    // THIS spec's. It is worth a test of its own rather than being implied by the argv, because the
+    // argv looks identical whichever place the answer came from: a builder that passed the wrong
+    // tier would produce a perfectly well-formed service carrying another environment's config, on
+    // both planes, silently. Once per argv, still — the tuple is recorded per call.
+    List<List<String>> asked = new ArrayList<>();
+    SwarmDeploymentDriver driver =
+        driver(
+            (application, environmentName, version) -> {
+              asked.add(List.of(application, environmentName, version));
+              return new SmallRyeConfigBuilder().build();
+            });
+
+    driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+
+    assertEquals(List.of(List.of("qits-gateway", "dev", VERSION)), asked);
+  }
+
+  @Test
   void anExtrasFileEditedAfterBootReachesTheNextArgv() throws IOException {
     // The 2026-08-16 failure, on both argv builders: the boot config had read the config volume's
     // file once, so a deployment re-stamped last boot's value over a fix applied to the live
@@ -979,6 +1008,7 @@ class SwarmDeploymentDriverTest {
             "qits-gateway",
             "dep-id",
             "abc1234",
+            VERSION,
             "qits-pd-dev-qits-gateway-dep",
             "dev-qits-gateway",
             List.of("qits-net"),

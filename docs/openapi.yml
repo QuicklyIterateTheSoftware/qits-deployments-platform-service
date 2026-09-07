@@ -194,6 +194,7 @@ components:
       - SUPERSEDED
       - GONE
       - SCALED_TO_ZERO
+      - DECLARATION_REFUSED
       - DECOMMISSIONED
     PdDeploymentTarget:
       type: string
@@ -793,4 +794,4 @@ paths:
         - qits-platform:system
 info:
   title: qits-platform-deployments API
-  version: 2026.906.23838
+  version: 2026.907.93519

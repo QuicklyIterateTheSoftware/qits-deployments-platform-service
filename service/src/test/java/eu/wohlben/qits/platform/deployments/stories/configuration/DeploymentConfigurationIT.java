@@ -44,9 +44,18 @@ import org.junit.jupiter.api.TestMethodOrder;
  * <p>The direction is the first thing to read off these diagrams, because it is the opposite of what
  * the word "configuration" suggests: <b>nothing pushes anything into a deployment</b>. This
  * component PULLS, with its own machine identity, at the moment it builds an argv — {@code GET
- * /configuration/api/applications/&lt;app&gt;/resolved}, once per argv, per deployment. No caller of
- * this component's API can name a key, and the url it reads from is deployment config like
- * everything else.
+ * /configuration/api/applications/&lt;app&gt;/envs/&lt;env&gt;/resolved?version=…}, once per argv, per
+ * deployment. No caller of this component's API can name a key, and the url it reads from is
+ * deployment config like everything else. The tier is in the address and the version is a
+ * parameter, which is what lets one store answer for every environment and lets a rollback bring
+ * back the configuration its version was released with.
+ *
+ * <p><b>There is one write, and the last two stories are about it.</b> What the store RESOLVES is
+ * the application's own declaration with the platform's overrides on top, and that declaration is a
+ * file in the repository — so a release seeds it: {@code POST
+ * /configuration/api/applications/&lt;app&gt;/declarations/&lt;version&gt;}, with the file's bytes,
+ * after the deployment row is written and before anything is scheduled. A store that will not take
+ * it refuses the deployment, and the row says which of the two flavours that was.
  *
  * <p><b>Set, that service is AUTHORITATIVE — and authoritative means SOLE.</b> The config volume's
  * file is then not read at all. It was layered above the file for one release, on the reasoning that
@@ -78,6 +87,9 @@ public class DeploymentConfigurationIT {
       "a-deployment-reads-its-configuration-with-the-deployers-own-machine-identity";
   static final String REFUSED_SLUG =
       "a-configuration-service-that-cannot-be-read-refuses-the-deployment";
+  static final String SEEDED_SLUG =
+      "a-releases-configuration-declaration-is-seeded-before-its-container-is-asked-for";
+  static final String BROKEN_SLUG = "a-declaration-the-store-refuses-refuses-the-deployment";
 
   static final String CONFIGURED = StoryPeers.CONFIGURED;
 
@@ -93,6 +105,22 @@ public class DeploymentConfigurationIT {
   static final String CONFIGURED_SERVICE = StoryTarget.wireAlias(CONFIGURED);
 
   static final String MISCONFIGURED_SERVICE = StoryTarget.wireAlias(MISCONFIGURED);
+
+  static final String DECLARED = StoryPeers.DECLARED;
+
+  static final String DECLARED_REPO_ID = "story-declared-storage-id";
+
+  static final String DECLARED_VERSION = "2026.903.103";
+
+  static final String DECLARED_SERVICE = StoryTarget.wireAlias(DECLARED);
+
+  static final String BROKEN_DECLARATION = StoryPeers.BROKEN_DECLARATION;
+
+  static final String BROKEN_DECLARATION_REPO_ID = "story-broken-declaration-storage-id";
+
+  static final String BROKEN_DECLARATION_VERSION = "2026.903.104";
+
+  static final String BROKEN_DECLARATION_SERVICE = StoryTarget.wireAlias(BROKEN_DECLARATION);
 
   static final String STORE = "postgresql";
 
@@ -234,7 +262,9 @@ public class DeploymentConfigurationIT {
         "an unreadable configuration must fail the deployment rather than deploy without it: " + row);
     String detail = row.path("detail").asText();
     assertTrue(
-        detail.contains("/configuration/api/applications/" + MISCONFIGURED + "/resolved"),
+        detail.contains(
+            "/configuration/api/applications/" + MISCONFIGURED + "/envs/" + StoryTarget.TIER
+                + "/resolved"),
         "the refusal does not name the url it could not read: " + detail);
     story
         .note(
@@ -268,6 +298,151 @@ public class DeploymentConfigurationIT {
     network.declare(NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
   }
 
+  @UserStory(
+      value = "A releases configuration declaration is seeded before its container is asked for",
+      category = CATEGORY)
+  @UserStoryDescription(
+      """
+      The read above is only half of the relationship. What qits-configuration RESOLVES is the
+      application's own declaration with the platform's overrides on top of it, and that declaration
+      lives in the repository — `.config/qits/configuration.yml`, beside the deployment spec, read at
+      the released tag like everything else about a release.
+
+      So a deployment seeds it, and the ordering is the feature. The file is fetched from the git
+      host and POSTed to qits-configuration BEFORE anything is scheduled: after the deployment row
+      exists, so a refusal has somewhere to be recorded, and before the orchestrator is asked for
+      anything, so the container that comes up is resolved against its own version's declaration
+      rather than the previous one's. The deployer never parses the file — the store owns that
+      grammar, and a second opinion here would refuse files the store takes perfectly well.
+      """)
+  @UserflowRunsAfter(TokenValidationBootstrapIT.class)
+  @Order(3)
+  void theDeclarationIsSeededBeforeTheDeploymentIsScheduled(Interactions story, Network network) {
+    NetworkCapture.actor(StoryIdentities.CI);
+    String bearer = StoryIdentities.machineToken(StoryIdentities.CI);
+    MINTED.add(bearer);
+
+    StoryIdentities.bearer(given(), bearer)
+        .contentType(ContentType.JSON)
+        .body(softwareReleased("run-story-declared-1", DECLARED_REPO_ID, DECLARED, DECLARED_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
+        .then()
+        .statusCode(202);
+    story
+        .note("a green build of " + DECLARED + ", a repository that declares its own configuration")
+        .as("build-announced");
+
+    JsonNode row = StoryPlatform.awaitSettled(DECLARED, DECLARED_VERSION);
+    assertEquals("ACTIVE", row.path("status").asText(), "the deployment did not go live: " + row);
+    story
+        .note(
+            "the deployer read a second blob at the same tag — "
+                + StoryPeers.DECLARATION_PATH
+                + " — and POSTed it to qits-configuration under the version it was released at,"
+                + " before the orchestrator was asked to create anything")
+        .as("declaration-seeded");
+
+    List<String> argv = StorySwarm.argvOf("service create " + DECLARED_SERVICE);
+    assertTrue(
+        StorySwarm.flagValues(argv, "--env").contains(StoryPeers.EXTRA_ENV_VARIABLE),
+        "what the seeded declaration resolves to never reached the argv: " + argv);
+    story
+        .note(
+            "and only then was the argv assembled, from a resolved read of the declaration that had"
+                + " just been seeded — which is why the order matters: the other way round, the"
+                + " container would come up against the PREVIOUS version's configuration")
+        .as("resolved-after-seeding");
+
+    network.declare(NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
+  }
+
+  @UserStory(
+      value = "A declaration the store refuses refuses the deployment",
+      category = CATEGORY)
+  @UserStoryDescription(
+      """
+      qits-configuration is the only thing on this platform that reads the declaration grammar, so
+      it is the only thing that can say a file is broken. When it does — a 422 for a file that does
+      not parse, a 409 for a version already stored with different content — the deployment is
+      REFUSED and recorded DECLARATION_REFUSED, and nothing runs.
+
+      That is a terminal word rather than a held one, and the difference is worth reading off the
+      row. A spec the git host would not SERVE is held and re-read, because nothing was ever
+      decided. A declaration the store READ and refused was decided: the released tag carries a
+      broken file, reading it again answers the same thing, and the fix is a new release. The row's
+      first line says so, and it says which of the two flavours this is — a file the store refused,
+      or a store that never answered.
+      """)
+  @UserflowRunsAfter(TokenValidationBootstrapIT.class)
+  @Order(4)
+  void aBrokenDeclarationIsRefusedRatherThanDeployedAround(Interactions story, Network network) {
+    int before = StorySwarm.mark();
+    NetworkCapture.actor(StoryIdentities.CI);
+    String bearer = StoryIdentities.machineToken(StoryIdentities.CI);
+    MINTED.add(bearer);
+
+    StoryIdentities.bearer(given(), bearer)
+        .contentType(ContentType.JSON)
+        .body(
+            softwareReleased(
+                "run-story-broken-declaration-1",
+                BROKEN_DECLARATION_REPO_ID,
+                BROKEN_DECLARATION,
+                BROKEN_DECLARATION_VERSION))
+        .post(StoryTarget.SOFTWARE_RELEASED_PATH)
+        .then()
+        .statusCode(202);
+    story
+        .note(
+            "a green build of "
+                + BROKEN_DECLARATION
+                + ", whose "
+                + StoryPeers.DECLARATION_PATH
+                + " at that tag qits-configuration will not accept")
+        .as("build-announced");
+
+    JsonNode row = StoryPlatform.awaitSettled(BROKEN_DECLARATION, BROKEN_DECLARATION_VERSION);
+    assertEquals(
+        "DECLARATION_REFUSED",
+        row.path("status").asText(),
+        "a refused declaration must not deploy anyway: " + row);
+    String detail = row.path("detail").asText();
+    assertTrue(
+        detail.contains(StoryPeers.DECLARATION_PATH),
+        "the refusal does not name the file it was about: " + detail);
+    assertTrue(
+        detail.contains("cut a new release"),
+        "the refusal does not say whose problem it is: " + detail);
+    story
+        .note(
+            "the deployment is DECLARATION_REFUSED and the row names the file and the remedy — it"
+                + " is the repository's commit that is broken, not the platform, and a new release"
+                + " is the fix rather than a retry")
+        .as("refusal-names-the-file");
+
+    List<String> calls = StorySwarm.callsSince(before);
+    assertFalse(
+        calls.contains(StorySwarm.label("service create " + BROKEN_DECLARATION_SERVICE, "0")),
+        "a refused declaration created a service: " + calls);
+    story
+        .note(
+            "and nothing was applied. The seed happens after the row is written and before anything"
+                + " is scheduled, so a refusal here costs a deployment row and no container")
+        .as("nothing-applied");
+
+    NetworkCapture.actor(StoryIdentities.OPERATOR);
+    StoryIdentities.person(given(), "story-operator")
+        .get(StoryTarget.DEPLOYMENTS_PATH + "?environmentId=" + StoryPlatform.tierId())
+        .then()
+        .statusCode(200)
+        .body("deployments.applicationName", hasItem(BROKEN_DECLARATION));
+    story
+        .note("an operator finds it where every other outcome is — on the tier's listing")
+        .as("refusal-is-readable");
+
+    network.declare(NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
+  }
+
   private static Map<String, Object> softwareReleased(
       String runId, String repoId, String repoName, String version) {
     return Map.of(
@@ -292,18 +467,27 @@ public class DeploymentConfigurationIT {
     }
     intake(READ_SLUG);
     peer(READ_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(CONFIGURED, CONFIGURED_VERSION, 200));
+    // The second blob, and its 404 is an ANSWER: this repository has not migrated its configuration
+    // into a declaration yet, which is the ordinary state of this platform. It seeds nothing and
+    // deploys exactly as it did — see the third story for the other side of it.
+    for (String miss :
+        StoryPeers.declarationMissLabels(CONFIGURED, CONFIGURED_REPO_ID, CONFIGURED_VERSION)) {
+      peer(READ_SLUG, StoryPeers.GIT_HOST, miss);
+    }
     // The credential, and then the read that presents it. Two arrows rather than one, because they
     // are two peers — and the mint is what makes the read fail-closed rather than anonymous.
     peer(READ_SLUG, StoryPeers.IDP, StoryPeers.tokenLabel());
-    peer(READ_SLUG, StoryPeers.CONFIGURATION, StoryPeers.resolvedLabel(CONFIGURED, 200));
+    peer(READ_SLUG, StoryPeers.CONFIGURATION, StoryPeers.resolvedLabel(CONFIGURED, StoryTarget.TIER, 200));
     for (String call : StorySwarm.createCalls(CONFIGURED_SERVICE, CONFIGURED, CONFIGURED_VERSION)) {
       swarm(READ_SLUG, call);
     }
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, READ_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // One event in, three peers read, eight questions to the orchestrator, one store. No operator
-    // read in this one: the story is about what a deployment ASKS FOR, not about reading it back.
-    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 13);
+    // One event in, three peers read — the git host THREE times, because the second file is asked
+    // for at both addresses before its absence is believed — eight questions to the orchestrator,
+    // one store. No operator read in this one: the story is about what a deployment ASKS FOR, not
+    // about reading it back.
+    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 15);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY, READ_SLUG, List.of(StoryIdentities.CI, StoryTarget.SERVICE));
 
@@ -319,6 +503,11 @@ public class DeploymentConfigurationIT {
         REFUSED_SLUG,
         StoryPeers.GIT_HOST,
         StoryPeers.specLabel(MISCONFIGURED, MISCONFIGURED_VERSION, 200));
+    for (String miss :
+        StoryPeers.declarationMissLabels(
+            MISCONFIGURED, MISCONFIGURED_REPO_ID, MISCONFIGURED_VERSION)) {
+      peer(REFUSED_SLUG, StoryPeers.GIT_HOST, miss);
+    }
     // No mint here, and the absence is the deployer's rather than the stand-in's: the token the
     // story above acquired is still cached, so this deployment presents it without asking for a new
     // one. See StoryPeers.
@@ -328,23 +517,91 @@ public class DeploymentConfigurationIT {
     peer(
         REFUSED_SLUG,
         StoryPeers.CONFIGURATION,
-        StoryPeers.resolvedLabel(MISCONFIGURED, StoryPeers.REFUSED_STATUS));
+        StoryPeers.resolvedLabel(MISCONFIGURED, StoryTarget.TIER, StoryPeers.REFUSED_STATUS));
     for (String call : refusedCalls(MISCONFIGURED_SERVICE, MISCONFIGURED, MISCONFIGURED_VERSION)) {
       swarm(REFUSED_SLUG, call);
     }
     operatorRead(REFUSED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, REFUSED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // NINE, and the four orchestrator edges are all QUESTIONS. Nothing was created, so nothing has
+    // ELEVEN, and the four orchestrator edges are all QUESTIONS. Nothing was created, so nothing has
     // to be undone — which is the whole reason the extras are read while the argv is assembled and
     // not after it has been run.
-    ReportAssertions.assertEdgeCount(CATEGORY, REFUSED_SLUG, 9);
+    ReportAssertions.assertEdgeCount(CATEGORY, REFUSED_SLUG, 11);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         REFUSED_SLUG,
         List.of(StoryIdentities.CI, StoryIdentities.OPERATOR, StoryTarget.SERVICE));
 
-    for (String slug : List.of(READ_SLUG, REFUSED_SLUG)) {
+    // --- the seed ----------------------------------------------------------------------------------
+    ReportAssertions.assertComplete(CATEGORY, SEEDED_SLUG, UserflowReport.PASSED);
+    for (String step :
+        List.of("build-announced", "declaration-seeded", "resolved-after-seeding")) {
+      ReportAssertions.assertStepId(CATEGORY, SEEDED_SLUG, step);
+    }
+    intake(SEEDED_SLUG);
+    peer(SEEDED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(DECLARED, DECLARED_VERSION, 200));
+    // Two blobs at one tag, and then the write. The order of these three IS the feature: the
+    // declaration is fetched and stored before a single question reaches the orchestrator.
+    peer(
+        SEEDED_SLUG,
+        StoryPeers.GIT_HOST,
+        StoryPeers.declarationLabel(DECLARED, DECLARED_VERSION, 200));
+    peer(
+        SEEDED_SLUG,
+        StoryPeers.CONFIGURATION,
+        StoryPeers.declarationSeedLabel(DECLARED, DECLARED_VERSION, 201));
+    peer(
+        SEEDED_SLUG,
+        StoryPeers.CONFIGURATION,
+        StoryPeers.resolvedLabel(DECLARED, StoryTarget.TIER, 200));
+    for (String call : StorySwarm.createCalls(DECLARED_SERVICE, DECLARED, DECLARED_VERSION)) {
+      swarm(SEEDED_SLUG, call);
+    }
+    ReportAssertions.assertDeclaredEdge(
+        CATEGORY, SEEDED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
+    // One event in, two blobs read, one declaration written, one resolved read, eight questions to
+    // the orchestrator, one store. No mint: the token the first story acquired is still cached.
+    ReportAssertions.assertEdgeCount(CATEGORY, SEEDED_SLUG, 14);
+    ReportAssertions.assertOnlyEdgesFrom(
+        CATEGORY, SEEDED_SLUG, List.of(StoryIdentities.CI, StoryTarget.SERVICE));
+
+    // --- the broken declaration --------------------------------------------------------------------
+    ReportAssertions.assertComplete(CATEGORY, BROKEN_SLUG, UserflowReport.PASSED);
+    for (String step :
+        List.of("build-announced", "refusal-names-the-file", "nothing-applied", "refusal-is-readable")) {
+      ReportAssertions.assertStepId(CATEGORY, BROKEN_SLUG, step);
+    }
+    intake(BROKEN_SLUG);
+    peer(
+        BROKEN_SLUG,
+        StoryPeers.GIT_HOST,
+        StoryPeers.specLabel(BROKEN_DECLARATION, BROKEN_DECLARATION_VERSION, 200));
+    peer(
+        BROKEN_SLUG,
+        StoryPeers.GIT_HOST,
+        StoryPeers.declarationLabel(BROKEN_DECLARATION, BROKEN_DECLARATION_VERSION, 200));
+    peer(
+        BROKEN_SLUG,
+        StoryPeers.CONFIGURATION,
+        StoryPeers.declarationSeedLabel(
+            BROKEN_DECLARATION,
+            BROKEN_DECLARATION_VERSION,
+            StoryPeers.DECLARATION_REFUSED_STATUS));
+    operatorRead(BROKEN_SLUG);
+    ReportAssertions.assertDeclaredEdge(
+        CATEGORY, BROKEN_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
+    // SIX, and there is NO ORCHESTRATOR EDGE AT ALL — not even a question. The seed sits between
+    // the row being written and the deployment being scheduled, so a refusal here happens with the
+    // orchestrator never having been spoken to. It is also why there is no resolved read: the
+    // extras are read while the argv is assembled, and no argv was assembled.
+    ReportAssertions.assertEdgeCount(CATEGORY, BROKEN_SLUG, 6);
+    ReportAssertions.assertOnlyEdgesFrom(
+        CATEGORY,
+        BROKEN_SLUG,
+        List.of(StoryIdentities.CI, StoryIdentities.OPERATOR, StoryTarget.SERVICE));
+
+    for (String slug : List.of(READ_SLUG, REFUSED_SLUG, SEEDED_SLUG, BROKEN_SLUG)) {
       for (String bearer : MINTED) {
         ReportAssertions.assertNotLeaked(CATEGORY, slug, bearer);
       }

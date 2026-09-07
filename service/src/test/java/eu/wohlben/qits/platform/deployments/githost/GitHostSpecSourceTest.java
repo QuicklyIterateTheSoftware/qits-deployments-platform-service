@@ -282,6 +282,93 @@ public class GitHostSpecSourceTest {
     assertEquals(PdDeploymentTarget.PLATFORM, read.spec().target());
   }
 
+  // --- the second blob: the configuration declaration ---------------------------------------------
+
+  @Test
+  public void theDeclarationIsReadAtTheSameTagFromItsOwnPath() {
+    // The same address, the same encoded rev, one file over. The rev encoding is the half that was
+    // got wrong once and 404'd every release-tag read, so it is pinned on both files rather than on
+    // whichever one the builder happens to be shared through.
+    body = "defaults:\n  FLAGS: on\n";
+
+    SpecSource.DeclarationRead read =
+        source().readDeclaration(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION));
+
+    assertTrue(read.present());
+    assertEquals(
+        "/git/qits-gateway/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/configuration.yml",
+        onlyPath());
+  }
+
+  @Test
+  public void theDeclarationsBodyIsHandedOnUnparsed() {
+    // qits-configuration owns this grammar and is the only thing that validates it. A parser here
+    // would be a second opinion about somebody else's document, and the two would disagree on the
+    // day the grammar grows a key — which is the day a deployment refuses a file the store takes.
+    // So a body this component could not possibly understand still reads fine.
+    body = "@@ not yaml at all, and not this component's business @@\n";
+
+    SpecSource.DeclarationRead read =
+        source().readDeclaration(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION));
+
+    assertEquals(body, read.yaml(), "the bytes reached the caller untouched");
+  }
+
+  @Test
+  public void aDeclarationA404OnBothArmsIsAbsentRatherThanAFailure() {
+    // A repository that has not migrated its configuration yet, which is most of them. It seeds
+    // nothing and deploys exactly as it did — a clean answer, not a refusal.
+    status = 404;
+
+    assertFalse(
+        source().readDeclaration(RepositoryRef.ofId("gw"), SpecSource.tagRev(VERSION)).present());
+    assertFalse(
+        source()
+            .readDeclaration(new RepositoryRef(UUID_ID, "qits", "gw"), SpecSource.tagRev(VERSION))
+            .present());
+  }
+
+  @Test
+  public void aNameAddressed404FallsBackOntoTheIdRouteHereToo() {
+    // The name route resolves through qits-projects and can answer a false 404 while that service
+    // is being cut over. Believing one here would seed nothing for a version that really does
+    // declare something — the spec read's own hazard, one file over.
+    status = 404;
+    laterStatus = 200;
+    body = "defaults:\n  FLAGS: on\n";
+
+    SpecSource.DeclarationRead read =
+        source()
+            .readDeclaration(new RepositoryRef(UUID_ID, "qits", "gw"), SpecSource.tagRev(VERSION));
+
+    assertTrue(read.present(), "the id route answered");
+    assertEquals(body, read.yaml());
+    synchronized (paths) {
+      assertEquals(2, paths.size(), "the name route was asked first");
+      assertEquals(
+          "/git/" + UUID_ID + "/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/configuration.yml",
+          paths.get(1));
+    }
+  }
+
+  @Test
+  public void aDeclarationTheGitHostWouldNotServeAsksToBeReadAgain() {
+    // One hop, one posture. A 5xx on the declaration is the same host having the same bad second as
+    // a 5xx on the spec, so it holds the release rather than failing it — and there is no parse arm
+    // here at all, because nothing on this side reads the body.
+    status = 503;
+
+    SpecException refused =
+        assertThrows(
+            SpecException.class,
+            () ->
+                source()
+                    .readDeclaration(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION)));
+
+    assertTrue(refused.getMessage().contains(".config/qits/configuration.yml"), refused.getMessage());
+    assertTrue(refused.retryable(), "a 503 is the git host's moment");
+  }
+
   private GitHostSpecSource source() {
     GitHostSpecSource source = new GitHostSpecSource();
     source.gitHostUrl = "http://127.0.0.1:" + server.getAddress().getPort();

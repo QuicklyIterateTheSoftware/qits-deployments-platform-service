@@ -25,9 +25,16 @@ import org.jboss.logging.Logger;
  * or — where a deployment names one — qits-configuration <b>instead of it</b>.
  *
  * <pre>
- * GET &lt;extras-url&gt;/configuration/api/applications/&lt;application&gt;/resolved
+ * GET &lt;extras-url&gt;/configuration/api/applications/&lt;app&gt;/envs/&lt;env&gt;/resolved?version=&lt;version&gt;
  *   → {"headRevision": 7, "properties": {"qits.platform.deployments.extras.&lt;app&gt;.&lt;key&gt;": "…"}}
  * </pre>
+ *
+ * <p><b>The read is addressed by the PLACE and the RELEASE now, and the body is the same body.</b>
+ * It used to name the application alone, which could only ever describe one configuration per
+ * platform; a tier segment and a version parameter are what make it possible for {@code dev} and
+ * {@code prod} to differ and for a rollback to bring back the configuration that version was
+ * released with. Nothing about the answer changed — same document, same {@code headRevision} and
+ * {@code properties}, same single parser one layer up.
  *
  * <p><b>{@code qits.platform.deployments.extras-url} unset is today's behaviour byte for byte.</b>
  * No request is made, nothing is parsed, and the answer is {@link ExtrasSnapshot#over(Config,
@@ -124,17 +131,29 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
   }
 
   @Override
-  public Config forApplication(String application) {
+  public Config forDeployment(String application, String environmentName, String version) {
     String base = extrasUrl.map(String::trim).filter(url -> !url.isEmpty()).orElse(null);
     if (base == null) {
-      // No service named, so the file is the source — WP0's behaviour, byte for byte.
+      // No service named, so the file is the source — WP0's behaviour, byte for byte. The tier and
+      // the version are ignored here and that is not an oversight: a properties file on a volume
+      // has one answer per key, so an address with more in it would describe a file that does not
+      // exist. This arm is the compatibility claim and it stays byte-identical.
       return ExtrasSnapshot.over(config, extrasFile);
     }
+    // ADDRESSED BY THE PLACE AND THE RELEASE, not by the application alone. The tier is a path
+    // segment because it is part of the resource's identity — one application's configuration in
+    // dev is a different document from its configuration in prod, not a query over one — and the
+    // version is a query parameter because it selects WHICH declaration the overrides are resolved
+    // against, which is what makes rolling a version back give that version's configuration rather
+    // than the newest one's.
     String url =
         trimTrailingSlash(base)
             + "/configuration/api/applications/"
             + segment(application)
-            + "/resolved";
+            + "/envs/"
+            + segment(environmentName)
+            + "/resolved?version="
+            + versionParameter(version);
     JsonNode body = fetch(url);
     Map<String, String> served = properties(url, body);
     // Built rather than deferred to `infof`: this is the one line that records what a deployment
@@ -153,16 +172,30 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
     return ExtrasSnapshot.over(config, served, url);
   }
 
-  /** The name as it goes into a path segment, refused rather than escaped if it is not one. */
-  private static String segment(String application) {
-    // Every application name reaching here came out of the topology, where PdIdentifiers holds it
-    // to the dns-label charset. The check is the belt at the boundary, and refusing beats escaping:
-    // a name that needs escaping is a name the rest of this component could not have stored.
-    if (!application.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")) {
+  /** A name as it goes into a path segment, refused rather than escaped if it is not one. */
+  private static String segment(String name) {
+    // Every application and environment name reaching here came out of the topology, where
+    // PdIdentifiers holds both to the dns-label charset. The check is the belt at the boundary, and
+    // refusing beats escaping: a name that needs escaping is a name the rest of this component
+    // could not have stored.
+    if (name == null || !name.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")) {
       throw new ServiceExtras.Refused(
-          "'" + application + "' is not an application name qits-configuration can be asked about");
+          "'" + name + "' is not a name qits-configuration can be asked about");
     }
-    return application;
+    return name;
+  }
+
+  /**
+   * The version as it goes into the query, held to the same charset for the same reason. It is
+   * checked rather than URL-encoded: a CalVer stamp that needs encoding is not one, and a value
+   * this component would have to escape is a value it should never have had.
+   */
+  private static String versionParameter(String version) {
+    if (version == null || !version.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")) {
+      throw new ServiceExtras.Refused(
+          "'" + version + "' is not a version qits-configuration can resolve against");
+    }
+    return version;
   }
 
   /**

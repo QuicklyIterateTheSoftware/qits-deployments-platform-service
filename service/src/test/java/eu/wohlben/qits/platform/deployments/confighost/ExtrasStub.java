@@ -22,6 +22,11 @@ import org.eclipse.microprofile.config.Config;
  * test's own model of a client. Everything ABOVE the seam uses a scripted lambda instead, which is
  * the repo's ordinary fake doctrine.
  *
+ * <p><b>It answers BOTH directions</b>, because qits-configuration is one peer: the resolved read a
+ * deployment makes, and the declaration a release seeds. The answer is scripted the same way for
+ * both — this stub has no idea which is which, and does not need one. What tells them apart in an
+ * assertion is the method and the address, which is exactly what tells them apart on a platform.
+ *
  * <p>The JDK's own server, so nothing arrives on the classpath and no docker is involved.
  */
 public final class ExtrasStub implements AutoCloseable {
@@ -37,6 +42,25 @@ public final class ExtrasStub implements AutoCloseable {
   private final Deque<Answer> scripted = new ArrayDeque<>();
 
   private final List<String> paths = new ArrayList<>();
+
+  /**
+   * One entry per request: the raw path with the query string on it, which is the whole address.
+   *
+   * <p>It is separate from {@link #paths()} rather than replacing it because the two answer
+   * different questions. The resolved read is addressed by a path AND a version parameter, so a
+   * test of that url has to see both; the seed is addressed by a path alone plus one parameter, and
+   * a test that only cares which resource was asked for should not have to spell a query.
+   */
+  private final List<String> targets = new ArrayList<>();
+
+  /** One entry per request, the method — the seed is a POST where every other call here is a GET. */
+  private final List<String> methods = new ArrayList<>();
+
+  /** One entry per request, the Content-Type it carried, or null. */
+  private final List<String> contentTypes = new ArrayList<>();
+
+  /** One entry per request, the body bytes as UTF-8 — empty for a GET. */
+  private final List<String> bodies = new ArrayList<>();
 
   /** One entry per request, the Authorization header or null — the absence is an assertion too. */
   private final List<String> authorizations = new ArrayList<>();
@@ -54,9 +78,18 @@ public final class ExtrasStub implements AutoCloseable {
   }
 
   private void handle(HttpExchange exchange) throws IOException {
+    // Read before anything is answered, and read WHOLE: a request whose body a test asserts on has
+    // to be drained here, because the JDK's server discards what the handler leaves behind.
+    String sent = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
     Answer answer;
     synchronized (this) {
-      paths.add(exchange.getRequestURI().getPath());
+      String query = exchange.getRequestURI().getRawQuery();
+      paths.add(exchange.getRequestURI().getRawPath());
+      targets.add(
+          exchange.getRequestURI().getRawPath() + (query == null ? "" : "?" + query));
+      methods.add(exchange.getRequestMethod());
+      contentTypes.add(exchange.getRequestHeaders().getFirst("Content-Type"));
+      bodies.add(sent);
       authorizations.add(exchange.getRequestHeaders().getFirst("Authorization"));
       answer = scripted.poll();
     }
@@ -103,6 +136,24 @@ public final class ExtrasStub implements AutoCloseable {
     return List.copyOf(paths);
   }
 
+  /** The whole address of each request — the raw path plus its query string. */
+  public synchronized List<String> targets() {
+    return List.copyOf(targets);
+  }
+
+  public synchronized List<String> methods() {
+    return List.copyOf(methods);
+  }
+
+  public synchronized List<String> contentTypes() {
+    return new ArrayList<>(contentTypes);
+  }
+
+  /** What each request carried as a body — for the seed, the declaration bytes themselves. */
+  public synchronized List<String> bodies() {
+    return List.copyOf(bodies);
+  }
+
   /** A null entry is a request that carried no Authorization header, which is an assertion here. */
   public synchronized List<String> authorizations() {
     return new ArrayList<>(authorizations);
@@ -129,6 +180,28 @@ public final class ExtrasStub implements AutoCloseable {
     source.bearer = bearer;
     source.retryPauseMillis = 0;
     return source;
+  }
+
+  /**
+   * A declaration seed pointed at this stub, retry pause zeroed for the same reason the source's is.
+   *
+   * <p><b>Here, beside the read's factory, because they are one peer</b> — the seed writes to the
+   * base url the read reads from, and a stub that served one and not the other would be describing
+   * a platform this component cannot be configured into.
+   */
+  public ConfigHostDeclarationSeed seed(ExtrasBearer bearer) {
+    return seed(bearer, url());
+  }
+
+  /** The same, aimed anywhere — including at nothing, and at no url at all. */
+  public static ConfigHostDeclarationSeed seed(ExtrasBearer bearer, String extrasUrl) {
+    ConfigHostDeclarationSeed seed = new ConfigHostDeclarationSeed();
+    seed.extrasUrl = Optional.ofNullable(extrasUrl);
+    seed.timeoutSeconds = 2;
+    seed.attempts = 1;
+    seed.bearer = bearer;
+    seed.retryPauseMillis = 0;
+    return seed;
   }
 
   @Override
