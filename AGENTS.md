@@ -1693,11 +1693,30 @@ the 5xx refusal.
 **It reads TWO blobs now, and it is one read twice rather than a second reader.** Beside the spec
 sits `SpecSource.DECLARATION_PATH` — `.config/qits/configuration.yml`, what the application declares
 about its own configuration — fetched at the same rev through the same address pair and returned
-**unparsed**. Everything below the file name is shared and deliberately so: the percent-encoded rev
-(the half that was got wrong once and 404'd every release-tag read), the name-then-id fallback, the
+**unparsed**. Almost everything below the file name is shared and deliberately so: the
+percent-encoded rev (the half that was got wrong once and 404'd every release-tag read), the
 404-is-an-answer stance, and `statusFailure`'s retryable-versus-permanent verdict. So a declaration
 the git host would not serve **holds the release `SPEC_UNREADABLE`** exactly as a spec would, and
 the row's message names which of the two files did not answer.
+
+**The name-then-id fallback is the ONE thing the declaration read does not share, and it was removed
+after it held the platform (2026-09-07).** A name-addressed 404 on the declaration is
+`DeclarationRead.absent()` immediately, with no second request. The fallback shipped as part of "one
+read twice" and could only ever do harm here: an UNMIGRATED repository — most of them, and the whole
+point of `absent()` — 404s the name route, the fallback then asks `/git/<repoId>`, and qits-githost's
+storage-client guard refuses that to every caller but qits-projects. A 403 is classified retryable,
+so **"this repository has no configuration.yml" arrived as a sixty-minute `SPEC_UNREADABLE` hold** —
+on every unmigrated repository's deploy through the new deployer. Measured on
+qits-ci@2026.907.184918; the qits-docs pilot passed only because its declaration exists and the name
+read answered 200.
+
+Two things keep the removal correct rather than merely quieter. The name comes off the release event
+or the acceptance ledger and is **authoritative** — `PdRepositoryRenamedSubscriber` is what corrects
+it — so there is no false miss to disbelieve, which is the argument `read` still rests on. And an
+**id-only** ref is untouched: it is read id-addressed because that is `address`'s answer and not a
+fallback, and a 404 there is absent for the same reason. **Do not restore the fallback on the
+declaration**, and do not remove it from the SPEC read, where a name-404 usually means a real
+problem — every deployable carries a `deployments.yml`.
 
 **Nothing on this side parses the declaration, and that is the seam rather than an omission.**
 qits-configuration owns the grammar; a parser here would be a second opinion about somebody else's
@@ -1709,9 +1728,8 @@ arm on the declaration read at all: every failure it can raise is a failure of t
 `deployments.yml` is a published image that asked for no deployment, and is recorded and stopped a
 few lines later; fetching a declaration for it would be a second request on the deploy worker for a
 version nothing will deploy. And a repository that carries the spec and no declaration is the
-ordinary case for a long while — every repository predates the file — so the two 404s that costs
-(name route, then id route) are the visible price of not believing a false miss, and they show up as
-two edges in every userflow diagram.
+ordinary case for a long while — every repository predates the file — so that costs **one** 404 on
+the name route and it is an answer, not a hold.
 
 **`qits.platform.deployments.git-host-url` shipped a WRONG default for several releases**
 (`http://qits-platform-artifacts:8080/artifacts`, the address the byte plane answered on before the

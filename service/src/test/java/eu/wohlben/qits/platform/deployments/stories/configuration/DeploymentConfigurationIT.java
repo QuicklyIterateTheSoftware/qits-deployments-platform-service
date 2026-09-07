@@ -470,10 +470,10 @@ public class DeploymentConfigurationIT {
     // The second blob, and its 404 is an ANSWER: this repository has not migrated its configuration
     // into a declaration yet, which is the ordinary state of this platform. It seeds nothing and
     // deploys exactly as it did — see the third story for the other side of it.
-    for (String miss :
-        StoryPeers.declarationMissLabels(CONFIGURED, CONFIGURED_REPO_ID, CONFIGURED_VERSION)) {
-      peer(READ_SLUG, StoryPeers.GIT_HOST, miss);
-    }
+    peer(
+        READ_SLUG,
+        StoryPeers.GIT_HOST,
+        StoryPeers.declarationMissLabel(CONFIGURED, CONFIGURED_VERSION));
     // The credential, and then the read that presents it. Two arrows rather than one, because they
     // are two peers — and the mint is what makes the read fail-closed rather than anonymous.
     peer(READ_SLUG, StoryPeers.IDP, StoryPeers.tokenLabel());
@@ -483,11 +483,11 @@ public class DeploymentConfigurationIT {
     }
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, READ_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // One event in, three peers read — the git host THREE times, because the second file is asked
-    // for at both addresses before its absence is believed — eight questions to the orchestrator,
-    // one store. No operator read in this one: the story is about what a deployment ASKS FOR, not
-    // about reading it back.
-    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 15);
+    // One event in, three peers read — the git host TWICE, one blob each, because a name-addressed
+    // miss on the declaration is believed at once — eight questions to the orchestrator, one store.
+    // No operator read in this one: the story is about what a deployment ASKS FOR, not about
+    // reading it back.
+    ReportAssertions.assertEdgeCount(CATEGORY, READ_SLUG, 14);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY, READ_SLUG, List.of(StoryIdentities.CI, StoryTarget.SERVICE));
 
@@ -503,11 +503,10 @@ public class DeploymentConfigurationIT {
         REFUSED_SLUG,
         StoryPeers.GIT_HOST,
         StoryPeers.specLabel(MISCONFIGURED, MISCONFIGURED_VERSION, 200));
-    for (String miss :
-        StoryPeers.declarationMissLabels(
-            MISCONFIGURED, MISCONFIGURED_REPO_ID, MISCONFIGURED_VERSION)) {
-      peer(REFUSED_SLUG, StoryPeers.GIT_HOST, miss);
-    }
+    peer(
+        REFUSED_SLUG,
+        StoryPeers.GIT_HOST,
+        StoryPeers.declarationMissLabel(MISCONFIGURED, MISCONFIGURED_VERSION));
     // No mint here, and the absence is the deployer's rather than the stand-in's: the token the
     // story above acquired is still cached, so this deployment presents it without asking for a new
     // one. See StoryPeers.
@@ -524,10 +523,10 @@ public class DeploymentConfigurationIT {
     operatorRead(REFUSED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, REFUSED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // ELEVEN, and the four orchestrator edges are all QUESTIONS. Nothing was created, so nothing has
+    // TEN, and the four orchestrator edges are all QUESTIONS. Nothing was created, so nothing has
     // to be undone — which is the whole reason the extras are read while the argv is assembled and
     // not after it has been run.
-    ReportAssertions.assertEdgeCount(CATEGORY, REFUSED_SLUG, 11);
+    ReportAssertions.assertEdgeCount(CATEGORY, REFUSED_SLUG, 10);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         REFUSED_SLUG,

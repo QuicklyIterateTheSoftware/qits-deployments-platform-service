@@ -402,12 +402,11 @@ public class BuildDeploymentIT {
     }
     intake(CREATED_SLUG);
     peer(CREATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, FIRST_VERSION, 200));
-    // The second blob at the same tag, asked for at BOTH addresses before its absence is believed:
-    // story-web declares no configuration, which is the ordinary state of a repository that has not
-    // been migrated. It seeds nothing, and the two 404s are what asking costs.
-    for (String miss : StoryPeers.declarationMissLabels(WEB, WEB_REPO_ID, FIRST_VERSION)) {
-      peer(CREATED_SLUG, StoryPeers.GIT_HOST, miss);
-    }
+    // The second blob at the same tag, asked ONCE and answered: story-web declares no
+    // configuration, which is the ordinary state of a repository that has not been migrated. It
+    // seeds nothing, and one 404 is the whole of what asking costs — see StoryPeers on the id-route
+    // fallback this read used to make and the hour-long hold it bought.
+    peer(CREATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.declarationMissLabel(WEB, FIRST_VERSION));
     // The configuration read, and NOT the mint that authorised it: quarkus-oidc-client caches the
     // token, so the POST /idp/token arrow belongs to whichever deployment found the cache cold —
     // stories.configuration's first, in a full run. See StoryPeers on why that is the deployer's own
@@ -419,11 +418,11 @@ public class BuildDeploymentIT {
     operatorRead(CREATED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, CREATED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // One event in, two peers read — the git host THREE times, because a release reads two files
-    // and the second is checked at both addresses — eight questions to the orchestrator, one read
-    // back and one store behind all of it. Nothing else: this component asks nobody who qits-ci is
-    // — the bearer is judged on keys fetched once, at startup.
-    ReportAssertions.assertEdgeCount(CATEGORY, CREATED_SLUG, 15);
+    // One event in, two peers read — the git host TWICE, because a release reads two files and each
+    // is asked for once — eight questions to the orchestrator, one read back and one store behind
+    // all of it. Nothing else: this component asks nobody who qits-ci is — the bearer is judged on
+    // keys fetched once, at startup.
+    ReportAssertions.assertEdgeCount(CATEGORY, CREATED_SLUG, 14);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         CREATED_SLUG,
@@ -441,9 +440,7 @@ public class BuildDeploymentIT {
     }
     intake(UPDATED_SLUG);
     peer(UPDATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.specLabel(WEB, SECOND_VERSION, 200));
-    for (String miss : StoryPeers.declarationMissLabels(WEB, WEB_REPO_ID, SECOND_VERSION)) {
-      peer(UPDATED_SLUG, StoryPeers.GIT_HOST, miss);
-    }
+    peer(UPDATED_SLUG, StoryPeers.GIT_HOST, StoryPeers.declarationMissLabel(WEB, SECOND_VERSION));
     peer(UPDATED_SLUG, StoryPeers.CONFIGURATION, StoryPeers.resolvedLabel(WEB, StoryTarget.TIER, 200));
     for (String call : StorySwarm.updateCalls(WEB_SERVICE, WEB, SECOND_VERSION)) {
       swarm(UPDATED_SLUG, call);
@@ -451,7 +448,7 @@ public class BuildDeploymentIT {
     operatorRead(UPDATED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, UPDATED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 15);
+    ReportAssertions.assertEdgeCount(CATEGORY, UPDATED_SLUG, 14);
     ReportAssertions.assertOnlyEdgesFrom(
         CATEGORY,
         UPDATED_SLUG,
@@ -468,21 +465,20 @@ public class BuildDeploymentIT {
         UNPUBLISHED_SLUG,
         StoryPeers.GIT_HOST,
         StoryPeers.specLabel(UNPUBLISHED, UNPUBLISHED_VERSION, 200));
-    for (String miss :
-        StoryPeers.declarationMissLabels(
-            UNPUBLISHED, UNPUBLISHED_REPO_ID, UNPUBLISHED_VERSION)) {
-      peer(UNPUBLISHED_SLUG, StoryPeers.GIT_HOST, miss);
-    }
+    peer(
+        UNPUBLISHED_SLUG,
+        StoryPeers.GIT_HOST,
+        StoryPeers.declarationMissLabel(UNPUBLISHED, UNPUBLISHED_VERSION));
     swarm(
         UNPUBLISHED_SLUG,
         StorySwarm.label("pull " + templated(UNPUBLISHED, UNPUBLISHED_VERSION), "1"));
     operatorRead(UNPUBLISHED_SLUG);
     ReportAssertions.assertDeclaredEdge(
         CATEGORY, UNPUBLISHED_SLUG, NetworkEdge.JDBC, StoryTarget.SERVICE, STORE, STORE_LABEL);
-    // SEVEN, and the two absences are the story. qits-configuration was never asked — a deployment
+    // SIX, and the two absences are the story. qits-configuration was never asked — a deployment
     // that is not going to happen must not spend a peer's answer on itself, and this repository
     // declares nothing to seed either — and the orchestrator was asked exactly once.
-    ReportAssertions.assertEdgeCount(CATEGORY, UNPUBLISHED_SLUG, 7);
+    ReportAssertions.assertEdgeCount(CATEGORY, UNPUBLISHED_SLUG, 6);
     ReportAssertions.assertNoEdgesTo(CATEGORY, UNPUBLISHED_SLUG, StoryPeers.CONFIGURATION);
     ReportAssertions.assertNoEdgesTo(CATEGORY, UNPUBLISHED_SLUG, StoryPeers.IDP);
     ReportAssertions.assertOnlyEdgesFrom(
