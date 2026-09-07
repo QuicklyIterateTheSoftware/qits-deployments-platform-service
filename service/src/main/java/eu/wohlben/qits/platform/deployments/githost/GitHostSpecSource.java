@@ -26,9 +26,10 @@ import org.jboss.logging.Logger;
  * <p><b>It reads TWO files now, and they are one read twice rather than two readers.</b> Beside the
  * spec sits {@link SpecSource#DECLARATION_PATH}, the configuration a repository declares for its own
  * application, fetched at the same rev through the same address pair and handed on <b>unparsed</b> —
- * qits-configuration owns that grammar. Everything below the file name is shared: the encoding of
- * the rev, the name-then-id fallback, the 404-is-an-answer stance and the retryable-versus-permanent
- * classification. See {@link #readDeclaration}.
+ * qits-configuration owns that grammar. Almost everything below the file name is shared: the
+ * encoding of the rev, the 404-is-an-answer stance and the retryable-versus-permanent
+ * classification. <b>The name-then-id fallback is the exception</b> and belongs to the spec read
+ * alone — {@link #readDeclaration} says why it had to go.
  *
  * <p><b>The rev is the RELEASED TAG, and it is fully qualified.</b> A deployment is a version now,
  * so the file that decides where its container runs has to be the file that version was cut from —
@@ -169,11 +170,20 @@ public class GitHostSpecSource implements SpecSource {
    * this can raise is a failure of the HOP, which is why the classification below is {@link
    * #statusFailure}'s unchanged.
    *
-   * <p><b>The name-then-id fallback is {@link #read}'s, for {@link #read}'s reason</b> — the name
-   * route resolves through qits-projects and can answer a false 404 while that service is being cut
-   * over, and believing one here would seed nothing for a version that really does declare
-   * something. A double 404 is {@link DeclarationRead#absent()}: a repository that has not been
-   * migrated yet, which is most of them and is a clean answer.
+   * <p><b>There is NO name-then-id fallback here, and that is the one thing this read does not
+   * share with {@link #read}.</b> A 404 on the name-addressed route is {@link
+   * DeclarationRead#absent()} at once. The name a declaration read is addressed with comes off the
+   * release event or the acceptance ledger and is authoritative — the rename door corrects it — so
+   * there is no false miss to disbelieve; and the id route is refused to this caller anyway, because
+   * qits-githost's storage-client guard serves {@code /git/<repoId>} to qits-projects alone. So the
+   * fallback could only ever convert <b>not migrated yet</b>, which is most repositories, into a 403
+   * — and a 403 is classified retryable, which is a sixty-minute {@code SPEC_UNREADABLE} hold for a
+   * file that was never there. Measured on qits-ci@2026.907.184918 on 2026-09-07, where it held
+   * every unmigrated repository's deployment. {@link #read} keeps its fallback: a name-404 on the
+   * SPEC usually means a real problem, since every deployable carries a {@code deployments.yml}.
+   *
+   * <p><b>A ref that carries no name is still read id-addressed</b>, exactly as it always was — that
+   * is {@link #address}'s answer, not a fallback — and a 404 there is absent for the same reason.
    *
    * <p><b>No {@code Git-Commit-Sha} is wanted from this read.</b> The commit is the spec read's
    * answer and the row already has it; asking twice would be two sources for one fact.
@@ -184,16 +194,6 @@ public class GitHostSpecSource implements SpecSource {
     HttpResponse<String> response = get(url);
 
     if (response.statusCode() == 404) {
-      if (repository.nameAddressed()) {
-        String idUrl = blobUrl(repository.repoId(), rev, DECLARATION_PATH);
-        HttpResponse<String> byId = get(idUrl);
-        if (byId.statusCode() == 200) {
-          return new DeclarationRead(byId.body());
-        }
-        if (byId.statusCode() != 404) {
-          throw statusFailure(idUrl, byId.statusCode());
-        }
-      }
       LOG.debugf(
           "%s carries no %s at %s — nothing to seed, which is what a repository that has not"
               + " migrated its configuration yet looks like",
