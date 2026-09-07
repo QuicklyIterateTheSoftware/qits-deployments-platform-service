@@ -303,6 +303,13 @@ public class DeployService implements ReleaseAnnouncements {
    * once at startup, from what the runtime says: see {@link #sweepInFlight()}. The
    * containers are deliberately NOT reaped: a deployed application outlives its deployer, and
    * whatever was {@code ACTIVE} before the restart is still serving.
+   *
+   * <p><b>{@code SPEC_UNREADABLE} is the same stranding one word further on</b>, and it needed its
+   * own pass: those rows are held by {@link #specRetries}, which is memory, so a process that dies
+   * mid-hold leaves them in flight with nobody left to re-read them. {@link #sweepHeldSpecReads()}
+   * is that pass, and it runs <b>after</b> the in-flight one for the ordering reason {@link
+   * OwedReleaseSweep} states one step further out: each of these reads a set of rows and settles
+   * what a previous process left, so they run to completion before anything queues a fresh row.
    */
   void onStart(@Observes StartupEvent event) {
     if (LaunchMode.current() == LaunchMode.TEST) {
@@ -312,6 +319,11 @@ public class DeployService implements ReleaseAnnouncements {
       sweepInFlight();
     } catch (RuntimeException e) {
       LOG.warnf(e, "Could not sweep interrupted deployments at startup");
+    }
+    try {
+      sweepHeldSpecReads();
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not settle the spec retries a previous process was holding");
     }
     startObserving();
   }
@@ -817,6 +829,144 @@ public class DeployService implements ReleaseAnnouncements {
             + " nobody rather than as an empty snapshot; %s keeps whatever routes it has until its"
             + " next deployment",
         row.deploymentId(), row.applicationName());
+    return null;
+  }
+
+  /**
+   * Settle every {@code SPEC_UNREADABLE} row no in-memory hold is carrying — which at boot is all of
+   * them. The in-flight sweep's twin, one word further on, and it exists for the same reason: a row
+   * whose only means of progress died with a process is a deployment that will never move again, and
+   * {@code SPEC_UNREADABLE} is on {@link RequestLifecycle}'s in-flight list, so the client draws it
+   * as a pending deployment forever.
+   *
+   * <p><b>Measured, not feared.</b> On 2026-09-07 two rows — {@code qits-ci@2026.907.184918} and
+   * {@code qits-deployments@2026.907.192519} — sat {@code SPEC_UNREADABLE} for hours across several
+   * deployer restarts while both versions were serving, deployed for real by re-fired events. The
+   * hold that would have settled them ({@link #retrySpecReads()}) belongs to a JVM that was gone.
+   *
+   * <p><b>Two arms, and the second one is the decision worth arguing.</b>
+   *
+   * <ul>
+   *   <li><b>Something already serves the place → {@code SUPERSEDED}.</b> An {@code ACTIVE} row of
+   *       the same (application, tier) that arrived after this one, or that is serving the same or a
+   *       newer version, answers the question this row was waiting on: whatever the file said, the
+   *       place is live. That is the sweep's own word for "this in-flight row's place was taken",
+   *       and this is its second writer.
+   *   <li><b>Nothing serves it → {@code FAILED}</b>, terminal, naming the death. <b>Re-entering the
+   *       hold was the alternative and it cannot be built honestly.</b> A {@link SpecRetry} needs a
+   *       {@link RepositoryRef}, a package name and a {@link Door}; {@code pd_deployment} records an
+   *       application NAME and no repository identity at all, by V1's own header, so there is
+   *       nothing on the row to rebuild one from — and an application name is not a repository name.
+   *       <b>And the recovery already exists one layer out</b>: a release held on an unreadable spec
+   *       is deliberately left owed in {@code pd_owed_release}, and {@link OwedReleaseSweep}
+   *       re-drives it at boot through the ordinary door, with the identifiers, the tip collapse and
+   *       the acceptance ledger all intact. A hold reconstructed here would be a second announcement
+   *       path for the same release racing that one on the same worker — the two-doors hazard this
+   *       component refuses everywhere else. The {@link Door#MANUAL} door writes no obligation on
+   *       purpose, so for a hand-announced version {@code FAILED} is the whole answer: an operator
+   *       named a version, the attempt is over, and re-announcing it would re-answer a question a
+   *       person already answered.
+   * </ul>
+   *
+   * <p><b>Neither arm announces</b>, and that is {@link #finishHeld}'s rule rather than an omission:
+   * the row already announced {@code DeploymentFailed} when {@link #recordUnreadableSpec} wrote it
+   * through {@link #finish}, so a second event would tell every consumer the deployment failed
+   * twice. It is also what the sweep's other {@code SUPERSEDED} writer does — {@link #record} states
+   * that word and says nothing — and what {@link DeploymentObserver}'s corrections do.
+   *
+   * <p>The shape is {@link #sweepInFlight()}'s: read and decide in one transaction, write each row
+   * in a bracket of its own. There is no driver call at all here — every question this asks is this
+   * component's own database — which is why the decision may sit inside the read.
+   *
+   * <p>Package-private so the suite drives a pass without a real StartupEvent, exactly as {@link
+   * #sweepInFlight()} and {@link #retrySpecReads()} are driven.
+   */
+  void sweepHeldSpecReads() {
+    List<Settlement> settlements = QuarkusTransaction.requiringNew().call(this::heldSpecReads);
+    for (Settlement settlement : settlements) {
+      finishHeld(settlement.deploymentId(), settlement.status(), settlement.detail());
+    }
+    if (!settlements.isEmpty()) {
+      LOG.infof(
+          "Settled %d deployment(s) whose spec retry a previous process was holding when it died —"
+              + " SUPERSEDED where the application is already serving, FAILED where it is not",
+          settlements.size());
+    }
+  }
+
+  /** One held row and the word that ends it, decided before anything is written. */
+  private record Settlement(String deploymentId, PdDeploymentStatus status, String detail) {}
+
+  /**
+   * The decision above, asked of the rows alone.
+   *
+   * <p><b>A row this process is holding is skipped</b>, which at boot is none of them and is the
+   * contract rather than a precaution: the pass settles rows <i>nobody</i> is carrying, so driving
+   * it on a live instance must not settle a release {@link #retrySpecReads()} is about to re-read.
+   * The map is the deploy worker's and so is this pass, so the read is uncontended.
+   */
+  private List<Settlement> heldSpecReads() {
+    Set<String> carried = new HashSet<>();
+    for (SpecRetry held : specRetries.values()) {
+      carried.addAll(held.rows());
+    }
+    List<Settlement> settlements = new ArrayList<>();
+    for (PdDeployment row : deployments.listByStatus(PdDeploymentStatus.SPEC_UNREADABLE)) {
+      if (carried.contains(row.id)) {
+        continue;
+      }
+      PdDeployment serving = servingSuccessor(row);
+      settlements.add(
+          serving == null
+              ? new Settlement(
+                  row.id,
+                  PdDeploymentStatus.FAILED,
+                  "[the process holding this spec retry died; nothing serves "
+                      + row.applicationName
+                      + " here, so the attempt is over — settled by the boot sweep]\n[an accepted"
+                      + " release is re-driven from its own obligation; a version announced by hand"
+                      + " is announced again by hand]")
+              : new Settlement(
+                  row.id,
+                  PdDeploymentStatus.SUPERSEDED,
+                  "[the process holding this spec retry died; "
+                      + row.applicationName
+                      + " already serves "
+                      + serving.imageTag()
+                      + " — settled by the boot sweep]"));
+    }
+    return settlements;
+  }
+
+  /**
+   * The {@code ACTIVE} deployment that answers a held row's question, or null when the place is not
+   * being served by anything this row can be superseded by.
+   *
+   * <p>The place is the sweep's own spelling — {@link
+   * PdDeploymentRepository#listActiveByApplication} on the row's application and tier, the same call
+   * {@link #record} decommissions a predecessor with — so the null tier of a pre-V8 row is tested as
+   * a value rather than compared.
+   *
+   * <p><b>Two ways to answer, and each is deliberately narrow.</b> A later {@code seq} is the
+   * decidable one: V1's identity column is what every listing here means by "newer", so a row
+   * created after this one and still {@code ACTIVE} is a deployment that happened afterwards and
+   * won. A same-or-newer {@code version} is the other, and it is asked <b>only when both rows carry
+   * one</b> — that is what covers a redeploy of the very version this row was held on, which is
+   * exactly the measured case, without letting a pre-V7 row tagged with a sha answer a question
+   * about a CalVer stamp. {@link PdDeployment#imageTag()} stays the single reader of the tag.
+   */
+  private PdDeployment servingSuccessor(PdDeployment held) {
+    for (PdDeployment active :
+        deployments.listActiveByApplication(held.applicationName, held.environmentId)) {
+      if (held.seq != null && active.seq != null && active.seq > held.seq) {
+        return active;
+      }
+      if (held.version != null
+          && active.version != null
+          && Versions.compare(active.version, held.version) >= 0) {
+        return active;
+      }
+    }
     return null;
   }
 
@@ -1373,7 +1523,7 @@ public class DeployService implements ReleaseAnnouncements {
               request.gateSettledAt = Instant.now();
             });
     for (String deploymentId : heldRows) {
-      finishHeld(deploymentId, "[" + detail + "]");
+      finishHeld(deploymentId, PdDeploymentStatus.FAILED, "[" + detail + "]");
     }
   }
 
@@ -1581,24 +1731,33 @@ public class DeployService implements ReleaseAnnouncements {
         "Giving up on the deployment spec of %s@%s after %d attempt(s): %s",
         held.releasedName(), held.version(), held.attempts() + 1, cause.getMessage());
     for (String deploymentId : held.rows()) {
-      finishHeld(deploymentId, detail);
+      finishHeld(deploymentId, PdDeploymentStatus.FAILED, detail);
     }
   }
 
   /**
-   * Settle one held row {@code FAILED}. Its own bracket, and no announcement: the row was already
-   * announced as a failure when it was written, and a second {@code DeploymentFailed} for the same
-   * deployment would tell every consumer the deployment failed twice.
+   * Settle one held row. Its own bracket, and <b>no announcement</b>: the row was already announced
+   * as a failure when it was written — {@link #recordUnreadableSpec} writes it through {@link
+   * #finish}, which announces every non-{@code ACTIVE} word — and a second {@code DeploymentFailed}
+   * for the same deployment would tell every consumer the deployment failed twice.
+   *
+   * <p><b>The status is the caller's</b> because there are two ways a held row ends now: {@code
+   * FAILED} when a retry gave up or the file turned out never to have existed, and {@code
+   * SUPERSEDED} when {@link #sweepHeldSpecReads()} finds the place already being served. Both take
+   * the same bracket, the same silence and the same guard below — only the word differs.
+   *
+   * <p>The guard is what makes every caller safe: a row that is already something else (a newer
+   * deployment decommissioned it, an operator retired the application) is left alone.
    */
-  private void finishHeld(String deploymentId, String detail) {
+  private void finishHeld(String deploymentId, PdDeploymentStatus status, String detail) {
     DbRetry.runInNewTx(
-        "Giving up on held deployment " + deploymentId,
+        "Settling held deployment " + deploymentId + " as " + status,
         () -> {
           PdDeployment row = deployments.findById(deploymentId);
           if (row == null || row.status != PdDeploymentStatus.SPEC_UNREADABLE) {
             return; // torn down, or settled by something with a better claim on the row
           }
-          row.status = PdDeploymentStatus.FAILED;
+          row.status = status;
           row.detail = detail;
           row.finishedAt = Instant.now();
           deployments.flush(); // statement phase, so a lost connection is retriable

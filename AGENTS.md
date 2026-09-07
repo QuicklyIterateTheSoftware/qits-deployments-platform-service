@@ -197,6 +197,40 @@ The startup sweep (`DeployService.onStart`) settles rows left `QUEUED`/`STARTING
 deployed application outlives its deployer, and whatever was ACTIVE before the restart is still
 serving. Do not "complete" the sweep with a reap.
 
+**A second boot pass settles the `SPEC_UNREADABLE` rows a dead process was holding** (2026-09-07),
+and it is the same stranding one word further on. Those rows are held by `DeployService.specRetries`
+— memory, on purpose — so a process that dies mid-hold leaves them in flight with nobody left to
+re-read them, and `SPEC_UNREADABLE` is on `RequestLifecycle`'s in-flight list, so the SPA draws a
+pending deployment forever. Measured: `qits-ci@2026.907.184918` and
+`qits-deployments@2026.907.192519` sat there for over two hours across several deployer restarts
+while both versions were serving off re-fired events. `sweepHeldSpecReads()` runs from `onStart`
+immediately after `sweepInFlight()` — still before `OwedReleaseSweep`'s `APPLICATION + 600` observer,
+so both predecessor cleanups finish before anything queues a fresh row. Four things about it:
+
+- **It settles only rows no in-memory hold carries**, which at boot is all of them. That is the
+  contract rather than a precaution: driven beside a live retry it must not settle a release
+  `retrySpecReads()` is about to re-read.
+- **The place is already serving → `SUPERSEDED`.** An `ACTIVE` row of the same (application, tier)
+  with a later `seq`, or one carrying the same or a newer `version`, answers the question the held
+  row was waiting on. The version arm is asked **only when both rows carry one**, so a pre-V7 row
+  tagged with a sha never answers a question about a CalVer stamp, and `PdDeployment.imageTag()`
+  stays the single reader of the tag. This is the sweep's second writer of that word.
+- **Nothing serves it → `FAILED`, and re-entering the hold is not an option that exists.** A
+  `SpecRetry` needs a `RepositoryRef`, a package name and a `Door`; `pd_deployment` records an
+  application NAME and no repository identity at all, by V1's own header. And the durable recovery is
+  already one layer out — a release held on an unreadable spec is deliberately left owed in
+  `pd_owed_release`, and `OwedReleaseSweep` re-drives it through the ordinary door. A hold rebuilt
+  here would be a second announcement path for the same release racing that one on the same worker.
+  The `MANUAL` door writes no obligation on purpose, so for a hand-announced version `FAILED` is the
+  whole answer.
+- **Neither arm announces.** `recordUnreadableSpec` already announced `DeploymentFailed` for that row
+  through `finish`, so both arms go through `finishHeld` — which now takes the status, keeps its
+  "only if still `SPEC_UNREADABLE`" guard, and says nothing. Settling through `finish` would tell
+  every consumer the deployment failed twice.
+
+`PdHeldSpecSweepTest` holds all four, driving `sweepHeldSpecReads()` package-locally the way
+`PdSweepAdoptionTest` drives `sweepInFlight()`.
+
 **The worker survives losing its own datasource, in exactly three brackets.** This component deploys
 qits-oci-postgresql — the postgres its own registry lives in — so cutting that container over kills
 every connection the deployment performing it is holding. It did: eaa34fbc cut over cleanly, went
@@ -639,7 +673,7 @@ Three of the five outcomes `FAILED` used to cover have their own word, one write
 | status | meaning | written by |
 | --- | --- | --- |
 | `ROLLED_BACK` | the successor never converged and the orchestrator put the predecessor back — it is serving | `DeployService.execute`, off `ConvergenceOutcome.ROLLED_BACK` |
-| `SUPERSEDED` | a restart interrupted this in-flight row and a newer sha is serving its place | the startup sweep's verdict |
+| `SUPERSEDED` | a restart interrupted this in-flight row and the place is already being served | the startup sweep's verdict, and `sweepHeldSpecReads()` for a `SPEC_UNREADABLE` row whose place a later deployment took |
 | `GONE` | a formerly `ACTIVE` row whose container two observation passes found absent | `DeploymentObserver.demote` |
 | `SCALED_TO_ZERO` | the workload is **deliberately stopped** — somebody scaled the application to 0 | `ApplicationScaling` on the operator's own action, and `DeploymentObserver.pause` for a scale performed by hand |
 | `DECLARATION_REFUSED` | the release's `.config/qits/configuration.yml` was not seeded into qits-configuration, so the deployment was **never scheduled** | `DeployService.deployReadSpec`, off `DeclarationRefused` — see the declaration section below |
