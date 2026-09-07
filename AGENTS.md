@@ -517,7 +517,11 @@ never for how.
 `desiredReplicas`, `scale` and `restart(serviceName)`; see *Scale and restart* below. The test the
 removed verbs failed is the one to keep applying: none of these three is a step somebody sequences
 to perform a deployment. Each states an outcome a person asked for, and nothing calls two of them in
-a row.
+a row. **A fourth, `removeService(name)`, is the plane conversion's** (see *A plane conversion
+retires its tier services*), and it passes the same test: by the time it runs the deployment is
+applied, converged, recorded and announced, and calling it or not changes none of that. It removes
+exactly the one named service — the targeted opposite of `removeEnvironmentContainers`' label sweep
+— is idempotent, and must never throw.
 
 **So `DeployService.execute` has no branches in it**: resolve → provision → pull (for the
 `IMAGE_MISSING` classification) → `apply` → `awaitConverged` → record. What stayed with it is the
@@ -1666,6 +1670,44 @@ the successor's cutover finds them (two ACTIVE rows for one place is the invaria
 follows for the same reason one step further on: a lookup that missed would rotate a live password.
 `PdSchemaTest` migrates to V7, writes the rows the old code wrote and migrates the rest of the way —
 both the designated and the undesignated case.
+
+### A plane conversion retires its tier services (2026-09-07)
+
+**`registerPlatform` moved the rows and left the runtime alone, and that is the
+`dev-qits-configuration` incident.** A repository whose `deployments.yml` flips to
+`deployment_target: platform` had its env-scoped `ACTIVE` rows decommissioned and moved onto the
+plane — while the old `<env>-<app>` swarm service kept running with its alias, ports and volumes,
+managed by nobody: the plane deploys under the bare alias and never addresses the qualified name
+again. `dev-qits-configuration` half-failed as exactly that orphan for hours after
+qits-configuration's flip on 2026-09-07 and was removed by hand from an admin workspace. (The
+reverse direction was always guarded — `registerInEnvironments` refuses it on the record — only the
+forward teardown was never written.) Now the conversion owes the runtime a retirement, and five
+things hold it up:
+
+- **The retirement waits for a HEALTHY successor.** `registerPlatform` collects the decommissioned
+  rows' `container_name`s into `DeployService.owedTierRetirements` (in memory, keyed by
+  application); `execute` settles the debt via `retireConvertedTierServices` only after the platform
+  deployment's cutover wrote `ACTIVE`. Torn down at conversion time, a failed first platform deploy
+  would leave the application with NOTHING serving; deferred, a failed attempt costs nothing and the
+  owed entry survives for the next deployment that succeeds.
+  `aFailedFirstPlatformDeployKeepsTheTierServiceAndTheNextSuccessRetiresIt` holds both halves.
+- **One service per tier the application served in, and the names come off the ROWS** — the same
+  source and rule as `DeploymentObserver` and `ApplicationScaling`: only the service a row named may
+  be acted on for that row. A docker-era row names a `qits-pd-…` container rather than a service;
+  the driver answers "already absent" and that is the honest outcome.
+- **Nothing about it can fail the deployment.** The seam says `removeService` must not throw, the
+  swarm driver WARNs and returns, and `DeployService` catches the belt anyway — the deployment is
+  live and announced, so an orphan is an operator's one-line cleanup while a `FAILED` row would be a
+  lie about a healthy platform. Volumes are untouched throughout: the plane serves out of the same
+  stores, and `service rm` removes the service object alone.
+- **In memory is the `specRetries` trade, stated rather than hidden.** A process that dies between
+  the conversion and the first healthy platform deployment leaves the old services running — the
+  pre-fix state — for the admin-workspace fallback; the INFO at conversion and the WARN on a refusal
+  are what make it findable. Durability was not worth a table for a one-time transition per
+  application.
+- **The deployer's own flip is not this path's and cannot be**: that deployment is `HANDED_OFF` and
+  settled by the successor's sweep, whose map is empty. README's hand step for the plane flip
+  (`docker service rm <env>-qits-deployments` once the successor is healthy) stays.
 
 ### The application name is the repository's NAME, never its storage id (2026-08-21)
 

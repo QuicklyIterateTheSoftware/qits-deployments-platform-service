@@ -43,6 +43,9 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   private final List<String> removedEnvironments = Collections.synchronizedList(new ArrayList<>());
   private final List<String> detached = Collections.synchronizedList(new ArrayList<>());
 
+  /** The services a plane conversion retired — one per tier the application used to serve in. */
+  private final List<String> removedServices = Collections.synchronizedList(new ArrayList<>());
+
   /** Every driver call in arrival order, tagged {@code kind:target} — the ORDERING assertions. */
   private final List<String> calls = Collections.synchronizedList(new ArrayList<>());
 
@@ -79,6 +82,14 @@ public class FakeDeploymentDriver implements DeploymentDriver {
    */
   private volatile Runnable duringContainerReap = () -> {};
 
+  /**
+   * The runtime refusing a retirement — the non-fatal claim's script. The shipped driver never
+   * throws out of {@code removeService}, so the only way to exercise the caller's own belt is a
+   * double that does, and what the assertion is then about is the DEPLOYMENT: still ACTIVE, still
+   * announced, with a WARN as the whole cost.
+   */
+  private volatile RuntimeException removeServiceFailure;
+
   public void reset() {
     applied.clear();
     awaited.clear();
@@ -89,6 +100,8 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     removedNetworks.clear();
     removedEnvironments.clear();
     detached.clear();
+    removedServices.clear();
+    removeServiceFailure = null;
     calls.clear();
     runningImages.clear();
     observations.clear();
@@ -161,6 +174,11 @@ public class FakeDeploymentDriver implements DeploymentDriver {
     duringContainerReap = hook;
   }
 
+  /** Make every {@link #removeService} throw this. See {@link #removeServiceFailure}. */
+  public void scriptRemoveServiceFailure(RuntimeException failure) {
+    removeServiceFailure = failure;
+  }
+
   // --- what was recorded -------------------------------------------------------------------------
 
   public List<ServiceSpec> applied() {
@@ -198,6 +216,14 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   /** The networks the platform plane was asked to release, one entry per network. */
   public List<String> detached() {
     return List.copyOf(detached);
+  }
+
+  /**
+   * The services that were actually retired — a refused one is in {@link #calls()} and not here,
+   * which is what lets a test tell "it was asked for" from "it happened".
+   */
+  public List<String> removedServices() {
+    return List.copyOf(removedServices);
   }
 
   public List<String> calls() {
@@ -248,6 +274,16 @@ public class FakeDeploymentDriver implements DeploymentDriver {
   public void reap(List<String> names) {
     reaped.addAll(names);
     calls.add("reap:" + names);
+  }
+
+  @Override
+  public void removeService(String name) {
+    calls.add("removeService:" + name);
+    RuntimeException failure = removeServiceFailure;
+    if (failure != null) {
+      throw failure;
+    }
+    removedServices.add(name);
   }
 
   @Override

@@ -281,6 +281,32 @@ public class DeployService implements ReleaseAnnouncements {
   private final Map<String, SpecRetry> specRetries = new ConcurrentHashMap<>();
 
   /**
+   * The old {@code <env>-<app>} services a PLANE CONVERSION stranded, keyed by application name —
+   * one distinct entry per tier the application was serving in, taken from the {@code
+   * container_name} of each row {@link #registerPlatform} decommissioned (under swarm that column
+   * IS the service's name). Written when the rows move onto the plane, consumed by the first
+   * platform deployment of that application that reports {@code ACTIVE}.
+   *
+   * <p><b>It waits for a healthy successor, and that is the whole reason it is a map rather than a
+   * teardown at conversion time.</b> Retiring the tier services while the rows move would leave the
+   * application with NOTHING serving it for as long as the first platform deployment takes — and
+   * with nothing at all if that deployment fails, which is a conversion turning a working
+   * application off. Deferred, a failed first attempt leaves the old services running and the entry
+   * in place for the next deployment that succeeds.
+   *
+   * <p><b>In memory on purpose, and it is the {@link #specRetries} trade.</b> A process that dies
+   * holding an entry leaves the old services running, which is the state that was there before this
+   * existed — an operator's {@code docker service rm} from an admin workspace, which is exactly what
+   * {@code dev-qits-configuration} needed on 2026-09-07 after qits-configuration's own flip. The
+   * INFO line written at conversion and the WARN written on a refusal are what make that findable.
+   *
+   * <p>The deployer's own flip is not a case this can serve and does not need to be: that
+   * deployment is {@code HANDED_OFF} to the orchestrator and settled by the successor's startup
+   * sweep, in a process whose map is empty. README's hand step for the plane flip stays what it is.
+   */
+  private final Map<String, Set<String>> owedTierRetirements = new ConcurrentHashMap<>();
+
+  /**
    * The observation tick — a bare daemon thread, the worker's own shape, rather than the
    * quarkus-scheduler extension. It has one job (submit a runnable every n seconds), it must not run
    * the pass itself, and a scheduler extension would add a managed thread pool and a second
@@ -1883,11 +1909,16 @@ public class DeployService implements ReleaseAnnouncements {
    * rather than registered: the two planes are not symmetric, and going back is not a conversion.
    *
    * <p>Coming the other way, environment links become the platform plane because there is exactly
-   * one destination to move the history to. Going back has as many destinations as there are tiers
-   * the service is linked into, no answer to which of them inherits the deployment history, and a
-   * running service under the plane's BARE name that the environment deployment would not even
-   * find — it would create {@code <env>-<app>} beside it and leave a row saying {@code ACTIVE}
-   * about a container nothing replaced. So this refuses, loudly and on the record.
+   * one destination to move the history to — and the conversion also RETIRES the tier services
+   * those rows named, once the plane is serving ({@link #registerPlatform}, {@link
+   * #retireConvertedTierServices}), so nothing is left running that no row manages. Going back has
+   * as many destinations as there are tiers the service is linked into, no answer to which of them
+   * inherits the deployment history, and a running service under the plane's BARE name that the
+   * environment deployment would not even find — it would create {@code <env>-<app>} beside it and
+   * leave a row saying {@code ACTIVE} about a container nothing replaced. There is no symmetric
+   * retirement to offer either: the plane's service is the one thing that IS serving, and removing
+   * it is what the refused deployment would be replacing it with. So this refuses, loudly and on
+   * the record.
    *
    * <p>The link set written is the <b>union</b> of what the catalogue already holds and the entry
    * tier this release lands in. A release entering dev says nothing about whether the service also
@@ -1988,6 +2019,16 @@ public class DeployService implements ReleaseAnnouncements {
    * rather than deleting is what keeps an in-flight self-update row alive across the component's own
    * conversion.
    *
+   * <p><b>And the RUNTIME half follows the rows, which it did not for a release.</b> Each row this
+   * decommissions names a {@code <env>-<app>} service that is still running, still holding that
+   * tier's alias, ports and volumes, and — the moment the row moves — managed by nobody: the plane
+   * deploys under the bare alias, so no later deployment of this application ever addresses it
+   * again. So the names are owed a retirement ({@link #owedTierRetirements}) and are removed by
+   * {@link #retireConvertedTierServices} after the first platform deployment reports healthy. That
+   * is the 2026-09-07 {@code dev-qits-configuration} incident: converted rows, a running service and
+   * nobody managing it, half-failing for hours until it was removed by hand from an admin
+   * workspace. The conversion no longer ends at the rows.
+   *
    * <p>There is no "this name already belongs to another repository" check, and there is nothing to
    * check: the catalogue holds one identity for a service and derived registration has always named
    * an application after its repository, so the name IS the repository.
@@ -2039,12 +2080,23 @@ public class DeployService implements ReleaseAnnouncements {
             List.of()),
         causationId);
 
+    // The services those rows named, collected while they are still readable as tier deployments —
+    // one per tier the application was serving in. They outlive this transaction on purpose: see
+    // owedTierRetirements for why the removal waits for a healthy platform deployment.
+    Set<String> retired = new LinkedHashSet<>();
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
               List<PdDeployment> scoped = deployments.listEnvironmentScoped(applicationName);
               for (PdDeployment deployment : scoped) {
                 if (deployment.status == PdDeploymentStatus.ACTIVE) {
+                  // Read BEFORE the row is overwritten, and only off an ACTIVE one: a FAILED or
+                  // DECOMMISSIONED row names a service somebody else's cutover already dealt with,
+                  // and the whole rule here is that only the service a row named may be acted on
+                  // for that row.
+                  if (deployment.containerName != null) {
+                    retired.add(deployment.containerName);
+                  }
                   deployment.status = PdDeploymentStatus.DECOMMISSIONED;
                   deployment.finishedAt = Instant.now();
                 }
@@ -2061,6 +2113,22 @@ public class DeployService implements ReleaseAnnouncements {
                     applicationName, main.name);
               }
             });
+    if (!retired.isEmpty()) {
+      // Merged rather than replaced: a second release arriving before the first platform deployment
+      // went healthy would otherwise drop whatever the first conversion owed.
+      owedTierRetirements.merge(
+          applicationName,
+          Set.copyOf(retired),
+          (existing, added) -> {
+            LinkedHashSet<String> union = new LinkedHashSet<>(existing);
+            union.addAll(added);
+            return Set.copyOf(union);
+          });
+      LOG.infof(
+          "The tier services of %s (%s) will be retired once its first platform deployment reports"
+              + " healthy",
+          applicationName, retired);
+    }
 
     return List.of(
         new Target(
@@ -2743,6 +2811,12 @@ public class DeployService implements ReleaseAnnouncements {
     // replace is in place, so the predecessor row names the same service this deployment applied.
     toRemove.remove(name);
     driver.reap(List.copyOf(toRemove));
+    if (plan.platform()) {
+      // The plane is serving this application now, so whatever a conversion stranded under the
+      // tier-qualified names may go. Asked on every platform deployment and answered by the map:
+      // an application that never converted owes nothing and this is one lookup.
+      retireConvertedTierServices(plan.applicationName(), name);
+    }
     LOG.infof(
         "Deployed %s@%s into %s (%s)",
         plan.applicationName(),
@@ -2756,6 +2830,65 @@ public class DeployService implements ReleaseAnnouncements {
 
   /** What the cutover bracket carries out: the containers to reap, and when it happened. */
   private record Cutover(List<String> oldContainers, Instant finishedAt) {}
+
+  /**
+   * The other half of a plane conversion: {@link #registerPlatform} moved the rows onto the
+   * platform plane, and this retires the {@code <env>-<app>} services those rows named — one per
+   * tier the application used to serve in — now that the platform deployment they were
+   * decommissioned for has reported {@code ACTIVE}.
+   *
+   * <p><b>Why AFTER and not at the conversion.</b> A teardown written where the rows move would
+   * stop the application before its replacement exists, and would leave it stopped for good if that
+   * first platform deployment then failed — a repository adding one line to its {@code
+   * deployments.yml} and taking itself off the platform. Deferred, a failed first attempt costs
+   * nothing: the old tier services are still running, still holding their aliases, and the owed
+   * entry is still in the map for the next deployment of that application that succeeds.
+   *
+   * <p><b>Why the names come off the ROWS.</b> {@code container_name} is what the deployment
+   * recorded and, under swarm, IS the service's name and therefore its address — the same source
+   * {@link DeploymentObserver} and {@code ApplicationScaling} act on, and the same rule: only the
+   * service a row named may be acted on for that row. Nothing is derived from the application name
+   * and a tier, because a row written by the docker-era code names a {@code qits-pd-<env>-<app>-<id8>}
+   * CONTAINER rather than a service — the driver answers "already absent" to that and says so, which
+   * is the honest outcome for a name no orchestrator holds.
+   *
+   * <p><b>Why nothing here can fail the deployment.</b> The container is live, the cutover is
+   * recorded and {@code DeploymentActive} is about to be announced; an orphaned old service is an
+   * operator's one-line cleanup, while a deployment recorded {@code FAILED} for it would be a lie
+   * about a healthy platform. The seam says an implementation must not throw and the catch is the
+   * belt for the one that does — with a WARN naming the by-hand remedy, because that is the only
+   * record anybody will have.
+   *
+   * <p><b>The entry is consumed once, even when a removal WARNs.</b> Re-attempting on every later
+   * deployment of the application would be a permanent retry of a name that may simply be gone in
+   * some other way, and the WARN already names the remedy. Volumes are untouched throughout: the
+   * plane's service serves out of the same stores.
+   */
+  private void retireConvertedTierServices(String applicationName, String liveName) {
+    Set<String> owed = owedTierRetirements.remove(applicationName);
+    if (owed == null) {
+      return;
+    }
+    for (String service : owed) {
+      if (service.equals(liveName)) {
+        // Never the thing that just went live. It cannot normally be both — the plane's alias is
+        // bare and a tier's is qualified — but the guard costs nothing and the failure would be
+        // removing the deployment this method runs behind.
+        continue;
+      }
+      try {
+        LOG.infof(
+            "Retiring the tier service %s: %s serves from the platform plane now",
+            service, applicationName);
+        driver.removeService(service);
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            "Could not retire the tier service %s of %s — remove it by hand (docker service rm %s):"
+                + " %s",
+            service, applicationName, service, e.getMessage());
+      }
+    }
+  }
 
   private DeploymentDriver.Network primaryNetworkSpec(Plan plan) {
     return plan.platform()
