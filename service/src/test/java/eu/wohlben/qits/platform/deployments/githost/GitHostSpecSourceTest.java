@@ -50,8 +50,9 @@ public class GitHostSpecSourceTest {
   private volatile int status = 200;
 
   /**
-   * What the SECOND and later requests answer, when the arms have to differ — the name route's
-   * 404 fallback onto the id route is the only place two answers are one read.
+   * What the SECOND and later requests answer, when the arms have to differ — the SPEC read's 404
+   * fallback from the name route onto the id route is the only place two answers are one read. The
+   * declaration read has no such fallback, and one test sets this precisely to prove nothing asks.
    */
   private volatile Integer laterStatus;
   private volatile String body = "deployment_target: platform\n";
@@ -315,40 +316,36 @@ public class GitHostSpecSourceTest {
   }
 
   @Test
-  public void aDeclarationA404OnBothArmsIsAbsentRatherThanAFailure() {
-    // A repository that has not migrated its configuration yet, which is most of them. It seeds
-    // nothing and deploys exactly as it did — a clean answer, not a refusal.
+  public void aNameAddressed404IsAbsentImmediatelyAndAsksTheIdRouteNothing() {
+    // THE regression, measured live on qits-ci@2026.907.184918 (2026-09-07). A repository that has
+    // not migrated its configuration yet — which is most of them — 404s the name route, and the
+    // fallback then asked the id route, which qits-githost's storage-client guard refuses to every
+    // caller but qits-projects. That 403 is classified retryable, so "not migrated" arrived as a
+    // sixty-minute SPEC_UNREADABLE hold. The name on this read is authoritative, so there is no
+    // false miss to disbelieve: one request, and absence is the answer.
     status = 404;
-
-    assertFalse(
-        source().readDeclaration(RepositoryRef.ofId("gw"), SpecSource.tagRev(VERSION)).present());
-    assertFalse(
-        source()
-            .readDeclaration(new RepositoryRef(UUID_ID, "qits", "gw"), SpecSource.tagRev(VERSION))
-            .present());
-  }
-
-  @Test
-  public void aNameAddressed404FallsBackOntoTheIdRouteHereToo() {
-    // The name route resolves through qits-projects and can answer a false 404 while that service
-    // is being cut over. Believing one here would seed nothing for a version that really does
-    // declare something — the spec read's own hazard, one file over.
-    status = 404;
-    laterStatus = 200;
-    body = "defaults:\n  FLAGS: on\n";
+    laterStatus = 403; // what the id route would have said. Nothing must ask it.
 
     SpecSource.DeclarationRead read =
         source()
             .readDeclaration(new RepositoryRef(UUID_ID, "qits", "gw"), SpecSource.tagRev(VERSION));
 
-    assertTrue(read.present(), "the id route answered");
-    assertEquals(body, read.yaml());
-    synchronized (paths) {
-      assertEquals(2, paths.size(), "the name route was asked first");
-      assertEquals(
-          "/git/" + UUID_ID + "/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/configuration.yml",
-          paths.get(1));
-    }
+    assertFalse(read.present(), "not migrated is absent, not a failure");
+    assertEquals(
+        "/git/qits/gw/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/configuration.yml",
+        onlyPath());
+  }
+
+  @Test
+  public void anIdOnlyRefStillReadsIdAddressedAndA404ThereIsAbsentToo() {
+    // The other arm is unchanged: a ref carrying no name has one address, which is what `address`
+    // answers rather than a fallback, and a 404 on it is the same clean answer.
+    status = 404;
+
+    assertFalse(
+        source().readDeclaration(RepositoryRef.ofId("gw"), SpecSource.tagRev(VERSION)).present());
+    assertEquals(
+        "/git/gw/blob/refs%2Ftags%2F" + VERSION + "/.config/qits/configuration.yml", onlyPath());
   }
 
   @Test

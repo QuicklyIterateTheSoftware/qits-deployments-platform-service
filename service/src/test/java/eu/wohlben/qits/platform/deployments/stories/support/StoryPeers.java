@@ -496,28 +496,18 @@ public final class StoryPeers {
   }
 
   /**
-   * The TWO labels a repository that carries no declaration produces — and two is the claim.
+   * The ONE label a repository that carries no declaration produces — and one is the claim.
    *
-   * <p>A name-addressed 404 is not believed on its own. The name route resolves through
-   * qits-projects and its database, so a read that lands while that service is being cut over gets
-   * a false miss — and here a false miss means seeding nothing for a version that really does
-   * declare something, leaving the store resolving an older declaration under a newer version. The
-   * id route needs no resolver, so the miss is checked there before it is taken as an answer. It is
-   * the spec read's own fallback, one file over, and this is where a diagram shows it costing a
-   * second request on every repository that has not migrated yet.
+   * <p>It was two for a release. The name-addressed 404 was disbelieved and re-asked id-addressed,
+   * the spec read's fallback one file over — and on the live platform that second request is what
+   * qits-githost's storage-client guard answers 403 to, since it serves {@code /git/<repoId>} to
+   * qits-projects alone. A 403 is retryable, so every unmigrated repository's deploy was held
+   * {@code SPEC_UNREADABLE} for an hour over a file that was never there (qits-ci@2026.907.184918,
+   * 2026-09-07). The name is authoritative on this read, so absence is the answer at once, and the
+   * diagram shows one edge rather than a second request nothing can be served.
    */
-  public static List<String> declarationMissLabels(
-      String repository, String repoId, String version) {
-    return List.of(
-        declarationLabel(repository, version, 404),
-        Labels.scrub(
-            "GET /git/"
-                + repoId
-                + "/blob/refs%2Ftags%2F"
-                + version
-                + "/"
-                + DECLARATION_PATH
-                + " -> 404"));
+  public static String declarationMissLabel(String repository, String version) {
+    return declarationLabel(repository, version, 404);
   }
 
   /**
