@@ -13,6 +13,11 @@ import java.util.Optional;
  * idempotent across restarts) and "what is owed by somebody who is not here any more" (the sweep).
  * Both are index-backed by V10 — the unique {@code event_id} and the partial index over the unsettled
  * rows.
+ *
+ * <p><b>And one statement, which is not a third question.</b> {@link #renameRepository} corrects the
+ * ADDRESS these rows record when qits-projects renames the repository underneath them; it reads
+ * nothing and decides nothing, and its whole argument lives one layer up in {@code
+ * ReleaseAcceptance}, which owns the transaction it must run in.
  */
 @ApplicationScoped
 public class PdOwedReleaseRepository implements PanacheRepositoryBase<PdOwedRelease, String> {
@@ -39,5 +44,38 @@ public class PdOwedReleaseRepository implements PanacheRepositoryBase<PdOwedRele
     return list(
         "settledAt is null and (acceptedBy is null or acceptedBy <> ?1) order by seq asc",
         instanceId);
+  }
+
+  /**
+   * Move every obligation of one repository onto its new public name, and answer how many moved.
+   *
+   * <p><b>A bulk JPQL update rather than a load-and-set loop</b>, because it is a statement about a
+   * column and not about a set of entities: nothing here reads a row, decides anything from it, or
+   * needs it managed. That is also what makes it converge — replaying the same rename lands on the
+   * same values — which is the property {@code PdRepositoryRenamedSubscriber.replayFromEpoch()}
+   * rests on.
+   *
+   * <p><b>Two statements, chosen by whether the event carried a project id.</b> {@code project_id}
+   * is filled with {@code coalesce}, so a row that already names one keeps it and only a null is
+   * written — see {@code ReleaseAcceptance.renameRepository} for why a rename is not a move. An
+   * event with no project id can fill nothing in, so it says only what it knows and the {@code
+   * coalesce} is left out entirely rather than handed a null to infer a type from.
+   */
+  public int renameRepository(String repositoryId, String projectId, String newName) {
+    if (projectId == null || projectId.isBlank()) {
+      return getEntityManager()
+          .createQuery("update PdOwedRelease set repoName = :newName where repoId = :repoId")
+          .setParameter("newName", newName)
+          .setParameter("repoId", repositoryId)
+          .executeUpdate();
+    }
+    return getEntityManager()
+        .createQuery(
+            "update PdOwedRelease set repoName = :newName,"
+                + " projectId = coalesce(projectId, :projectId) where repoId = :repoId")
+        .setParameter("newName", newName)
+        .setParameter("projectId", projectId)
+        .setParameter("repoId", repositoryId)
+        .executeUpdate();
   }
 }

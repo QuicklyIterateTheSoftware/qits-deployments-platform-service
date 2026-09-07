@@ -31,12 +31,14 @@ import org.junit.jupiter.api.Test;
  * and page a log nobody answers, once every thirty seconds — which reads as slowness rather than as
  * misconfiguration.
  *
- * <p><b>The subscriber bean survives ArC.</b> {@link PdSoftwareReleaseSubscriber} is injected
- * nowhere by name in the shipped code — it is reached only through {@code
- * Instance<QitsDurableEventListener>} — and unused-bean removal would leave a deployment that
- * subscribes to nothing, consumes nothing and says nothing to admit it. An {@code Instance}
- * injection point counts as a use, which is why no {@code @Unremovable} is needed; this is the
- * assertion that keeps that true rather than believed.
+ * <p><b>Both subscriber beans survive ArC.</b> {@link PdSoftwareReleaseSubscriber} and {@link
+ * PdRepositoryRenamedSubscriber} are injected nowhere by name in the shipped code — each is reached
+ * only through {@code Instance<QitsDurableEventListener>} — and unused-bean removal would leave a
+ * deployment that subscribes to nothing, consumes nothing and says nothing to admit it. An {@code
+ * Instance} injection point counts as a use, which is why no {@code @Unremovable} is needed; this is
+ * the assertion that keeps that true rather than believed. It is asserted <b>per listener</b> and
+ * never as a count: a size claim would go red on the commit that adds a third door, which is the one
+ * moment nobody wants a test failing for a reason that is not a defect.
  *
  * <p>What is NOT asserted here is the datasource: dark does not mean absent, the {@code
  * eventstream} store opens and migrates at boot regardless, and the whole suite failing to start is
@@ -87,7 +89,19 @@ public class PdEventstreamDarknessTest {
     assertTrue(
         StreamSupport.stream(durableListeners.spliterator(), false)
             .anyMatch(PdSoftwareReleaseSubscriber.class::isInstance),
-        "the subscriber must survive unused-bean removal, or nothing consumes the bus");
+        "the release subscriber must survive unused-bean removal, or nothing consumes the bus");
+  }
+
+  @Test
+  public void theRenameSubscriberIsARegisteredDurableBeanToo() {
+    // The same claim for the second door, stated separately rather than as a count. A removed
+    // rename listener is quieter than a removed release one: nothing fails, releases keep
+    // deploying, and the only symptom is an owed release of a renamed repository holding sixty
+    // minutes at an address that stopped resolving.
+    assertTrue(
+        StreamSupport.stream(durableListeners.spliterator(), false)
+            .anyMatch(PdRepositoryRenamedSubscriber.class::isInstance),
+        "the rename subscriber must survive unused-bean removal, or no address is ever corrected");
   }
 
   private QitsDurableEventListener theSubscriber() {

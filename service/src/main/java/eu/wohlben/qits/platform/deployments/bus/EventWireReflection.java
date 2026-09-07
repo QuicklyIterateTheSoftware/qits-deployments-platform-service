@@ -33,6 +33,11 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  *       after a cutover, which is the half nobody would be watching.
  *   <li>{@link PdSoftwareReleaseSubscriber.SoftwareReleasePayload} — the payload this component
  *       reads out of the frame.
+ *   <li>{@link PdRepositoryRenamedSubscriber.RepositoryRenamedPayload} — qits-projects' rename, the
+ *       second payload this component decodes. It is the one whose omission would be hardest to
+ *       see: the consumer that reads it replays from the epoch, so a binary missing this entry
+ *       fails on its very first catch-up page and then on every rename after it, correcting an
+ *       address nobody is watching until a release holds sixty minutes at a URL nothing serves.
  * </ul>
  *
  * <p><b>The PUBLISHING path joined it when this component got events of its own to announce</b>, and
@@ -54,6 +59,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
     targets = {
       EventFrame.class,
       PdSoftwareReleaseSubscriber.SoftwareReleasePayload.class,
+      PdRepositoryRenamedSubscriber.RepositoryRenamedPayload.class,
       EventEnvelope.class,
       DeploymentQueued.class,
       DeploymentStarted.class,

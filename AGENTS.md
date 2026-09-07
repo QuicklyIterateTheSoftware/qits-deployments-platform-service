@@ -1317,6 +1317,87 @@ observer's arrangement — and `PdOwedReleaseTest` drives `sweep()` directly, st
 writing its row rather than by killing a JVM. `PdSchemaTest` holds the storage half: one obligation
 per `event_id`, and a settled row is invisible to the owed query.
 
+### The second consumer: `pd_owed_release` stores an ADDRESS, and an address can be renamed (2026-09-07)
+
+**qits-projects renames a repository and this component's durable ledger keeps the dead name.**
+`PATCH /projects/api/repositories/{repoId}` changes a repository's public identity and announces
+`RepositoryRenamed` — `{projectId, repositoryId, oldName, newName, renamedAt}`, five fields, with
+`eventId`/`occurredAt` kept out of the canonical payload by the library's own mix-in. Nothing moves
+on the git host (the bare is keyed by the opaque storage id), so `/git/<projectId>/<newName>` serves
+the blob the moment that row commits and the old name serves nothing ever again. **Two renames
+happened live on this platform that day**, which is what made the hazard a defect.
+
+`repo_name` on `pd_owed_release` (V10) is the one durable place in this schema that stores a
+repository name, and `OwedReleaseSweep` rebuilds the *whole* announcement from that row — another
+process, after a cutover, with the event long since claimed and nothing left to ask. So a held or
+owed release of a renamed repository keeps the old name, `RepositoryRef` sees both halves of a
+public address and takes the name-first route, and the spec read addresses a URL nothing serves.
+**The id-route fallback does not rescue it**: qits-githost's storage-client guard refuses
+`/git/<repoId>` to every caller that is not qits-projects, and a 403 is classified retryable — so it
+becomes a sixty-minute `SPEC_UNREADABLE` hold for nothing.
+
+`bus/PdRepositoryRenamedSubscriber` is the correction, and it is the component's **second**
+`QitsDurableEventListener`. Six things about it, each easy to undo by accident:
+
+- **`consumerId()` is `pd-repository-rename`, a NEW id and storage.** It shares nothing with
+  `pd-software-released`: that ledger is a watermark measured in `SoftwareRelease` rows, and the two
+  answer `replayFromEpoch()` differently, which one watermark could not express for both. The
+  signature is the literal `"RepositoryRenamed"` — **no compile-time dependency on qits-projects**,
+  whose event class lives in its own `service/…/bus/` and in no published jar. The cost is that a
+  rename over there is silent here, which is the cost every cross-repo contract in this component
+  already carries.
+- **`replayFromEpoch()` returns TRUE, where the release consumer returns `false`, and the asymmetry
+  is the whole reason each states its answer.** That one replays DEPLOYMENTS — from the epoch it
+  would redeploy the platform's entire release history in log order. This one replays a **name
+  correction**: a projection repair, which is exactly what the library reserves the answer for. A
+  fresh consumer starting at the head would miss the two renames of 2026-09-07 — the ones it was
+  written for; `signatures()` bounds the replay, because catch-up queries the log **with** the name
+  filter rather than paging all of it; and the write is a converging UPDATE keyed by repository id,
+  so A→B then B→C in log order lands on C. It is consulted at initialization and never again, so a
+  deliberate later re-run is `CatchupSweeper.rebuildFromEpoch(CONSUMER_ID)`, which clears both the
+  watermark and the claim ledger first.
+- **`selects` is left at the default**, everything the signature matched. There is no content
+  narrowing to make — whether a rename matters cannot be known without the query `onFrame` makes
+  anyway — and an override that decoded to answer would be an override that can **throw**, which the
+  library treats as a failure rather than a "no": the event would stay owed over a question about
+  the event instead of over the work.
+- **The write is `ReleaseAcceptance.renameRepository` and it is bracketed there, not in `bus/`.**
+  The handler runs inside the library's claim transaction on the `eventstream` datasource, and two
+  non-XA resources in one transaction is a thing Narayana refuses — `ReleaseTips`' note. So the
+  update takes a `QuarkusTransaction.requiringNew()` of its own on the deployments datasource, via
+  `DbRetry.inNewTx` like every other write on that ledger. The consequence is the `ReleaseAcceptance`
+  trade in miniature: the rename commits before the claim, so a rolled-back claim replays a
+  correction that has already been applied — which costs nothing, because the statement converges.
+- **It moves EVERY row of that repository id, settled ones included, and fills `project_id` only
+  where it is null.** The column is the address the spec is read at, not a record of what the
+  repository was called at acceptance time: an address that no longer resolves is worth nothing as
+  history, and the settled `EXHAUSTED` row is precisely the one a person opens when they go looking.
+  `RepositoryRef.nameAddressed()` needs both halves, so a row with a name and no project still falls
+  back to the refused id route and is worth completing — but a rename is not a MOVE, so a row
+  already naming a *different* project is not this event's to correct. **`DeploymentIdentifiers`
+  is deliberately not run on the incoming name**: this column is storage, the read path validates it
+  when it builds a `RepositoryRef`, and refusing the event here would leave a stale name — one that
+  certainly no longer resolves — in place of a fresh one.
+- **Nothing else in this schema stores a repository name, and that was re-checked rather than
+  assumed.** `pd_deployment_request` (V6) carries `repo_id` and `project_id` and no name;
+  `pd_deployment`, `pd_service` and `pd_resource` record an **application** name and no repository
+  identity at all, which V1's header states as the rule. **An application name is not a repository
+  name** and must never be rewritten from one — `application:` in the spec exists so a repository can
+  be renamed with nothing on the platform moving.
+
+**`DeployService.specRetries` is deliberately NOT touched, and that is the decision.** It is an
+in-memory `Map<String, SpecRetry>` keyed by the released name, each entry carrying a `RepositoryRef`
+with exactly this staleness — but every entry expires within `SPEC_RETRY_DEADLINE` (≤60 minutes) and
+the map is the deploy worker's, which is the one thread that reads it. A bus listener poking it from
+inside the library's claim transaction would add a race for an hour of staleness that resolves
+itself: a held release that expires re-announces from the ledger, which by then names the right
+address. The rows are what survive a restart, and the rows are what this door corrects.
+
+`PdRepositoryRenameTest` holds all of it, driving `onFrame` directly and staging `pd_owed_release`
+rows by hand the way `PdOwedReleaseTest` stages a dead process. `PdEventstreamDarknessTest` asserts
+this listener survives ArC's unused-bean removal beside the release one — **per listener, never as a
+count**, so the commit that adds a third door does not go red for a reason that is not a defect.
+
 ### The deployment REQUEST, and the gate in front of the queue
 
 `pd_deployment_request` (V6) is the row a release writes **before** anything is queued: application,
@@ -1583,6 +1664,10 @@ It exists so a repository can be **renamed** with nothing on the platform moving
 the repository `qits-ci-service`, writes `application: qits-ci`, and the running platform does not
 notice. The image reference following the application rather than the repository is the feature — a
 renamed repository's pipeline yml keeps pushing `qits/qits-ci`, and the deployer keeps pulling it.
+So a repository that pins `application:` is **immune to a rename for identity purposes**, while one
+that does not would change application identity on its very next release after a rename — a fresh
+service, alias, database and set of rows beside the ones still serving — which makes pinning the
+line worth writing before the rename rather than after it.
 
 Five things about it, each easy to undo by accident:
 

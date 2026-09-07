@@ -223,6 +223,49 @@ public class ReleaseAcceptance {
         DeployService.CUTOVER_BUDGET);
   }
 
+  /**
+   * A repository answers to a new public name: move every obligation of it onto that name, and
+   * answer how many moved.
+   *
+   * <p><b>This ledger is the only durable place in the schema that stores a repository NAME</b>, and
+   * that name is an ADDRESS rather than a record. {@link OwedReleaseSweep} rebuilds the whole
+   * announcement from the row — in another process, after a cutover — so a row still naming the
+   * repository qits-projects renamed on 2026-09-07 hands {@link RepositoryRef} both halves of a
+   * public address that no longer resolves, and the release becomes a sixty-minute {@code
+   * SPEC_UNREADABLE} hold at a URL nothing serves. The id-route fallback does not rescue it:
+   * qits-githost refuses {@code /git/<repoId>} to every caller that is not qits-projects, and a 403
+   * is classified retryable.
+   *
+   * <p><b>{@code project_id} is filled and never overwritten</b>, and the asymmetry is the whole of
+   * it. {@link RepositoryRef#nameAddressed()} needs BOTH halves, so a row carrying a name and no
+   * project still falls back to the refused id route and is worth completing. But a rename is not a
+   * MOVE — qits-projects renames within a project and says so in the event — so a row already naming
+   * a <em>different</em> project is not this event's to correct, and rewriting it would be this
+   * component inventing a repository's ownership from an event that never claimed to state one.
+   *
+   * <p><b>Every row of that repository moves, the settled ones included</b>, and that is deliberate
+   * rather than lazy. The column is the address the spec is read at, not a record of what the
+   * repository was called when the release was accepted — an address that no longer resolves is
+   * worth nothing as history, and the settled {@code EXHAUSTED} row is precisely the one a person
+   * opens when they go looking for why a release never deployed. What identity this component really
+   * does record — the application name, the version — lives on {@code pd_deployment_request} and
+   * {@code pd_deployment} and is untouched by any of this: an application name is not a repository
+   * name, which is the whole reason {@code application:} exists in the spec.
+   *
+   * <p>In a {@link DbRetry} transaction of its own like every other bracket here, and for a sharper
+   * reason than the siblings: the caller is the bus door, inside the library's claim transaction on
+   * the {@code eventstream} datasource, and Narayana refuses two non-XA resources in one
+   * transaction. There is no {@code flush()} at the end, and that is the rule being satisfied rather
+   * than skipped — {@code executeUpdate} issues the statement itself, so nothing of this write is
+   * pending at commit, which is exactly the state the flush exists to produce for an ORM write.
+   */
+  public int renameRepository(String repositoryId, String projectId, String newName) {
+    return DbRetry.inNewTx(
+        "Renaming the repository " + repositoryId + " to " + newName + " on the acceptance ledger",
+        () -> owed.renameRepository(repositoryId, projectId, newName),
+        DeployService.CUTOVER_BUDGET);
+  }
+
   private static Owed owedOf(PdOwedRelease row) {
     return new Owed(
         row.id,
