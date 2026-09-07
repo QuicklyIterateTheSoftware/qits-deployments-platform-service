@@ -300,6 +300,38 @@ public interface DeploymentDriver {
   void reap(List<String> names);
 
   /**
+   * Make the named service not exist — an OUTCOME, stated once, about one service that has been
+   * left behind.
+   *
+   * <p><b>It is not a cutover mechanic and must not become one.</b> Nothing sequences this to
+   * perform a deployment: by the time it is called the deployment is applied, converged, recorded
+   * and announced, and calling it or not calling it changes nothing about that. Its caller is the
+   * PLANE CONVERSION — a repository whose {@code deployments.yml} flipped to {@code
+   * deployment_target: platform} keeps one {@code <env>-<app>} service per tier it used to serve
+   * in, and those services go on holding their alias, their ports and their volumes with no row
+   * managing them any more. {@code DeployService.registerPlatform} moves the rows; this is how the
+   * services follow.
+   *
+   * <p><b>Exactly the one named service, never a label sweep.</b> The name comes off the deployment
+   * row that was decommissioned ({@code container_name}, which under swarm IS the service's name),
+   * which is the same source {@link #observe}, {@code DeploymentObserver} and {@code
+   * ApplicationScaling} take it from and the same rule they keep: only the service a row named may
+   * be acted on for that row. A sweep by environment label is {@link #removeEnvironmentContainers},
+   * it belongs to a teardown, and it would take a tier's whole fleet down for one application's
+   * conversion.
+   *
+   * <p><b>Best-effort and idempotent</b>: a service that is already absent is a log line, and a
+   * runtime that refuses is a WARN naming the by-hand remedy. <b>An implementation must not
+   * throw</b> — the deployment this runs behind is live, so a retirement that failed is an operator's
+   * one-line cleanup, while an exception here would be a healthy deployment recorded as broken.
+   *
+   * <p><b>The service OBJECT alone is retired.</b> Volumes, and therefore data, are untouched: the
+   * application is serving from the plane out of the same stores, and a retirement that removed one
+   * would be a data loss dressed as bookkeeping.
+   */
+  void removeService(String name);
+
+  /**
    * What the named service runs <b>now</b>, and what the orchestrator says about the update that
    * put it there. Empty when the runtime has no such service at all.
    *

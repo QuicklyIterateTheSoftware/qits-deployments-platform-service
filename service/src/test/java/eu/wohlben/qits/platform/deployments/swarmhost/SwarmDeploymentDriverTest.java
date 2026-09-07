@@ -1407,6 +1407,47 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void retiringATierServiceIsOneServiceRmAndTouchesNoVolume() {
+    // The plane conversion's runtime half: the application serves from the bare alias now, and the
+    // <env>-<app> service the old rows named is removed. One argv, and the whole of it — there is
+    // no volume flag on `service rm` to leave off, because the service object is all swarm removes.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+
+    driver.removeService("dev-qits-gateway");
+
+    assertEquals(
+        List.of("docker", "service", "rm", "dev-qits-gateway"), cli.matching("service rm"));
+  }
+
+  @Test
+  void retiringAnAbsentServiceIsALogLineNotAFailure() {
+    // Idempotent by the same inspect every other read here uses. It has to be: a conversion may be
+    // re-driven, and a row written by the docker-era code names a container rather than a service —
+    // which no orchestrator holds and which must not turn a healthy deployment into a diagnosis.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gone", result(1, "no such service"));
+
+    driver.removeService("dev-qits-gone");
+
+    assertEquals(0, cli.count("service rm"), "nothing was removed: " + cli.calls);
+  }
+
+  @Test
+  void aServiceRmTheDaemonRefusesIsAWarningNotAThrow() {
+    // The deployment this runs behind is live, converged and about to be announced. An orphaned old
+    // service is an operator's one-line cleanup; an exception would be a healthy deployment
+    // recorded as broken.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-stuck", result(0, "svc123"));
+    cli.script("service rm", result(1, "rpc error: code = Unavailable"));
+
+    driver.removeService("dev-qits-stuck");
+
+    assertEquals(1, cli.count("service rm"), "it was attempted exactly once: " + cli.calls);
+  }
+
+  @Test
   void aSelfUpdateIsHandedToTheManagerRatherThanAwaited() {
     // Swarm arbitrates a succession no process can arbitrate for itself: the manager lives in the
     // daemon, so it can stop this task, start the successor and revert the spec if the successor

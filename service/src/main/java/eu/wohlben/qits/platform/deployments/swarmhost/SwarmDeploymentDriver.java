@@ -866,6 +866,51 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
+   * One {@code service rm}, and the whole of it.
+   *
+   * <p><b>There is deliberately no task-drain wait here, and {@link #reapSeedTwin} has one.</b> That
+   * one removes a service whose alias and host ports a SUCCESSOR is about to take, so seconds of
+   * shutdown overlap are two writers on one volume — measured twice, and paid for in a corrupted
+   * WAL. Nothing starts under this name: the application is already serving from the platform
+   * plane, under the bare alias, out of a different service. So the seconds the daemon spends
+   * stopping the task overlap nothing, and waiting for them would only park the deploy worker after
+   * the deployment that queued this has finished.
+   *
+   * <p><b>{@code service rm} removes the service object, and nothing else.</b> Volumes are not the
+   * service's to remove and swarm does not touch them — which is the property that makes this safe
+   * to run at all: the tier service being retired and the plane service now serving are two
+   * addresses over one store.
+   *
+   * <p><b>The self guard is a belt, and it is the one {@link #scale} wears.</b> The conversion
+   * cannot reach it — this component's own flip is {@code HANDED_OFF} to the swarm manager and the
+   * successor's startup sweep is what records it, so the code below never runs in the process being
+   * replaced — but a driver that could remove the service answering the API is a driver one caller
+   * away from a platform with no deployer, and the refusal costs one inspect.
+   */
+  @Override
+  public void removeService(String name) {
+    if (isSelf(name)) {
+      LOG.warnf(
+          "Refusing to remove service %s: it is this deployer's own service, and there would be"
+              + " nothing left to answer for it — the scale-to-zero stance, for the same reason",
+          name);
+      return;
+    }
+    if (!serviceExists(name)) {
+      LOG.infof("No service %s to remove: already absent", name);
+      return;
+    }
+    PdProcess.Result removed = run(List.of(runtime, "service", "rm", name), CLEANUP_TIMEOUT);
+    if (removed.exitCode() != 0 || removed.timedOut()) {
+      LOG.warnf(
+          "Could not remove service %s — remove it by hand (docker service rm %s): %s",
+          name, name, removed.output());
+    } else {
+      LOG.infof("Removed service %s", name);
+    }
+  }
+
+  /**
    * What the service runs now, and swarm's own account of the update that put it there — one
    * inspect, because the two fields sit on one object.
    *

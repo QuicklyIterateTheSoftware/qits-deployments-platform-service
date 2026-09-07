@@ -46,6 +46,9 @@ public class PdDeploymentFlowTest {
   private static final String V_A = "2026.903.93059";
   private static final String V_B = "2026.903.193059";
 
+  /** A third release, for the tests that need one after a failed attempt. Later than both. */
+  private static final String V_C = "2026.904.100000";
+
   /**
    * A repository's configuration declaration, as the git host serves it. Bytes rather than a
    * document: nothing in this component parses one, so what a test asserts is that these exact
@@ -581,6 +584,7 @@ public class PdDeploymentFlowTest {
         "repo-convert", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
     postRelease("repo-convert", V_B);
     awaitApplied(2);
+    awaitWorkerIdle();
 
     List<Map<String, Object>> registered =
         given()
@@ -623,6 +627,126 @@ public class PdDeploymentFlowTest {
     assertTrue(
         onThePlane.stream().allMatch(d -> "platform:repo-convert".equals(d.get("applicationId"))),
         "one history, one key — the conversion must not split it: " + onThePlane);
+
+    // AND THE RUNTIME FOLLOWED THE ROWS. The tier service the decommissioned row named is holding
+    // that tier's alias and ports with nothing managing it any more — the plane deploys under the
+    // bare name and never addresses it again. That orphan is the 2026-09-07 dev-qits-configuration
+    // incident, and it is retired here rather than by hand.
+    assertTrue(
+        driver.removedServices().contains("flow-convert-repo-convert"),
+        "the tier service is retired: " + driver.removedServices());
+    assertFalse(
+        driver.removedServices().contains("repo-convert"),
+        "and never the bare-named service that is now serving: " + driver.removedServices());
+    // ...after the platform deployment converged, never before it. A retirement that ran at
+    // conversion time would leave the application with nothing serving if that deployment failed.
+    assertTrue(
+        driver.calls().indexOf("removeService:flow-convert-repo-convert")
+            > driver.calls().indexOf("await:repo-convert"),
+        "the retirement follows the plane's own convergence: " + driver.calls());
+  }
+
+  @Test
+  public void theConversionRetiresOneTierServicePerEnvironmentItServedIn() {
+    // An application that was serving in two tiers has two stranded services, not one. The names
+    // come off the ROWS — one per tier, each carrying that tier's qualified alias — which is why
+    // this cannot be derived from the application name and the entry tier alone.
+    String envA = createEnvironment("flow-conv-a");
+    postRelease("repo-convmulti", V_A);
+    awaitDeployments(envA, 1);
+
+    // Creating a tier MOVES the designation, so the next release enters the new one — and the row
+    // in the first tier stays ACTIVE, which is exactly the two-tier state under test.
+    String envB = createEnvironment("flow-conv-b");
+    postRelease("repo-convmulti", V_B);
+    awaitDeployments(envB, 1);
+
+    specs.script(
+        "repo-convmulti",
+        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    postRelease("repo-convmulti", V_C);
+    awaitApplied(3);
+    awaitWorkerIdle();
+
+    assertTrue(
+        driver.removedServices().containsAll(
+            List.of("flow-conv-a-repo-convmulti", "flow-conv-b-repo-convmulti")),
+        "both tiers' services are retired, one per row the conversion decommissioned: "
+            + driver.removedServices());
+  }
+
+  @Test
+  public void aFailedFirstPlatformDeployKeepsTheTierServiceAndTheNextSuccessRetiresIt() {
+    // The whole reason the retirement is deferred rather than written where the rows move. A
+    // conversion whose first platform deployment fails must leave the application exactly as it
+    // was — the tier service still serving — and must not forget what it owes.
+    String environmentId = createEnvironment("flow-convfail");
+    postRelease("repo-convfail", V_A);
+    awaitDeployments(environmentId, 1);
+
+    specs.script(
+        "repo-convfail",
+        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    driver.scriptConvergence(
+        DeploymentDriver.Convergence.rolledBack("the plane's first task never went healthy"));
+    postRelease("repo-convfail", V_B);
+    awaitApplied(2);
+    awaitWorkerIdle();
+
+    assertEquals(
+        List.of(),
+        driver.removedServices(),
+        "a failed platform deployment tears nothing down — the tier service is what serves");
+
+    // The next release that does go healthy is what settles it: the owed entry survived the failed
+    // attempt rather than being consumed by it.
+    driver.scriptConvergence(DeploymentDriver.Convergence.converged(List.of()));
+    postRelease("repo-convfail", V_C);
+    awaitApplied(3);
+    awaitWorkerIdle();
+
+    assertTrue(
+        driver.removedServices().contains("flow-convfail-repo-convfail"),
+        "the retirement outlived the attempt that failed: " + driver.removedServices());
+  }
+
+  @Test
+  public void aRetirementTheRuntimeRefusesDoesNotFailTheDeployment() {
+    // The container is live, the cutover is recorded and the event is announced. An orphaned old
+    // service is an operator's one-line cleanup; a deployment recorded FAILED for it would be a lie
+    // about a healthy platform. So the WARN is the whole cost.
+    String environmentId = createEnvironment("flow-convwarn");
+    postRelease("repo-convwarn", V_A);
+    awaitDeployments(environmentId, 1);
+
+    specs.script(
+        "repo-convwarn",
+        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    driver.scriptRemoveServiceFailure(new RuntimeException("the daemon is busy"));
+    postRelease("repo-convwarn", V_B);
+    awaitApplied(2);
+    awaitWorkerIdle();
+
+    List<Map<String, Object>> onThePlane =
+        given()
+            .when()
+            .get("/platform-deployments/api/deployments?environmentId=platform")
+            .then()
+            .statusCode(200)
+            .extract()
+            .jsonPath()
+            .<Map<String, Object>>getList("deployments")
+            .stream()
+            .filter(d -> "repo-convwarn".equals(d.get("applicationName")))
+            .toList();
+    assertEquals("ACTIVE", onThePlane.get(0).get("status"), "the deployment stands: " + onThePlane);
+    assertEquals(
+        List.of(),
+        driver.removedServices(),
+        "and nothing was retired, which is what the WARN is about");
+    assertTrue(
+        driver.calls().contains("removeService:flow-convwarn-repo-convwarn"),
+        "it was attempted: " + driver.calls());
   }
 
   @Test
