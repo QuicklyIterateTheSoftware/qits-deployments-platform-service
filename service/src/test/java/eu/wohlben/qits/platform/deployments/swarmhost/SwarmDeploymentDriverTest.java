@@ -104,7 +104,9 @@ class SwarmDeploymentDriverTest {
     // The file half of the seam, which is what every argv assertion below is about: the boot config
     // plus the config volume's file, one snapshot per call. The service half is
     // ConfigHostExtrasSourceTest's, and the two argvs it reaches are two tests of their own.
-    return driver((application, environmentName, version) -> ExtrasSnapshot.over(boot, extrasFile));
+    return driver(
+        (application, environmentName, version, declarationSeeded) ->
+            ExtrasSnapshot.over(boot, extrasFile));
   }
 
   private SwarmDeploymentDriver driver(DeploymentExtrasSource extras) {
@@ -154,6 +156,9 @@ class SwarmDeploymentDriverTest {
         "dep-id",
         "abc1234",
         VERSION,
+        // The ordinary release: its tag carried a declaration, so the store holds one for this
+        // version and the extras read is addressed by it. The undeclared arm is a test of its own.
+        true,
         platform ? "qits-pd-qits-gateway-dep" : "qits-pd-dev-qits-gateway-dep",
         platform ? "qits-gateway" : "dev-qits-gateway",
         platform
@@ -712,14 +717,63 @@ class SwarmDeploymentDriverTest {
     List<List<String>> asked = new ArrayList<>();
     SwarmDeploymentDriver driver =
         driver(
-            (application, environmentName, version) -> {
-              asked.add(List.of(application, environmentName, version));
+            (application, environmentName, version, declarationSeeded) -> {
+              asked.add(
+                  List.of(application, environmentName, version, String.valueOf(declarationSeeded)));
               return new SmallRyeConfigBuilder().build();
             });
 
     driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
 
-    assertEquals(List.of(List.of("qits-gateway", "dev", VERSION)), asked);
+    assertEquals(List.of(List.of("qits-gateway", "dev", VERSION, "true")), asked);
+  }
+
+  @Test
+  void whetherTheReleaseDeclaredAnythingReachesTheExtrasReadOnBothArgvs() {
+    // The fourth value on the read, and the one the argv cannot show either: a release that seeded
+    // no declaration has to be read version-less, because the store answers 404 for a version it
+    // holds none for. Passed unconditionally, every deployment of every repository without a
+    // .config/qits/configuration.yml refused its extras read and left the old container serving —
+    // so the flag is carried from where it is known (DeployService, at seed time) all the way down
+    // here, and BOTH builders have to hand it on or the create and the update disagree about one
+    // deployment.
+    List<Boolean> asked = new ArrayList<>();
+    SwarmDeploymentDriver driver =
+        driver(
+            (application, environmentName, version, declarationSeeded) -> {
+              asked.add(declarationSeeded);
+              return new SmallRyeConfigBuilder().build();
+            });
+    DeploymentDriver.ServiceSpec undeclared = undeclared(spec());
+
+    driver.buildCreateArgv(undeclared, "dev-qits-gateway", List.of("qits-net"));
+    driver.buildUpdateArgv(undeclared, "dev-qits-gateway");
+
+    assertEquals(List.of(false, false), asked);
+  }
+
+  /** The same spec, from a release whose tag carried no declaration. */
+  private static DeploymentDriver.ServiceSpec undeclared(DeploymentDriver.ServiceSpec spec) {
+    return new DeploymentDriver.ServiceSpec(
+        spec.environmentId(),
+        spec.environmentName(),
+        spec.applicationId(),
+        spec.applicationName(),
+        spec.deploymentId(),
+        spec.commitSha(),
+        spec.version(),
+        false,
+        spec.deploymentName(),
+        spec.wireAlias(),
+        spec.networks(),
+        spec.imageRef(),
+        spec.healthPath(),
+        spec.healthCmd(),
+        spec.target(),
+        spec.availableOnEnv(),
+        spec.updateOrder(),
+        spec.publishMode(),
+        spec.resources());
   }
 
   @Test
@@ -1009,6 +1063,7 @@ class SwarmDeploymentDriverTest {
             "dep-id",
             "abc1234",
             VERSION,
+            true,
             "qits-pd-dev-qits-gateway-dep",
             "dev-qits-gateway",
             List.of("qits-net"),

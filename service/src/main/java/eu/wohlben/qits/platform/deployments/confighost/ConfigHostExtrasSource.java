@@ -36,6 +36,15 @@ import org.jboss.logging.Logger;
  * released with. Nothing about the answer changed — same document, same {@code headRevision} and
  * {@code properties}, same single parser one layer up.
  *
+ * <p><b>...but the version is asked for only when the release SEEDED one.</b> The parameter is what
+ * turns this into the OVERLAY read, and the store answers 404 for a version it holds no declaration
+ * for — which is right, because "resolve me against this document" cannot be answered with a
+ * document that is not there. The deployer seeds a declaration only for a release whose tag carries
+ * {@code .config/qits/configuration.yml}, and almost no repository has that file yet, so passing the
+ * parameter unconditionally refused every deployment of every undeclared repository. Those read the
+ * version-less form the store documents as the transitional one, with a WARN naming them — see
+ * {@link #versionlessBecauseNothingWasDeclared}.
+ *
  * <p><b>{@code qits.platform.deployments.extras-url} unset is today's behaviour byte for byte.</b>
  * No request is made, nothing is parsed, and the answer is {@link ExtrasSnapshot#over(Config,
  * String)} — which is what a dev run, the clone-alone suite and every platform that has not adopted
@@ -131,7 +140,8 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
   }
 
   @Override
-  public Config forDeployment(String application, String environmentName, String version) {
+  public Config forDeployment(
+      String application, String environmentName, String version, boolean declarationSeeded) {
     String base = extrasUrl.map(String::trim).filter(url -> !url.isEmpty()).orElse(null);
     if (base == null) {
       // No service named, so the file is the source — WP0's behaviour, byte for byte. The tier and
@@ -146,14 +156,22 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
     // version is a query parameter because it selects WHICH declaration the overrides are resolved
     // against, which is what makes rolling a version back give that version's configuration rather
     // than the newest one's.
-    String url =
+    //
+    // ...AND THE VERSION IS ONLY ASKED FOR WHEN THERE IS A DECLARATION TO ASK ABOUT. See
+    // versionlessBecauseNothingWasDeclared below: a version naming no declaration is a 404 by that
+    // route's own design, so a release that seeded nothing has to read the transitional,
+    // version-less form or it cannot be deployed at all.
+    String place =
         trimTrailingSlash(base)
             + "/configuration/api/applications/"
             + segment(application)
             + "/envs/"
             + segment(environmentName)
-            + "/resolved?version="
-            + versionParameter(version);
+            + "/resolved";
+    String url =
+        declarationSeeded
+            ? place + "?version=" + versionParameter(version)
+            : versionlessBecauseNothingWasDeclared(place, application, version);
     JsonNode body = fetch(url);
     Map<String, String> served = properties(url, body);
     // Built rather than deferred to `infof`: this is the one line that records what a deployment
@@ -170,6 +188,52 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
     // Over the BOOT config and not over the file: a deleted entry has to disappear, and a file
     // under this layer would serve it again at the next deployment.
     return ExtrasSnapshot.over(config, served, url);
+  }
+
+  /**
+   * The version-less address, plus the one WARN that says why this deployment is reading it.
+   *
+   * <p><b>It is the store's own documented transitional form.</b> qits-configuration's resolve says
+   * an absent {@code version} is "EXACTLY today's behaviour and never a 404" — the stored entries
+   * alone — while a version PRESENT means "resolve me against this document" and a version naming no
+   * declaration is a 404. Both halves are deliberate over there, and both are right; what was wrong
+   * here was passing the parameter unconditionally, because the deployer only seeds a declaration
+   * for a release whose tag carries {@code .config/qits/configuration.yml}. Almost no repository on
+   * the fleet does yet, so every release of an undeclared one asked the store to resolve against a
+   * document nobody had written, was answered 404, and had its deployment refused for the absence of
+   * a file it never had.
+   *
+   * <p><b>The WARN is the transitional signal and it is meant to be read.</b> It names the
+   * application and the version, and it says the read was version-less because the release declared
+   * nothing — which is precisely the inventory the config-declarations epic's cutover needs: every
+   * line here is one repository that still has to grow the file, and the day the log falls silent is
+   * the day the parameter can stop being conditional. It is a WARN rather than an INFO because it
+   * describes configuration this deployment could NOT resolve declared defaults for, not a routine
+   * choice.
+   *
+   * <p><b>It never covers for a release that DID seed.</b> A 404 on the version-addressed read is a
+   * real error — the seed answered 2xx a moment earlier, so the store holds that document and a
+   * miss means something is wrong with the store rather than with the repository — and it stays a
+   * refused deployment. That is also why this is a decision made from what the release carried
+   * rather than a retry on the 404: a retry cannot tell those two 404s apart, and the one it would
+   * quietly paper over is the one worth failing on.
+   */
+  private static String versionlessBecauseNothingWasDeclared(
+      String place, String application, String version) {
+    // Built rather than deferred to `warnf`, for the reason the revision line above is built: this
+    // is a sentence somebody greps for — one line per repository that has not declared itself yet —
+    // and a format string kept apart from its parameters is unreadable to whatever is doing the
+    // grepping, the suite included.
+    LOG.warn(
+        application
+            + "@"
+            + version
+            + " declared nothing, so its extras are read VERSION-LESS at "
+            + place
+            + ": the release carried no .config/qits/configuration.yml, nothing was seeded, and the"
+            + " store answers 404 for a version it holds no declaration for. This is the"
+            + " transitional form — the repository declaring itself is what ends it.");
+    return place;
   }
 
   /** A name as it goes into a path segment, refused rather than escaped if it is not one. */

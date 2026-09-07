@@ -35,13 +35,31 @@ public interface DeploymentExtrasSource {
    * releases makes rolling a version back a config change nobody made. The seam still returns a
    * fixed {@link Config} and a caller still takes exactly one per argv build.
    *
+   * <p><b>The release says whether the read may be addressed by the version at all</b>, and that is
+   * {@code declarationSeeded}. The store answers a version-addressed read by resolving the stored
+   * entries over the DECLARATION of that version, so a version it holds no declaration for is a 404
+   * — deliberately, because "resolve me against this document" cannot be answered with a document
+   * that is not there. A release whose tag carries no {@link SpecSource#DECLARATION_PATH} seeds
+   * nothing, so asking by its version would be asking about a document nobody wrote. Those
+   * deployments read version-LESS, which is the store's own transitional form and is the entries
+   * alone; every other one reads exactly as it does today.
+   *
+   * <p><b>It is a parameter rather than a nullable version because the WARN needs both.</b> A
+   * version-less read is a signal for the config-declarations epic's cutover — it says this
+   * repository has not declared itself yet — and a signal that cannot name the application and the
+   * version it was made for is not one anybody can act on.
+   *
    * @param application the deployed application's name — the segment in the key family
    * @param environmentName the tier this deployment is going into. A platform-plane service has one
    *     too: it is deployed into the designated environment like everything else, and what stays the
    *     plane's own is its address rather than where it runs.
-   * @param version the released coordinate — what the image is tagged with and what the declaration
-   *     was seeded under
+   * @param version the released coordinate — what the image is tagged with and, where there was one,
+   *     what the declaration was seeded under
+   * @param declarationSeeded whether this release carried a declaration, which is the same question
+   *     the seed asked one step earlier: true and the store holds this version's document, so the
+   *     read is addressed by it; false and there is no such document to resolve against
    * @throws ServiceExtras.Refused the extras could not be read
    */
-  Config forDeployment(String application, String environmentName, String version);
+  Config forDeployment(
+      String application, String environmentName, String version, boolean declarationSeeded);
 }

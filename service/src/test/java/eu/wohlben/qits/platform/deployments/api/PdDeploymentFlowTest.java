@@ -2,6 +2,7 @@ package eu.wohlben.qits.platform.deployments.api;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -787,6 +788,13 @@ public class PdDeploymentFlowTest {
     assertEquals(DECLARATION, seeded.get(0).yaml());
     // ...and the plane the spec asked for, which is what the store resolves the overrides against.
     assertEquals(PdDeploymentTarget.ENVIRONMENT, seeded.get(0).target());
+    // AND THE FACT TRAVELS TO THE ARGV. The extras read at the bottom of the driver's argv build is
+    // addressed by the released version, and the store answers 404 for a version it holds no
+    // declaration for — so what the seed decided here has to be what the read asks there, or a
+    // deployment resolves against a document nobody wrote.
+    assertTrue(
+        appliedTo("repo-declared").declarationSeeded(),
+        "a seeded release reaches the driver saying so");
   }
 
   @Test
@@ -829,6 +837,24 @@ public class PdDeploymentFlowTest {
 
     assertEquals("ACTIVE", awaitDeployments(environmentId, 1).get(0).get("status"));
     assertEquals(List.of(), declarations.seeded(), "nothing was seeded");
+    // ...AND THE ARGV IS TOLD SO, which is the half that was missing and cost the platform every
+    // deployment of every undeclared repository: the extras read is addressed by the version, and
+    // qits-configuration answers 404 for a version it holds no declaration for. A driver that was
+    // not told would ask about a document nobody seeded and the deployment would be refused for the
+    // absence of a file this repository never had.
+    assertFalse(
+        appliedTo("repo-undeclared-config").declarationSeeded(),
+        "an undeclared release reaches the driver saying so, and reads its extras version-less");
+  }
+
+  /** The one spec this application's deployment handed the orchestrator. */
+  private DeploymentDriver.ServiceSpec appliedTo(String applicationName) {
+    List<DeploymentDriver.ServiceSpec> mine =
+        driver.applied().stream()
+            .filter(spec -> applicationName.equals(spec.applicationName()))
+            .toList();
+    assertEquals(1, mine.size(), "one deployment of " + applicationName + ": " + mine);
+    return mine.get(0);
   }
 
   @Test

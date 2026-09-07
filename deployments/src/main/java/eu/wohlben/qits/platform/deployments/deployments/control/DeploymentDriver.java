@@ -339,6 +339,16 @@ public interface DeploymentDriver {
    * coordinate the release published, and the commit it resolved to, which may legitimately be
    * null.
    *
+   * <p>{@code declarationSeeded} rides beside it and answers the one question the version alone
+   * cannot: whether the store holds a DECLARATION for that version. A release seeds one only when
+   * its tag carries {@link SpecSource#DECLARATION_PATH}, and the resolved read answers 404 for a
+   * version it has no declaration for — so an argv built for an undeclared release has to ask
+   * version-less or it cannot be built at all. See {@link DeploymentExtrasSource#forDeployment}. It
+   * is a value on the spec rather than something the driver could work out, because by the time an
+   * argv is built the file has long been read and thrown away; and it is the honest answer on the
+   * rollback path too, since a redeployed older tag is read for a declaration exactly as a fresh
+   * release is and simply does not carry one.
+   *
    * <p>{@code networks} is the <b>full membership</b>, primary first, and declaring it whole is
    * what lets an orchestrator that cannot join afterwards do the job at all: every swarm {@code
    * --network-add} recreates the task, so a hub-and-spoke model built out of joins would turn one
@@ -384,6 +394,7 @@ public interface DeploymentDriver {
       String deploymentId,
       String commitSha,
       String version,
+      boolean declarationSeeded,
       String deploymentName,
       String wireAlias,
       List<String> networks,

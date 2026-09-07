@@ -1265,7 +1265,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     ServiceExtras extras =
         ServiceExtras.of(
             extrasSource.forDeployment(
-                spec.applicationName(), spec.environmentName(), spec.version()),
+                spec.applicationName(),
+                spec.environmentName(),
+                spec.version(),
+                spec.declarationSeeded()),
             spec.applicationName());
     List<String> argv =
         new ArrayList<>(
@@ -1419,7 +1422,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     ServiceExtras extras =
         ServiceExtras.of(
             extrasSource.forDeployment(
-                spec.applicationName(), spec.environmentName(), spec.version()),
+                spec.applicationName(),
+                spec.environmentName(),
+                spec.version(),
+                spec.declarationSeeded()),
             spec.applicationName());
     for (String variable : extras.env()) {
       // After this component's own, which is the precedence rule: the last assignment of a key

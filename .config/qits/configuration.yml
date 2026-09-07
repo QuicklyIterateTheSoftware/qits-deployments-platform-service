@@ -1,0 +1,116 @@
+# What qits-deployments declares about its own configuration.
+#
+# The deployer reads this file from the git host at the RELEASED TAG, beside
+# `.config/qits/deployments.yml`, and POSTs it verbatim to qits-configuration before anything is
+# scheduled:
+#
+#     POST /configuration/api/applications/qits-deployments/declarations/<version>
+#          ?deploymentTarget=platform
+#
+# The store parses it with the estate's ONE strict parser (qits-configuration's `DeclarationParser`)
+# and the resolved read a deployment makes — `?version=<version>` — resolves the stored entries over
+# THIS document. Nothing on this side parses it: a second parser would be a second opinion about a
+# grammar somebody else owns.
+#
+# WHY THIS REPOSITORY CARRIES ONE FIRST, and it is not vanity. The version-addressed read answers
+# 404 for a version the store holds no declaration for, and the deployer seeds a declaration only
+# for a release whose tag carries this file — so the release that ships the version-less fallback
+# has to be deployable by the deployer that is still running WITHOUT it. With this file present the
+# seed runs, the store holds a declaration for this version, and the version-addressed read finds
+# one: the fix deploys itself past the defect it fixes.
+#
+# THE DOCUMENT IS CLOSED IN BOTH DIRECTIONS. `keys` is the whole top level; a key takes the
+# attributes of its own type and nothing else; a type is one of string, boolean, number,
+# serviceAddress, packageVersion. A malformed file is a DECLARATION_REFUSED release — recorded, and
+# never deployed — so every line here is one the parser accepts.
+#
+# WHAT IS DELIBERATELY NOT HERE YET:
+#   * DEFAULTS. Every key below declares its name and its type and no default, which is a complete
+#     statement — the key exists, and until somebody sets it the resolved read simply does not carry
+#     it. A default written here would be layered UNDER the stored entries and would therefore be
+#     invisible on this platform, where the bootstrap sets all of them; writing one blind is how a
+#     fresh install boots pointing at an address nobody meant.
+#   * serviceAddress. `QITS_EVENTS_URL` and `QITS_OBSERVABILITY_URL` are the obvious candidates and
+#     they are strings here on purpose: a serviceAddress is RENDERED by the platform and refuses a
+#     stored value, so declaring one turns every hand-set address on the live platform into an
+#     ignored row on the deployment that adopts it. That flip is the config-declarations epic's, one
+#     application at a time, with the entries retired in the same step.
+#   * QITS_RESOURCE_DB_* / QITS_RESOURCE_EVENTSTREAM_*. Those are injected from the deployer's own
+#     resource registry — the single authority for a provisioned credential — and configuration is
+#     deliberately unable to state or delete one. They are extras today only because the bootstrap
+#     seeds them for the cold boot.
+#   * mounts[i] / groups[i]. Declarable by the grammar, and left to the epic with the rest of the
+#     inventory: this file's job today is to be VALID, not to be complete.
+
+keys:
+  # --- this component's own namespace ---------------------------------------------------------
+
+  env.QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL:
+    type: string
+    description: "Where this deployer reads an application's extras from. Set, qits-configuration is authoritative and sole; emptied, the config volume's file is the source again."
+
+  env.QITS_PLATFORM_DEPLOYMENTS_GIT_HOST_URL:
+    type: string
+    description: "Where a deployment spec and this declaration are read from, at the released tag."
+
+  env.QITS_PLATFORM_DEPLOYMENTS_POSTGRES_ADMIN_PASSWORD:
+    type: string
+    description: "The postgres superuser password provisioning speaks DDL with. Never stored on a row, never in an argv, never logged."
+
+  env.QITS_PLATFORM_DEPLOYMENTS_REGISTRY_AUTH:
+    type: boolean
+    description: "Whether the service create and update carry --with-registry-auth, so the swarm agent's own pull is authenticated too."
+
+  # --- the platform's shared wiring -----------------------------------------------------------
+
+  env.QITS_ARTIFACTS_REGISTRY_HOST:
+    type: string
+    description: "The registry host every image reference on this platform is qualified with."
+
+  env.DOCKER_CONFIG:
+    type: string
+    description: "Where the docker CLI this component shells out to finds its config.json. The container runs as uid 1001 with no HOME."
+
+  env.QITS_EVENTS_URL:
+    type: string
+    description: "The event bus this component subscribes to releases on and publishes its four deployment events to."
+
+  env.QITS_OBSERVABILITY_URL:
+    type: string
+    description: "Where this application's OTLP telemetry goes."
+
+  # --- the identity this surface is guarded by --------------------------------------------------
+
+  env.QITS_AUTH_MACHINE_REQUIRED:
+    type: boolean
+    description: "The machine gate. Off there is no OIDC tenant at all; on, a machine token is validated and its audience re-asked at the write paths."
+
+  env.QITS_AUTH_MACHINE_AUDIENCE:
+    type: string
+    description: "The audience a machine token addressed to this component must carry."
+
+  env.QUARKUS_OIDC_AUTH_SERVER_URL:
+    type: string
+    description: "The issuer whose JWKS validates what arrives here."
+
+  # --- the credential the extras read PRESENTS: the one named client, one peer ------------------
+
+  env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ENABLED:
+    type: boolean
+    description: "The named configuration client. Off, the read goes out on the X-Qits-User/X-Qits-Roles pair alone."
+
+  env.QUARKUS_OIDC_CLIENT_CONFIGURATION_AUTH_SERVER_URL:
+    type: string
+    description: "The idp the configuration client mints its bearer at."
+
+  env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID:
+    type: string
+    description: "This deployer's own idp client id, never a borrowed one: a refused read has to name the service that was refused."
+
+  env.QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET:
+    type: string
+    description: "The configuration client's secret."
+
+  env.QUARKUS_OIDC_CLIENT_CONFIGURATION_GRANT_OPTIONS_CLIENT_AUDIENCE:
+    type: string
+    description: "The audience the minted bearer is addressed to, which is the tier's qits-configuration."

@@ -1194,6 +1194,13 @@ public class DeployService implements ReleaseAnnouncements {
    * and before anything is scheduled so a store that would not take the file has stopped the
    * deployment rather than caught it halfway. This is still pre-scheduling: {@code queue} writes
    * rows, {@code execute} is what asks an orchestrator for anything.
+   *
+   * <p><b>And whether there WAS one is carried into every {@code execute} below.</b> The extras read
+   * a driver makes at the bottom of its argv build is addressed by the released version, and the
+   * store answers 404 for a version it holds no declaration for — so a release that seeded nothing
+   * has to read version-less. This method is the only place that knows, so it says so rather than
+   * letting a layer further down guess. It is the honest answer for a rollback too: an older tag is
+   * read for a declaration exactly as a fresh release is, and simply does not carry one.
    */
   private void deployReadSpec(
       String runId,
@@ -1257,7 +1264,13 @@ public class DeployService implements ReleaseAnnouncements {
       }
       return;
     }
-    if (declaration != null && declaration.present()) {
+    // THE ONE ANSWER, ASKED ONCE AND CARRIED. It decides the seed below and — because it is the
+    // same question — the address of every extras read this event's deployments make: the store
+    // resolves a version-addressed read against that version's declaration and answers 404 when
+    // there is none, so a release that seeds nothing must read version-less. Deriving it a second
+    // time further down would be a second opinion about what the git host served.
+    boolean declarationSeeded = declaration != null && declaration.present();
+    if (declarationSeeded) {
       try {
         // ONE seed for the whole event, not one per row. The POST is addressed by (application,
         // version) and is idempotent by content hash, so a multi-tier fan-out is one call: a
@@ -1285,7 +1298,7 @@ public class DeployService implements ReleaseAnnouncements {
     }
     for (Queued row : queued) {
       try {
-        execute(row.deploymentId(), row.target(), version, commitSha);
+        execute(row.deploymentId(), row.target(), version, commitSha, declarationSeeded);
       } catch (RuntimeException e) {
         LOG.errorf(e, "Deployment %s failed unexpectedly", row.deploymentId());
         finish(
@@ -2231,6 +2244,7 @@ public class DeployService implements ReleaseAnnouncements {
       String deploymentId,
       Target target,
       String version,
+      boolean declarationSeeded,
       String commitSha,
       String healthPath,
       String healthCmd,
@@ -2324,8 +2338,21 @@ public class DeployService implements ReleaseAnnouncements {
     }
   }
 
-  /** The synchronous deployment — package-private so tests drive it without the worker. */
-  void execute(String deploymentId, Target target, String version, String commitSha) {
+  /**
+   * The synchronous deployment — package-private so tests drive it without the worker.
+   *
+   * <p>{@code declarationSeeded} is carried in from {@link #deployReadSpec} rather than re-derived:
+   * it is the same answer the seed acted on a few lines earlier — the released tag carried {@link
+   * SpecSource#DECLARATION_PATH}, or it did not — and it reaches the extras read at the bottom of
+   * the driver's argv build, which is the one place that has to know whether the store holds a
+   * declaration for this version. See {@link DeploymentExtrasSource#forDeployment}.
+   */
+  void execute(
+      String deploymentId,
+      Target target,
+      String version,
+      String commitSha,
+      boolean declarationSeeded) {
     Plan plan =
         QuarkusTransaction.requiringNew()
             .call(
@@ -2339,6 +2366,7 @@ public class DeployService implements ReleaseAnnouncements {
                       deploymentId,
                       target,
                       version,
+                      declarationSeeded,
                       commitSha,
                       target.healthPath() != null ? target.healthPath() : defaultHealthPath,
                       // No default to fall back on, and none to want: an image that named no
@@ -2605,6 +2633,10 @@ public class DeployService implements ReleaseAnnouncements {
         // collapsing them here would make that a change to every caller instead of to this line.
         plan.version(),
         plan.version(),
+        // ...and whether the store holds a declaration for that coordinate, which is what decides
+        // whether the extras read may be addressed by it at all. Not derivable down here: the file
+        // was read at the tag and seeded before any of this was queued.
+        plan.declarationSeeded(),
         deploymentName,
         plan.wireAlias(),
         networks,

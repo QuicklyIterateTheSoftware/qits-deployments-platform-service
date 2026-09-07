@@ -45,6 +45,16 @@ class ConfigHostExtrasSourceTest {
   /** The released coordinate the overrides are resolved against — the read's query parameter. */
   private static final String VERSION = "2026.903.113443";
 
+  /**
+   * This release seeded a declaration, which is what makes the version-addressed read the right
+   * question to ask. Spelled as a constant because the OTHER answer is the whole of the section at
+   * the bottom of this class and the two must be told apart at a glance.
+   */
+  private static final boolean DECLARED = true;
+
+  /** The released tag carried no {@code .config/qits/configuration.yml}, so nothing was seeded. */
+  private static final boolean UNDECLARED = false;
+
   private ExtrasStub stub;
 
   @BeforeEach
@@ -80,7 +90,8 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source =
         ExtrasStub.source(boot(Map.of(P + "qits-ci.env.FOO", "bar")), NO_FILE, NONE, null);
 
-    assertEquals(List.of("FOO=bar"), env(source.forDeployment("qits-ci", ENV, VERSION)));
+    assertEquals(
+        List.of("FOO=bar"), env(source.forDeployment("qits-ci", ENV, VERSION, DECLARED)));
     assertTrue(stub.paths().isEmpty(), "an unset url must reach nothing");
   }
 
@@ -91,7 +102,7 @@ class ConfigHostExtrasSourceTest {
 
     assertEquals(
         List.of("QITS_EVENTS_URL=http://dev-qits-events:8080"),
-        env(source.forDeployment("qits-ci", ENV, VERSION)));
+        env(source.forDeployment("qits-ci", ENV, VERSION, DECLARED)));
     // ADDRESSED BY THE PLACE AND THE RELEASE. The tier is a path segment because one application's
     // configuration in dev is a different document from its configuration in prod, and the version
     // is a parameter because it selects which declaration the overrides resolve against — which is
@@ -112,10 +123,10 @@ class ConfigHostExtrasSourceTest {
 
     assertThrows(
         ServiceExtras.Refused.class,
-        () -> source.forDeployment("qits-ci", "../prod", VERSION));
+        () -> source.forDeployment("qits-ci", "../prod", VERSION, DECLARED));
     assertThrows(
         ServiceExtras.Refused.class,
-        () -> source.forDeployment("qits-ci", ENV, "2026.903 113443"));
+        () -> source.forDeployment("qits-ci", ENV, "2026.903 113443", DECLARED));
     assertTrue(stub.paths().isEmpty(), "a refused address must reach nothing");
   }
 
@@ -139,7 +150,7 @@ class ConfigHostExtrasSourceTest {
 
     assertEquals(
         List.of("QITS_EVENTS_URL=http://dev-qits-events:8080"),
-        env(source.forDeployment("qits-ci", ENV, VERSION)),
+        env(source.forDeployment("qits-ci", ENV, VERSION, DECLARED)),
         "the served map is the whole of it: the file's own key must not reach the argv");
   }
 
@@ -153,7 +164,9 @@ class ConfigHostExtrasSourceTest {
             boot(Map.of(P + "qits-ci.env.FOO", "stale")), NO_FILE, NONE, unreachable);
 
     ServiceExtras.Refused refused =
-        assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
+        assertThrows(
+            ServiceExtras.Refused.class,
+            () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
 
     assertTrue(refused.getMessage().contains(unreachable), refused.getMessage());
   }
@@ -165,7 +178,9 @@ class ConfigHostExtrasSourceTest {
         stub.source(boot(Map.of(P + "qits-ci.env.FOO", "stale")), NO_FILE, NONE);
 
     ServiceExtras.Refused refused =
-        assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
+        assertThrows(
+            ServiceExtras.Refused.class,
+            () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
 
     assertTrue(refused.getMessage().contains(stub.url()), refused.getMessage());
     assertTrue(refused.getMessage().contains("500"), refused.getMessage());
@@ -179,7 +194,8 @@ class ConfigHostExtrasSourceTest {
     stub.answers(404, "{}");
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
+    assertThrows(
+        ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
   }
 
   @Test
@@ -188,7 +204,9 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
     ServiceExtras.Refused refused =
-        assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
+        assertThrows(
+            ServiceExtras.Refused.class,
+            () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
 
     assertTrue(refused.getMessage().contains(stub.url()), refused.getMessage());
   }
@@ -200,7 +218,8 @@ class ConfigHostExtrasSourceTest {
     stub.answers(200, "{\"headRevision\":9}");
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
+    assertThrows(
+        ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
   }
 
   @Test
@@ -209,7 +228,7 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source =
         stub.source(boot(Map.of()), NO_FILE, () -> Optional.of("a-machine-token"));
 
-    source.forDeployment("qits-ci", ENV, VERSION);
+    source.forDeployment("qits-ci", ENV, VERSION, DECLARED);
 
     assertEquals(List.of("Bearer a-machine-token"), stub.authorizations());
   }
@@ -222,7 +241,7 @@ class ConfigHostExtrasSourceTest {
     stub.resolves(1);
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    source.forDeployment("qits-ci", ENV, VERSION);
+    source.forDeployment("qits-ci", ENV, VERSION, DECLARED);
 
     assertEquals(1, stub.authorizations().size());
     assertNull(stub.authorizations().get(0));
@@ -235,7 +254,8 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
     source.attempts = 2;
 
-    assertEquals(List.of("FOO=bar"), env(source.forDeployment("qits-ci", ENV, VERSION)));
+    assertEquals(
+        List.of("FOO=bar"), env(source.forDeployment("qits-ci", ENV, VERSION, DECLARED)));
     assertEquals(2, stub.paths().size(), "the second attempt is the one that answered");
   }
 
@@ -245,7 +265,8 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
     source.attempts = 3;
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
+    assertThrows(
+        ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
 
     assertEquals(3, stub.paths().size(), "spent, not unbounded");
   }
@@ -258,7 +279,8 @@ class ConfigHostExtrasSourceTest {
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
     source.attempts = 3;
 
-    assertThrows(ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION));
+    assertThrows(
+        ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
 
     assertEquals(1, stub.paths().size());
   }
@@ -273,11 +295,89 @@ class ConfigHostExtrasSourceTest {
     stub.resolves(42, P + "qits-ci.env.FOO", "bar");
     ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
 
-    List<String> logged = capture(() -> source.forDeployment("qits-ci", ENV, VERSION));
+    List<String> logged = capture(() -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
 
     assertTrue(
         logged.stream().anyMatch(line -> line.contains("config-revision=42")),
         "no config-revision in " + logged);
+  }
+
+  // --- the release that declared nothing ------------------------------------------------------
+
+  @Test
+  void aReleaseThatDeclaredNothingIsReadVersionLess() {
+    // THE DEFECT THIS SECTION EXISTS FOR. The version parameter is what turns this into the overlay
+    // read, and the store answers 404 for a version it holds no declaration for — deliberately, on
+    // its own route's javadoc. The deployer seeds a declaration only for a release whose tag carries
+    // .config/qits/configuration.yml, which almost nothing on the fleet does yet, so passing the
+    // parameter unconditionally refused every one of those deployments and left the OLD container
+    // serving. Version-less is the store's own documented transitional form and it is what an
+    // undeclared release asks for.
+    stub.resolves(7, P + "qits-ci.env.QITS_EVENTS_URL", "http://dev-qits-events:8080");
+    ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
+
+    assertEquals(
+        List.of("QITS_EVENTS_URL=http://dev-qits-events:8080"),
+        env(source.forDeployment("qits-ci", ENV, VERSION, UNDECLARED)));
+    assertEquals(
+        List.of("/configuration/api/applications/qits-ci/envs/dev/resolved"),
+        stub.targets(),
+        "an undeclared release must not ask about a declaration nobody seeded");
+  }
+
+  @Test
+  void theVersionLessReadSaysWhyItIsVersionLess() {
+    // The transitional signal for the config-declarations epic's cutover: one WARN per deployment of
+    // a repository that has not declared itself, naming the application and the version so the
+    // remaining inventory can be read straight off a log. Asserted rather than assumed — a signal
+    // nobody can grep is not one, and the day these lines stop appearing is the day the parameter
+    // can stop being conditional.
+    stub.resolves(7);
+    ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
+
+    List<String> logged = capture(() -> source.forDeployment("qits-ci", ENV, VERSION, UNDECLARED));
+
+    assertTrue(
+        logged.stream()
+            .anyMatch(
+                line ->
+                    line.contains("qits-ci@" + VERSION)
+                        && line.contains("VERSION-LESS")
+                        && line.contains(".config/qits/configuration.yml")),
+        "no version-less warning naming the application and the version in " + logged);
+  }
+
+  @Test
+  void aDeclaredReleaseStillAsksByVersionAndItsFourOhFourIsStillAnError() {
+    // The other half, and the half that must not be softened. A release that DID seed a declaration
+    // was answered 2xx by the store a moment before this read, so the document is there: a 404 on
+    // the version-addressed read means something is wrong with the store, not with the repository,
+    // and refusing the deployment is the right answer. That is also why the fallback is decided from
+    // what the release carried rather than by retrying a 404 — a retry cannot tell the two 404s
+    // apart and would quietly paper over exactly this one.
+    stub.answers(404, "{}");
+    ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
+
+    assertThrows(
+        ServiceExtras.Refused.class, () -> source.forDeployment("qits-ci", ENV, VERSION, DECLARED));
+
+    assertEquals(
+        List.of("/configuration/api/applications/qits-ci/envs/dev/resolved?version=" + VERSION),
+        stub.targets(),
+        "a seeded declaration is asked about by version, once, and never re-asked without it");
+  }
+
+  @Test
+  void aVersionThatIsNotOneCannotRefuseAnUndeclaredDeployment() {
+    // The charset check is a belt on a value going into a QUERY, so it applies where the value goes
+    // into one. An undeclared release sends no version at all, and refusing its deployment over the
+    // spelling of a string this read never transmits would be inventing a second way to fail.
+    stub.resolves(1, P + "qits-ci.env.FOO", "bar");
+    ConfigHostExtrasSource source = stub.source(boot(Map.of()), NO_FILE, NONE);
+
+    assertEquals(
+        List.of("FOO=bar"),
+        env(source.forDeployment("qits-ci", ENV, "2026.903 113443", UNDECLARED)));
   }
 
   /** Everything {@link ConfigHostExtrasSource} logs while {@code body} runs. */

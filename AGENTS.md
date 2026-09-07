@@ -909,6 +909,44 @@ two tiers two documents, and the parameter is what makes deploying an older vers
 version's configuration rather than the newest one's. Same key, same `Optional` semantics, same
 body — `{headRevision, properties}` is unchanged, and so is everything above the seam.
 
+### …and the version is only asked for when the release SEEDED one (2026-09-07)
+
+**The parameter went out unconditionally for exactly one release, and it wedged every deployment on
+the platform.** qits-configuration answers **404 for a version it holds no declaration for**, which
+is right and is documented on its own route: absent means "I am not asking about declarations",
+present means "resolve me against this document", and a bare entry map would be a configuration
+missing every default the caller asked for with nothing to say so. But the deployer seeds a
+declaration **only** for a release whose tag carries `SpecSource.DECLARATION_PATH`, and almost no
+repository in the fleet carries that file yet. So from 2026.907.183748 every release of an
+undeclared repository ended `…/resolved?version=<v> is this deployment's extras and could not be
+read after 2 attempts: it answered 404`, and the row was then "recovered by observation" against the
+**old container that was still running** — a deploy that silently did nothing, platform-wide.
+
+**The fix is that the release says whether the version may be asked about at all.** Seeded, the read
+is version-addressed exactly as before; not seeded, it is the version-LESS form
+(`…/envs/<env>/resolved`, no query) that qits-configuration's own javadoc calls "EXACTLY today's
+behaviour and never a 404" — the entries alone, which is what a repository that declares nothing has
+to configure with anyway.
+
+- **It is a value threaded from where it is known, not a retry on the 404.** `DeployService.
+  deployReadSpec` asks `declaration.present()` once, seeds on it, and carries the same boolean into
+  every `execute` → `Plan` → `DeploymentDriver.ServiceSpec.declarationSeeded()` →
+  `DeploymentExtrasSource.forDeployment(…, declarationSeeded)`. A 404-retry was the alternative and
+  is the wrong shape: it cannot tell "this repository declared nothing" from "the store lost a
+  document it accepted a moment ago", and the second is a **real error** that must keep refusing the
+  deployment. A retry would paper over exactly the one worth failing on.
+- **It is the honest answer on the ROLLBACK path for free.** A redeploy of an older version reads
+  that tag's spec and — where the spec is there — that tag's declaration, on the manual door as on
+  the release door. A tag cut before the file existed simply answers `present() == false`, so it
+  takes the version-less arm without anything special being written for it.
+- **One WARN per version-less read, and it is the cutover's inventory.** It names the application
+  and the version and says the read was version-less because the release declared nothing. Every
+  line is one repository that still has to grow `.config/qits/configuration.yml`; the day the log
+  falls silent is the day the parameter can stop being conditional. It is built as a string rather
+  than deferred to `warnf`, for the reason the `config-revision=` line is: it is a sentence people
+  and suites grep for.
+- **This repository declares itself, and that is what made the fix release deployable.** See below.
+
 **AUTHORITATIVE MEANS SOLE, and that is the 2026-08-17 correction.** With the url set the file is
 **not read at all**: the served map over this process's boot config is the whole snapshot. It was
 layered *above* the file for one release, on the reasoning that a half-migrated platform should keep
@@ -1019,6 +1057,39 @@ Seven things about it, each easy to undo by accident:
   An adopted row's declaration was seeded before its own deployment was queued, by the instance that
   ran it; the sweep runs at boot, seconds after a cutover, and its whole design is to reach no peer
   it does not have to. Its one spec read is already the exception and is bounded for that reason.
+
+#### …and this repository DECLARES ITSELF (2026-09-07)
+
+`.config/qits/configuration.yml` is committed here, beside the deployment spec, and it is the first
+one on the platform. It exists for a reason that outlives its content: **the release that shipped
+the version-less fallback had to be deployable by the deployer that was still running without it.**
+With the file present the seed runs, qits-configuration holds a declaration for that version, and
+the still-broken version-addressed read finds one — so the fix deploys itself past the defect it
+fixes. A repository being able to unwedge its own deployment that way is a property worth
+remembering the next time this component ships a change to the read.
+
+Four things about the document, each easy to undo by accident:
+
+- **A malformed file is `DECLARATION_REFUSED` and the release is undeployable.** The store parses it
+  with the estate's one strict parser and refuses an unknown top-level key, an unknown attribute, an
+  unknown type and a duplicate key name. Nothing here parses it — `GitHostSpecSource` returns it
+  unparsed on purpose — so **an edit is verified against qits-configuration's own
+  `DeclarationParser`, by running it**, not by reading this file's neighbours.
+- **Every key declares a name and a type and NO default.** That is a complete statement — the key
+  exists, and until somebody sets it the resolved read does not carry it — and a default written
+  blind would be layered under the stored entries, invisible on this platform and wrong on a fresh
+  install. `deployments/…/OwnDeclarationTest` holds only what a hand edit can silently break: the
+  file being where the deployer fetches it, the closed top level, and no key declared twice. It is
+  deliberately **not** a parser, for the reason the declaration read is unparsed.
+- **No `serviceAddress`, deliberately.** `QITS_EVENTS_URL` and `QITS_OBSERVABILITY_URL` are the
+  obvious candidates and are `string` here: a serviceAddress is RENDERED by the platform and refuses
+  a stored value, so declaring one turns every hand-set address on the live platform into an ignored
+  row on the deployment that adopts it. That flip is the config-declarations epic's, one application
+  at a time, with the entries retired in the same step.
+- **`QITS_RESOURCE_*` is not declared and must not be.** Those come from the deployer's own resource
+  registry, the single authority for a provisioned credential, and configuration is deliberately
+  unable to state or delete one. They are extras today only because the bootstrap seeds them for the
+  cold boot.
 
 ### An update states removals now, and a hand `--env-add` no longer survives one
 
