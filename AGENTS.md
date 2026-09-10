@@ -2436,3 +2436,40 @@ parser still tolerates the key, and the reason is sharper than the `singleton`
 alias's: **a spec is fetched at the RELEASED tag**, so a redeploy of an older version still presents
 a file carrying it, and an unknown key fails a deployment. Do not write it into a new file; do not
 remove the tolerance.
+
+## A red gate is not always this repository (2026-09-10, `b63968c2`)
+
+The nightly bump of `eventstream 2026.908.70503 → 2026.910.64632` was folded into release request
+`b63968c2-7113-472f-b0a4-996c7fdb0bb3` and REJECTED at 07:14: gating run
+`3248b7f4-58a9-480c-9b8c-f78e3113444f` died in the maven step with
+
+    NullPointerException: Cannot invoke "InjectionPointInfo.isProgrammaticLookup()"
+      because "injectionPoint" is null
+        at io.quarkus.arc.processor.UnusedBeans.findRemovableBeans(UnusedBeans.java:44)
+        at io.quarkus.arc.deployment.ArcProcessor.validate(ArcProcessor.java:491)
+
+**Nothing was wrong with the fold, and nothing was fixed to make it pass.** Written down because the
+next person to see this stack will start by looking for a bean of ours, and there is none to find.
+
+- **The bump moved no bytes.** The upstream release was pom-only — qits-eventstream's own version
+  and its `qits.db-core.version` — and unpacking both jars and diffing everything outside
+  `META-INF/` gives identical classes. The transitive db-core move it carries never reaches this
+  build either: the root pom pins `qits-db-core` in `<dependencyManagement>` at the same
+  `2026.906.171046` in both trees. The fold's effective classpath **equals `main`'s**, and `main`
+  had just released green as `2026.910.61259`.
+- **The fold builds.** The pipeline's own command at the rejected sha — `clean verify`,
+  `-Dquarkus.quinoa=false -DskipITs=false` and the five ITs — is green, repeatedly, on a container
+  of the same shape.
+- **The NPE is a data race inside Arc's augmentation, not a bean graph it cannot resolve.**
+  `BeanDeployment.BeanRegistrationContextImpl.syntheticInjectionPoints` (arc-processor 3.34.6) is a
+  plain `ArrayList` appended from `accept(BeanInfo)`, i.e. once per synthetic bean, from the
+  parallel `build-N` steps that produce them. A racing `ArrayList` append publishes the size before
+  the element, so a later reader sees a **null slot**; that list is copied into the deployment's
+  injection points and `UnusedBeans` then dereferences it. Timing, therefore: this run started
+  fifteen seconds after the `main` release run, two augmentations deep on one box.
+
+So the cure is a re-fold, not a commit — this note is only what made one happen. **If it recurs and
+has to be forced through, `-Dio.quarkus.builder.execution.corePoolSize=1
+-Dio.quarkus.builder.execution.maxPoolSize=1` serialises the build steps and the race cannot
+happen.** Do not make that the default: this suite restarts Quarkus per `@TestProfile`, and it pays
+the serialisation every time.
