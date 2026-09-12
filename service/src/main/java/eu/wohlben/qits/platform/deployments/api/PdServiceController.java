@@ -132,7 +132,7 @@ public class PdServiceController {
   @GET
   @Operation(summary = "Every service, with the environments each is linked into")
   @APIResponse(responseCode = "200", description = "The services")
-  @jakarta.annotation.security.RolesAllowed("qits:admin")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
   public ListServicesResponse list() {
     return new ListServicesResponse(
         reads.call("The service catalogue listing", catalog::list).stream()

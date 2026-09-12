@@ -1242,12 +1242,13 @@ never repeat the segment; tests address the absolute path, which is what makes t
 regression.
 
 **Nothing on this surface is open, and the role says who a caller is meant to be.** Every endpoint
-carries a `@RolesAllowed`, and there are exactly two roles:
+carries a `@RolesAllowed`, and there are exactly three roles:
 
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
 | `qits:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
 | `qits-platform:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all |
+| `qits:agent` | every read — the ones `qits:admin` has, plus the pins — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (`principal-bound-git-refs-plan.md`, C7) |
 
 The two sets do not overlap and must not. A machine token never carries `qits:admin`, so
 the read surface is a person's; a browser session never carries `qits-platform:system`, so the

@@ -113,6 +113,7 @@ public class PdApplicationController {
   @GET
   @Operation(summary = "Every application deployed here — environment applications and platform services")
   @APIResponse(responseCode = "200", description = "The applications, one entry per tier")
+  @jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
   public ListApplicationsResponse list() {
     return new ListApplicationsResponse(
         reads.call("The application listing", catalog::allApplications).stream()

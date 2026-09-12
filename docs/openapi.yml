@@ -337,6 +337,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
   /platform-deployments/api/applications/{applicationId}/decommission:
     post:
       summary: "Retire an application — its current row becomes DECOMMISSIONED, nothing\
@@ -477,6 +478,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
   /platform-deployments/api/deployment-requests/{id}:
     get:
       summary: "One deployment request, with the deployment it produced"
@@ -504,6 +506,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
   /platform-deployments/api/deployments:
     get:
       summary: "One plane's recorded deployments, newest-first — an environment id,\
@@ -533,6 +536,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
   /platform-deployments/api/environments:
     get:
       summary: List environments
@@ -552,6 +556,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
     post:
       summary: "Create an environment: a name and a bundle network"
       requestBody:
@@ -640,6 +645,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
     delete:
       summary: "Tear an environment down (rows, containers, networks)"
       parameters:
@@ -692,6 +698,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
   /platform-deployments/api/pins:
     get:
       summary: "The image shas deployments pin: what serves, and what a rollback restores"
@@ -712,6 +719,7 @@ paths:
       security:
       - SecurityScheme:
         - qits-platform:system
+        - qits:agent
   /platform-deployments/api/services:
     get:
       summary: "Every service, with the environments each is linked into"
@@ -731,6 +739,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
+        - qits:agent
   /platform-deployments/api/services/{name}:
     put:
       summary: "Register or update one service, replacing its environment links"
@@ -794,4 +803,4 @@ paths:
         - qits-platform:system
 info:
   title: qits-platform-deployments API
-  version: 2026.907.212619
+  version: 2026.912.174637
