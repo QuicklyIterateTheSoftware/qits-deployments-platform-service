@@ -1247,14 +1247,17 @@ carries a `@RolesAllowed`, and there are exactly three roles:
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
 | `qits:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
-| `qits-platform:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all |
+| `qits-platform:system` **or `qits:system`** (additive) | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. `qits:system` is the open calling model's role — "a service calling a service" — and every `@RolesAllowed("qits-platform:system")` here also accepts it, so a client minted with only the newer role still passes. `qits-platform:system` is not removed yet; it goes when every minting side has moved |
 | `qits:agent` | every read — the ones `qits:admin` has, plus the pins — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (`principal-bound-git-refs-plan.md`, C7) |
 
-The two sets do not overlap and must not. A machine token never carries `qits:admin`, so
-the read surface is a person's; a browser session never carries `qits-platform:system`, so the
-machine surface is a machine's. **The read half is a change** — reads were open until the surface
-was protected, on the reasoning both ancestors gave — and the collector that reads the pins is a
-machine peer, so it presents its own token rather than nothing.
+**The two sets — the system roles and `qits:admin` — do not overlap and must not.** A machine token
+never carries `qits:admin`, so the read surface is a person's; a browser session never carries
+`qits-platform:system` or `qits:system`, so the machine surface is a machine's. `qits:system` widens
+who may hold the machine roles, not what they reach — under the open calling model a service calling
+a service may do basically everything a machine bearer here could already do, so accepting the new
+role beside the old one changes no endpoint's reach. **The read half is a change** — reads were open
+until the surface was protected, on the reasoning both ancestors gave — and the collector that reads
+the pins is a machine peer, so it presents its own token rather than nothing.
 
 **Where `machineAuth.require()` goes** is the same question one layer in: on the paths whose callers
 are machines — the intake and every topology write. It re-asks the audience question the token

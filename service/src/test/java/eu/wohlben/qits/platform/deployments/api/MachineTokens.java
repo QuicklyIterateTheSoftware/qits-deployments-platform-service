@@ -55,6 +55,33 @@ final class MachineTokens {
     return token(clientId, Set.of(), audiences);
   }
 
+  /**
+   * A token carrying only {@code qits:system} — the open calling model's role, and what a service
+   * client minted after the {@code qits-platform:system} retirement carries. Every {@code
+   * @RolesAllowed("qits-platform:system")} on this surface accepts it additively, so this token must
+   * pass everywhere {@link #token} does.
+   */
+  static String systemOnlyToken(String clientId, String... audiences) {
+    return token(clientId, Set.of("qits:system"), audiences);
+  }
+
+  /**
+   * A token carrying only the legacy {@code qits-platform:system} — a client the idp has not
+   * re-minted yet. It must keep passing until that role is retired.
+   */
+  static String legacySystemOnlyToken(String clientId, String... audiences) {
+    return token(clientId, Set.of("qits-platform:system"), audiences);
+  }
+
+  /**
+   * A token carrying only {@code qits:admin} in {@code groups} — not a real shape (the person track
+   * never carries a bearer at all), but the one way to prove the machine surface refuses it even
+   * when it is correctly signed and addressed: the two role sets do not overlap.
+   */
+  static String adminGroupsToken(String clientId, String... audiences) {
+    return token(clientId, Set.of("qits:admin"), audiences);
+  }
+
   private static String token(String clientId, Set<String> roles, String... audiences) {
     return Jwt.claims()
         .issuer(ISSUER)

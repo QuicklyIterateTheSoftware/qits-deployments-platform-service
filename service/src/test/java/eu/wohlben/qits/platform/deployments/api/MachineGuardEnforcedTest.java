@@ -244,6 +244,97 @@ class MachineGuardEnforcedTest {
   }
 
   @Test
+  void aQitsSystemOnlyTokenPassesEveryMachineDoor() {
+    // The additive acceptance: a client minted with only the open calling model's role must reach
+    // everything a `qits-platform:system` bearer does, with no other change to the surface.
+    String systemOnly =
+        "Bearer " + MachineTokens.systemOnlyToken("qits-ci", "qits-platform-deployments");
+
+    given()
+        .contentType(ContentType.JSON)
+        .header("Authorization", systemOnly)
+        .body(EVENT)
+        .when()
+        .post(INTAKE)
+        .then()
+        .statusCode(202);
+
+    String environmentId =
+        given()
+            .contentType(ContentType.JSON)
+            .header("Authorization", systemOnly)
+            .body("{\"name\":\"guarded-system-only\"}")
+            .when()
+            .post(ENVIRONMENTS)
+            .then()
+            .statusCode(201)
+            .extract()
+            .path("environment.id");
+
+    given()
+        .contentType(ContentType.JSON)
+        .header("Authorization", systemOnly)
+        .body(SERVICE_BODY)
+        .when()
+        .put(SERVICES + "/guarded-system-only")
+        .then()
+        .statusCode(201);
+
+    given().header("Authorization", systemOnly).when().get(PINS).then().statusCode(200);
+
+    given()
+        .header("Authorization", systemOnly)
+        .when()
+        .delete(SERVICES + "/guarded-system-only")
+        .then()
+        .statusCode(204);
+    given()
+        .header("Authorization", systemOnly)
+        .when()
+        .delete(ENVIRONMENTS + "/" + environmentId)
+        .then()
+        .statusCode(204);
+  }
+
+  @Test
+  void theOldSystemRoleAloneStillPassesEveryMachineDoor() {
+    // qits-platform:system is not retired in this change — a client the idp has not re-minted yet
+    // must keep working exactly as it did.
+    String legacyOnly =
+        "Bearer " + MachineTokens.legacySystemOnlyToken("qits-ci", "qits-platform-deployments");
+    given()
+        .contentType(ContentType.JSON)
+        .header("Authorization", legacyOnly)
+        .body(EVENT)
+        .when()
+        .post(INTAKE)
+        .then()
+        .statusCode(202);
+    given().header("Authorization", legacyOnly).when().get(PINS).then().statusCode(200);
+  }
+
+  @Test
+  void qitsAdminInAMachineTokensGroupsIsStillRefusedOnEveryMachineOnlyDoor() {
+    // The two sets do not overlap, and qits:system widening who may hold the machine roles must not
+    // widen what a caller can do WITHOUT it. `@RolesAllowed` reads the groups claim regardless of
+    // transport — a bearer naming qits:admin passes an admin-only read exactly as a forwarded header
+    // would, which is why this asserts the machine-ONLY surface (the intake, the pins) rather than
+    // the reads: a correctly signed, correctly addressed token whose groups claim names only
+    // qits:admin still has no qits-platform:system or qits:system, and is refused 403 there.
+    String adminGroups =
+        "Bearer " + MachineTokens.adminGroupsToken("qits-ci", "qits-platform-deployments");
+    given()
+        .contentType(ContentType.JSON)
+        .header("Authorization", adminGroups)
+        .body(EVENT)
+        .when()
+        .post(INTAKE)
+        .then()
+        .statusCode(403);
+    given().header("Authorization", adminGroups).when().get(PINS).then().statusCode(403);
+  }
+
+  @Test
   void thePinListingAnswersTheGarbageCollectorsMachineToken() {
     // qits-platform-artifacts plans its OCI sweep fail-closed on this answer, so what it presents
     // has to be a credential it can actually hold: its idp client is granted this service's

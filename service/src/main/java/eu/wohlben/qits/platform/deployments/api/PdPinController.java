@@ -33,14 +33,16 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * topology says today.
  *
  * <p><b>Read-only, and a machine peer's rather than a person's.</b> It takes {@code
- * qits-platform:system} — the role an idp-minted machine token carries — and not the {@code
- * qits:admin} the environment and deployment listings take, because its one caller is
- * qits-platform-artifacts' collector and no browser has business here. The collector's own idp
- * client is granted this service's audience and that role, so the credential exists to present.
+ * qits-platform:system} (or {@code qits:system}, additively) — a role an idp-minted machine token
+ * carries — and not the {@code qits:admin} the environment and deployment listings take, because
+ * its one caller is qits-platform-artifacts' collector and no browser has business here. The
+ * collector's own idp client is granted this service's audience and that role, so the credential
+ * exists to present. {@code qits:agent} is here too, for an agent's own bearer; {@code qits:system}
+ * and {@code qits:admin} still do not overlap.
  */
 @Path("/pins")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:agent"})
+@jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:system", "qits:agent"})
 public class PdPinController {
 
   @Inject RollbackPins pins;

@@ -371,9 +371,12 @@ serving, and the sha a rollback would put back.
 - **Every endpoint carries a role, and the role says who the caller is meant to be.** The reads
   need `qits:admin`, which reaches this service only as a forwarded header — an admin
   session through the edge, or the bootstrap's own hop. The pins, the topology writes and the
-  build-succeeded intake need `qits-platform:system`, which qits-platform-idp puts in a machine
-  token's `groups` claim. The two sets do not overlap: a machine cannot read the surface and a
-  browser session cannot write it. The writes and the intake additionally call `MachineAuth.require()`
+  build-succeeded intake need `qits-platform:system` **or `qits:system`** (additive: a machine
+  token carries either or both, and both are accepted), which qits-platform-idp puts in a machine
+  token's `groups` claim — `qits:system` is the open calling model's "a service calling a service"
+  role, and `qits-platform:system` is the one it is replacing over time. The two sets — the system
+  roles and `qits:admin` — do not overlap: a machine cannot read the surface and a browser session
+  cannot write it. The writes and the intake additionally call `MachineAuth.require()`
   (audience `qits-platform-deployments`), behind a gate that ships **off** —
   `QITS_AUTH_MACHINE_REQUIRED=true` turns it on, only once the senders are sending.
 
