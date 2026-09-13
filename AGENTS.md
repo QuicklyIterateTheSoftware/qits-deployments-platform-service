@@ -10,9 +10,11 @@ build → registration → health-gated cutover). This file is the working conve
 instead of inheriting them, and why every seam that reaches outside the process is faked rather than
 skipped: `FakeDeploymentDriver` behind `DeploymentDriver` (the orchestrator), `FakeSpecSource` behind
 `SpecSource` (the git host), `FakeResourceProvisioner` behind `ResourceProvisioner` (the
-platform's postgres) and `FakeDeclarationSeed` behind `DeclarationSeed` (qits-configuration's
-declaration intake). **Four fakes** — the ancestor's stub HTTP server for the topology dissolved
-when the topology became a repository query, and the fourth arrived with the seed.
+platform's postgres), `FakeDeclarationSeed` behind `DeclarationSeed` (qits-configuration's
+declaration intake) and `FakeIdpClientProvisioner` behind `IdpClientProvisioner` (qits-idp's
+service-client API). **Five fakes** — the ancestor's stub HTTP server for the topology dissolved
+when the topology became a repository query, the fourth arrived with the seed, and the fifth with
+the second resource type.
 
 **One seam, `DeploymentExtrasSource`, has no `@Mock` fake and that is deliberate** — it
 returns a `Config` rather than holding a conversation, so a test states one in a lambda. Nothing
@@ -77,9 +79,9 @@ Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
 - **`deployments/`** (`…deployments.*`) — the execution: `DeployService`, `EnvironmentOperations`,
   `RollbackPins`, `DeploymentSpecParser`, `DeploymentIdentifiers` (what only reaches an argv),
   `ImageRefs`, `ContainerNames`, `PdProcess`, `ResourceProvisioning` and `BootResourceRegistration`,
-  and the five seams `DeploymentDriver` / `SpecSource` / `ResourceProvisioner` /
-  `DeploymentExtrasSource` / `DeclarationSeed` plus the announcement port `ReleaseAnnouncements` and
-  the ordering
+  and the six seams `DeploymentDriver` / `SpecSource` / `ResourceProvisioner` /
+  `DeploymentExtrasSource` / `DeclarationSeed` / `IdpClientProvisioner` plus the announcement port
+  `ReleaseAnnouncements` and the ordering
   collapse `ReleaseTips` behind it (with `Versions` and `PackageNames`), and the outgoing port
   `DeployAnnouncer`.
 - **`deployments-events/`** (`…deployments.events.*`) — the event VOCABULARY: four plain records
@@ -88,9 +90,12 @@ Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
   `DeploymentActive` it takes this jar and gets the record plus the bus and no part of the deployer.
   The ci-events and githost-events shape, which is also why the directory carries the repo's name
   rather than a bare role word.
-- **`service/`** (`…api`, `…bus`, `…swarmhost`, `…githost`, `…pghost`, `…confighost`) — the
-  adapters. `confighost` is the youngest and is the one that presents a credential: it reads
-  qits-configuration's resolved extras and holds the named oidc client that does it. `bus` is the
+- **`service/`** (`…api`, `…bus`, `…swarmhost`, `…githost`, `…pghost`, `…confighost`, `…idphost`) —
+  the adapters. `idphost` is the youngest, and it presents a credential too — this component's own,
+  to qits-idp's service-client API, over a plain JDK `HttpClient` rather than a named oidc client:
+  the call is Basic-authenticated, not bearer-shaped, since it is provisioning a PEER's credential
+  rather than fetching a token for itself. `confighost` reads qits-configuration's resolved extras
+  and holds the named oidc client that does that one. `bus` is the
   event-bus half: the durable `SoftwareRelease` subscriber, the `DeployEventAnnouncer` that
   publishes this component's own four events, and the native-image registration for what the
   library's own `ObjectMapper` binds. Identity is not a package here: the forward-auth pair
@@ -109,12 +114,15 @@ containers. The concrete consequence is `EnvironmentOperations`: creating a tier
 (`environments`) *and* a network (`deployments`), so the composition lives on the execution side and
 `EnvironmentService` stays socketless. Do not put a driver call in `environments/`.
 
-**The seam rule is one rule, applied five times.** Everything the domain modules cannot do — shell
+**The seam rule is one rule, applied six times.** Everything the domain modules cannot do — shell
 out to docker, fetch a file over HTTP, speak DDL to somebody else's server, hand a file to a store —
 is an interface there and an implementation in `service/`, with a scripted double in the suite.
 `ResourceProvisioner` was the third; `DeploymentExtrasSource` is the fourth and took the shape
-unchanged; **`DeclarationSeed` is the fifth**, and it is the first that WRITES to a peer. Do not put
-a client in a domain module.
+unchanged; `DeclarationSeed` is the fifth, and it is the first that WRITES to a peer. **`IdpClientProvisioner`
+is the sixth, and it is the second that writes to a peer** — qits-idp is a credential authority
+exactly like postgres (below), so its seam takes the postgres shape (a domain interface, an
+adapter that speaks the peer's own protocol) rather than the extras/declaration shape (a bearer
+over a peer this component also READS from). Do not put a client in a domain module.
 
 **The extras seam's double is a lambda, not a `@Mock` bean, and that is the seam's own shape.**
 `DeploymentExtrasSource` is a `@FunctionalInterface` returning a `Config`, so a test that wants the
@@ -147,6 +155,14 @@ The topology was `qits-serviceregistry` for one release, reached over HTTP. All 
   (`quarkus.oidc-client.configuration.client-enabled=false`) and a secret a deployment supplies.
   What stays gone is the topology client it used to serve. **The peer count is one**: a second named
   client is a second peer, and a second peer wants the argument this one made.
+  **qits-idp is a peer too now, and it does not break the count** — it is reached a different way
+  (`idphost/HttpIdpClientProvisioner`, Basic-authenticated with this component's own client id and
+  secret, no named oidc client of its own) because it is a different kind of peer: qits-configuration
+  is read from and written to as CONFIGURATION, over a bearer this component fetches for itself;
+  qits-idp is a CREDENTIAL AUTHORITY this component provisions OTHER applications' secrets from, the
+  same relationship it already has with the platform's postgres (below) — provisioning speaks the
+  peer's own protocol, not a token exchange. A third peer reached the extras way would still want the
+  argument above; a second one reached the postgres way is the shape a credential authority takes.
 - **`StubRegistry`**, the `@WithTestResource(GLOBAL)` server every `@QuarkusTest` carried.
 - **The registry-outage posture** — `RegistryException` (502), `lastKnownTargets` (the
   deployment-history fallback), `CdRegistryOutageTest`. There is no outage to have a posture about.
@@ -888,10 +904,13 @@ holds the socket), has no default, is never stored in a row and never reaches an
 `DROP` and none is coming**: marking a resource obsolete is future work, and it will be a mark.
 
 **The `platformdeployments` database is credential-bearing.** `pd_resource.password` is the single
-authority for every provisioned application's credential. Treat it with the sensitivity of the
-`qits-deployments-config` volume. No statement containing a password is logged, no failure detail
-names one, and `PgResourceProvisioner.literal` refuses a password it could not quote safely rather
-than escaping it cleverly.
+authority for every provisioned application's credential — a postgres password or an idp client
+secret, one column doing both jobs because the row's `resource_type` already says which. Treat it
+with the sensitivity of the `qits-deployments-config` volume. No statement containing a password is
+logged, no failure detail names one, and `PgResourceProvisioner.literal` refuses a password it could
+not quote safely rather than escaping it cleverly; `HttpIdpClientProvisioner.validated` holds the
+idp side of the same rule — a returned secret is checked, never echoed, and refused rather than
+escaped if it does not look like something this component can use.
 
 Argvs are assembled for `ProcessBuilder`, which never re-splits — but do not lean on that:
 validation stays at the boundary and the belt stays at the argv.

@@ -43,4 +43,14 @@ public class PdResourceRepository implements PanacheRepositoryBase<PdResource, S
   public List<PdResource> listByDatabase(String databaseName) {
     return list("databaseName = ?1", databaseName);
   }
+
+  /**
+   * Everything already claiming this idp client id — the {@code database_name} cross-check's
+   * mirror, for the resource type that has no database. Unscoped by application for the same
+   * reason: two applications deriving the same client id is a derivation bug, not a legitimate
+   * share, and this is what a caller would ask to notice it.
+   */
+  public List<PdResource> listByClientId(String clientId) {
+    return list("clientId = ?1", clientId);
+  }
 }

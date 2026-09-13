@@ -1034,7 +1034,7 @@ class SwarmDeploymentDriverTest {
                     PdDeploymentTarget.ENVIRONMENT,
                     DeploymentDriver.UpdateOrder.START_FIRST,
                     List.of(
-                        new DeploymentDriver.ResourceBinding(
+                        DeploymentDriver.ResourceBinding.postgres(
                             "read-replica",
                             "jdbc:postgresql://dev-qits-oci-postgresql:5432/qits_gateway",
                             "qits_gateway",

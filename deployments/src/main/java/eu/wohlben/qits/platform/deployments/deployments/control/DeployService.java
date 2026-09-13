@@ -2622,7 +2622,7 @@ public class DeployService implements ReleaseAnnouncements {
     try {
       bindings =
           resourceProvisioning.ensureAll(
-              plan.applicationName(), plan.environmentName(), plan.resources());
+              plan.applicationName(), plan.environmentName(), plan.target().target(), plan.resources());
     } catch (RuntimeException e) {
       LOG.warnf(
           "Could not provision the resources of %s: %s", plan.applicationName(), e.getMessage());

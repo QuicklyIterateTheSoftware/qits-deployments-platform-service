@@ -307,17 +307,31 @@ public interface SpecSource {
     }
 
     /**
-     * One resource a repository declares — {@code postgresql:<name>[:<database>]}.
+     * One resource a repository declares — {@code postgresql:<name>[:<database>]} or {@code
+     * idp:client}.
      *
-     * <p>{@code database} is <b>null when the file omitted it</b>, and that is not a default this
-     * record could fill in: the convention is {@code qits_} plus the application name without its
-     * {@code qits-} prefix, and the parser does not know the application name. {@code
-     * DeployService.register} resolves it, where the repository id is in hand.
+     * <p>{@code database} is <b>null when the file omitted it, and always null for {@link
+     * Type#IDP_CLIENT}</b>: for postgres that is not a default this record could fill in — the
+     * convention is {@code qits_} plus the application name without its {@code qits-} prefix, and
+     * the parser does not know the application name, so {@code DeployService.register} resolves it,
+     * where the repository id is in hand. An idp client has no database at all.
      *
-     * <p>There is no type field because there is one type. When a second arrives it becomes one,
-     * and the grammar already carries it in the entry's first segment.
+     * <p>{@code type} arrived with the second resource type; the two-argument constructor keeps
+     * defaulting to {@link Type#POSTGRESQL} so every existing caller of the postgres shape is
+     * unaffected.
      */
-    public record ResourceSpec(String name, String database) {}
+    public record ResourceSpec(String name, String database, Type type) {
+
+      public ResourceSpec(String name, String database) {
+        this(name, database, Type.POSTGRESQL);
+      }
+
+      /** The resource types this component knows how to provision. */
+      public enum Type {
+        POSTGRESQL,
+        IDP_CLIENT
+      }
+    }
 
     /** No file, or a file that sets nothing: an ordinary environment application. */
     public static final DeploymentSpec DEFAULTS =

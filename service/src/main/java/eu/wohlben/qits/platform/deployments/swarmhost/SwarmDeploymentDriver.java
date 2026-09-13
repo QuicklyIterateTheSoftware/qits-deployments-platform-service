@@ -1612,15 +1612,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     variables.add(DeployedIdentity.QUARKUS_OTEL_VARIABLE + "=" + identity);
     // What ResourceProvisioning made exist a moment ago, as the generic contract. The name is
     // re-validated HERE, at the last line before the argv, exactly like the health path: it is
-    // repository-authored input being spliced into an environment-variable key.
+    // repository-authored input being spliced into an environment-variable key. The idp resource's
+    // name is the reserved constant `idp`, so it passes trivially — the check still runs, because
+    // this loop has no reason to know which resource type it is looking at.
     for (ResourceBinding binding : spec.resources()) {
       String key =
           PdIdentifiers.requireResourceName(binding.name())
               .toUpperCase(Locale.ROOT)
               .replace('-', '_');
-      variables.add(RESOURCE_PREFIX + key + "_URL=" + safe(binding.url()));
-      variables.add(RESOURCE_PREFIX + key + "_USERNAME=" + safe(binding.username()));
-      variables.add(RESOURCE_PREFIX + key + "_PASSWORD=" + safe(binding.password()));
+      for (ResourceBinding.Value value : binding.values()) {
+        variables.add(RESOURCE_PREFIX + key + "_" + value.suffix() + "=" + safe(value.value()));
+      }
     }
     return List.copyOf(variables);
   }

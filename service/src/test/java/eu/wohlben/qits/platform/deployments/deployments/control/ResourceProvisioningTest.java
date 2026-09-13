@@ -94,9 +94,9 @@ public class ResourceProvisioningTest {
     assertEquals(1, bindings.size());
     assertEquals("db", bindings.get(0).name());
     assertEquals(
-        "jdbc:postgresql://prov-a-qits-oci-postgresql:5432/qits_prov_new", bindings.get(0).url());
-    assertEquals("qits_prov_new", bindings.get(0).username());
-    assertEquals(request.freshPassword(), bindings.get(0).password());
+        "jdbc:postgresql://prov-a-qits-oci-postgresql:5432/qits_prov_new", bindings.get(0).value("URL"));
+    assertEquals("qits_prov_new", bindings.get(0).value("USERNAME"));
+    assertEquals(request.freshPassword(), bindings.get(0).value("PASSWORD"));
   }
 
   @Test
@@ -109,7 +109,7 @@ public class ResourceProvisioningTest {
         provisioning.ensureAll("prov-known", "prov-b", one("db", "qits_prov_known"));
 
     assertEquals("an-already-working-password", provisioner.requests().get(0).storedPassword());
-    assertEquals("an-already-working-password", bindings.get(0).password());
+    assertEquals("an-already-working-password", bindings.get(0).value("PASSWORD"));
     assertEquals("an-already-working-password", row("prov-known", "prov-b", "db").orElseThrow().password);
   }
 
@@ -129,7 +129,7 @@ public class ResourceProvisioningTest {
     List<DeploymentDriver.ResourceBinding> bindings =
         provisioning.ensureAll("prov-reconcile", "prov-c", one("db", "qits_prov_reconcile"));
     assertEquals("a-rotated-one", row("prov-reconcile", "prov-c", "db").orElseThrow().password);
-    assertEquals("a-rotated-one", bindings.get(0).password(), "and the container is told the new one");
+    assertEquals("a-rotated-one", bindings.get(0).value("PASSWORD"), "and the container is told the new one");
   }
 
   @Test
@@ -184,7 +184,7 @@ public class ResourceProvisioningTest {
 
     assertEquals(
         "jdbc:postgresql://prov-plane-tier-qits-oci-postgresql:5432/qits_prov_plane",
-        bindings.get(0).url());
+        bindings.get(0).value("URL"));
     assertTrue(
         row("prov-plane", "prov-plane-tier", "db").isPresent(),
         "the row is keyed by the tier, which is the key the next deployment looks it up by");

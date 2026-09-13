@@ -244,8 +244,18 @@ public final class DeploymentSpecParser {
 
   private static final int API_DOCS_MAX_CHARS = 255;
 
-  /** The only resource type there is. It is spelled in the file so a second one can arrive. */
+  /** The first resource type. It is spelled in the file so a second one can arrive. */
   private static final String POSTGRESQL = "postgresql";
+
+  /**
+   * The second resource type: {@code idp:client}, a qits-idp service client. Its resource NAME is
+   * fixed to this same word rather than repository-chosen — there is one idp per platform, so there
+   * is nothing to name — which is what makes it reserved against {@code postgresql:idp}.
+   */
+  private static final String IDP = "idp";
+
+  /** The one word {@code idp:} may be followed by. */
+  private static final String IDP_CLIENT = "client";
 
   /** The retired vocabulary, still understood. See the class javadoc. */
   private static final String PLATFORM_ALIAS = "singleton";
@@ -773,20 +783,25 @@ public final class DeploymentSpecParser {
 
   /**
    * The resources a repository asks to have provisioned before its container starts:
-   * {@code postgresql:<name>[:<database>]}, comma-separated. One line, because this file has no
-   * YAML sequences — and neither a type, a name nor a database may contain a comma or a colon,
-   * which is what makes both separators safe.
+   * {@code postgresql:<name>[:<database>]} or {@code idp:client}, comma-separated. One line,
+   * because this file has no YAML sequences — and neither a type, a name nor a database may
+   * contain a comma or a colon, which is what makes both separators safe.
    *
-   * <p>A missing third segment means "the convention", not "no database": the default is {@code
-   * qits_} plus the application name without its {@code qits-} prefix, and it is resolved by {@code
-   * DeployService.register}, which is the first caller that knows the application's name. Null
-   * travels out of here as that statement.
+   * <p>A missing third segment on a {@code postgresql} entry means "the convention", not "no
+   * database": the default is {@code qits_} plus the application name without its {@code qits-}
+   * prefix, and it is resolved by {@code DeployService.register}, which is the first caller that
+   * knows the application's name. Null travels out of here as that statement.
    *
-   * <p>Both duplicates are refused, and only one of the two can be caught here. A repeated <b>name</b>
-   * would make one env triple silently win over another; a repeated <b>literal database</b> would
-   * point two of a repository's own resources at one store. The second form a defaulted database
-   * can also take — two resources whose names both default to the same thing — is caught after
-   * resolution, where the defaults exist.
+   * <p>{@code idp:client} names no resource of its own — there is one idp per platform, so there is
+   * nothing to name — and its resource name is the fixed word {@code idp}, which is why {@code
+   * postgresql:idp} is refused: a repository cannot shadow the reserved name with the other type.
+   *
+   * <p>Both duplicates are refused, and only one of the two postgres cases can be caught here. A
+   * repeated <b>name</b> would make one env triple silently win over another (this also catches
+   * {@code idp:client} written twice, since its name is always {@code idp}); a repeated
+   * <b>literal database</b> would point two of a repository's own resources at one store. The
+   * second form a defaulted database can also take — two resources whose names both default to the
+   * same thing — is caught after resolution, where the defaults exist.
    */
   private static List<DeploymentSpec.ResourceSpec> resources(String value, String source, int line) {
     List<DeploymentSpec.ResourceSpec> declared = new ArrayList<>();
@@ -808,16 +823,40 @@ public final class DeploymentSpecParser {
                 + RESOURCES
                 + "` entries are `"
                 + POSTGRESQL
-                + ":<name>` or `"
-                + POSTGRESQL
-                + ":<name>:<database>`, got: "
+                + ":<name>[:<database>]` or `"
+                + IDP
+                + ":"
+                + IDP_CLIENT
+                + "`, got: "
                 + entry);
+      }
+      if (IDP.equals(parts[0])) {
+        if (parts.length != 2 || !IDP_CLIENT.equals(parts[1])) {
+          throw error(
+              source,
+              line,
+              "`" + RESOURCES + "` knows only `" + IDP + ":" + IDP_CLIENT + "` for the type `" + IDP
+                  + "`, got: " + entry);
+        }
+        if (!names.add(IDP)) {
+          throw error(source, line, "`" + RESOURCES + "` names `" + IDP + "` twice");
+        }
+        declared.add(
+            new DeploymentSpec.ResourceSpec(IDP, null, DeploymentSpec.ResourceSpec.Type.IDP_CLIENT));
+        continue;
       }
       if (!POSTGRESQL.equals(parts[0])) {
         throw error(
             source,
             line,
-            "`" + RESOURCES + "` knows the type `" + POSTGRESQL + "` and no other, got: " + parts[0]);
+            "`"
+                + RESOURCES
+                + "` knows the types `"
+                + POSTGRESQL
+                + "` and `"
+                + IDP
+                + "` and no others, got: "
+                + parts[0]);
       }
       String name;
       try {
@@ -830,6 +869,12 @@ public final class DeploymentSpecParser {
                 + RESOURCES
                 + "` names are lowercase letters, digits and inner dashes (max 32), got: "
                 + parts[1]);
+      }
+      if (IDP.equals(name)) {
+        throw error(
+            source,
+            line,
+            "`" + RESOURCES + "` name `" + IDP + "` is reserved for `" + IDP + ":" + IDP_CLIENT + "`");
       }
       String database = null;
       if (parts.length == 3) {

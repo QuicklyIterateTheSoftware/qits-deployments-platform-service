@@ -389,9 +389,10 @@ public class PdDeploymentFlowTest {
     DeploymentDriver.ResourceBinding binding = started.resources().get(0);
     assertEquals("db", binding.name());
     assertEquals(
-        "jdbc:postgresql://flow-resource-qits-oci-postgresql:5432/qits_storing", binding.url());
-    assertEquals("qits_storing", binding.username());
-    assertEquals(request.freshPassword(), binding.password());
+        "jdbc:postgresql://flow-resource-qits-oci-postgresql:5432/qits_storing",
+        binding.value("URL"));
+    assertEquals("qits_storing", binding.value("USERNAME"));
+    assertEquals(request.freshPassword(), binding.value("PASSWORD"));
   }
 
   @Test

@@ -9,9 +9,9 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 
 /**
- * One backing resource this component has provisioned for one application in one tier — today
- * always a postgres role and database on the platform's own instance — and the credential it
- * injects for it.
+ * One backing resource this component has provisioned for one application in one tier — a postgres
+ * role and database on the platform's own instance, or a qits-idp service client — and the
+ * credential it injects for it.
  *
  * <p><b>This row is the single authority for that credential.</b> Nothing else records it: no
  * generated file carries it, the bootstrap does not know it, and the application receives it only
@@ -27,9 +27,12 @@ import java.time.Instant;
  * over {@code (application, environment, resource)} is declared {@code nulls not distinct} in V1 —
  * without that, every platform-plane deployment would insert a row of its own.
  *
- * <p>{@code databaseName} and {@code roleName} are one identity today: the role IS the database
- * name, one login per database. They are two columns so that the day a resource type separates them
- * the registry can say so without a migration.
+ * <p>{@code databaseName} and {@code roleName} are one identity for a postgres row: the role IS the
+ * database name, one login per database. They are two columns so that a resource type could
+ * separate them without a migration — which is exactly what {@link #clientId} is: an idp-client row
+ * leaves both of them null and carries this instead, qits-idp's own key for the client. A row
+ * carries only the columns its type has a fact for; the others stay null rather than holding a
+ * value that means nothing.
  *
  * <p><b>{@code @Uncaused} by decision, and the reason is what this row is.</b> It is not a record
  * of something that happened — it is the converging registry entry for a database that exists, read
@@ -59,17 +62,29 @@ public class PdResource extends PanacheEntityBase {
   @Column(name = "resource_name", nullable = false, length = 64)
   public String resourceName;
 
-  /** {@code postgresql}, and nothing else so far. */
+  /** {@code postgresql} or {@code idp-client}. */
   @Column(name = "resource_type", nullable = false, length = 32)
   public String resourceType;
 
-  @Column(name = "database_name", nullable = false, length = 64)
+  /** Null for an {@code idp-client} row — an idp client has no database. */
+  @Column(name = "database_name", length = 64)
   public String databaseName;
 
-  @Column(name = "role_name", nullable = false, length = 64)
+  /** Null for an {@code idp-client} row — an idp client has no role. */
+  @Column(name = "role_name", length = 64)
   public String roleName;
 
-  /** Generated here, stored only here, and never logged. See the class javadoc. */
+  /**
+   * qits-idp's own key for the client — the wire alias this component derives ({@code
+   * PdNetworks.alias}). Null for a postgres row, which has nothing to key an idp client by.
+   */
+  @Column(name = "client_id", length = 128)
+  public String clientId;
+
+  /**
+   * Generated here for a postgres row, issued by qits-idp for an idp-client row — either way stored
+   * only here, and never logged. See the class javadoc.
+   */
   @Column(name = "password", nullable = false, length = 128)
   public String password;
 
