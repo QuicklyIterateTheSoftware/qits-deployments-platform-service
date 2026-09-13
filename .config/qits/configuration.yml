@@ -35,15 +35,50 @@
 #     stored value, so declaring one turns every hand-set address on the live platform into an
 #     ignored row on the deployment that adopts it. That flip is the config-declarations epic's, one
 #     application at a time, with the entries retired in the same step.
-#   * QITS_RESOURCE_DB_* / QITS_RESOURCE_EVENTSTREAM_*. Those are injected from the deployer's own
-#     resource registry — the single authority for a provisioned credential — and configuration is
-#     deliberately unable to state or delete one. They are extras today only because the bootstrap
-#     seeds them for the cold boot.
-#   * mounts[i] / groups[i]. Declarable by the grammar, and left to the epic with the rest of the
-#     inventory: this file's job today is to be VALID, not to be complete.
+#
+# WHY QITS_RESOURCE_DB_* IS ORPHANED ON PURPOSE, and it is a stronger claim than "redundant":
+# ResourceProvisioning is the single authority for this component's own postgres credential on every
+# self-deploy (see the repository's CLAUDE.md, "Resources: what the deployer provisions"), and its
+# BootResourceRegistration reads the triple straight off the process's own environment at boot
+# (BootResourceRegistration.java:339-344, `ConfigProvider.getConfig().getOptionalValue`) — so
+# whatever the running container was actually started with is what gets recorded, not this store.
+# That environment comes from the argv the swarm driver builds, and there the two sources collide in
+# an order that makes the stored copy the DANGEROUS one rather than the harmless one: both
+# SwarmDeploymentDriver.buildCreateArgv (`--env`, ResourceProvisioning's triple first, extras'
+# `env.*` after) and buildUpdateArgv (`--env-add`, same order) write ResourceProvisioning's fresh
+# triple BEFORE this service's stored extras, and the last `--env`/`--env-add` of one key wins — the
+# ordering this file's own header comment for QITS_PLATFORM_DEPLOYMENTS_REGISTRY_AUTH already
+# documents elsewhere as deliberate ("what config says outranks what this component defaults",
+# SwarmDeploymentDriver.java:1475-1480). A stale stored QITS_RESOURCE_DB_PASSWORD would therefore
+# silently OVERRIDE a freshly rotated one the moment ResourceProvisioning ever takes its reconcile
+# arm (a database reset with the role intact — see "The registry row is the single authority for the
+# credential" in the repository's CLAUDE.md), and the successor would boot unable to reach its own
+# database. Declaring the key would not fix that — a declaration only says the key EXISTS, never
+# what wins the argv — so the one change that removes the hazard is deleting the stored row once the
+# orphan-delete UI ships, which is exactly what leaving it undeclared invites. QITS_RESOURCE_EVENTSTREAM_*
+# carries no such row today: it is handed to the very first cold-boot container directly by the seed
+# stack's own compose environment (never through `qits.platform.deployments.extras.qits-deployments.*`,
+# confirmed against ComposeTemplate.java), so qits-configuration's import never picked it up and there
+# is nothing to flag either way.
+#   * mounts[0] / mounts[1] / groups[0] are declared below, as `string`, exactly as the store already
+#     spells them (`ConfigurationKeys.INDEXED_KEY`) — the config volume, the docker-socket bind, and
+#     the socket's group id. Declaring them is what stops the coming orphan-delete UI from offering
+#     to remove the very mount that makes this component able to drive an orchestrator at all.
 
 keys:
   # --- this component's own namespace ---------------------------------------------------------
+
+  mounts[0]:
+    type: string
+    description: "The config volume, mounted at /work/config, holding this component's DOCKER_CONFIG registry credential file."
+
+  mounts[1]:
+    type: string
+    description: "The host's docker socket, bind-mounted so this component can drive the orchestrator that deploys every application on the platform, itself included."
+
+  groups[0]:
+    type: string
+    description: "The docker socket's group id, added to the container so its own user can use the mounted socket."
 
   env.QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL:
     type: string

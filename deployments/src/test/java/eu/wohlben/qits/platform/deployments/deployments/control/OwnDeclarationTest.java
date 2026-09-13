@@ -78,11 +78,17 @@ class OwnDeclarationTest {
   void noKeyIsDeclaredTwice() throws IOException {
     // The store's loader refuses duplicate keys outright — "the last one wins" is not an answer a
     // store of record may give — so a copy-paste that repeats a name is a DECLARATION_REFUSED
-    // release rather than a document with one redundant line.
+    // release rather than a document with one redundant line. Both key families count: env.<VAR>
+    // and the indexed ones (mounts[i], publishes[i], groups[i], aliases[i]) this document also
+    // carries now.
     Set<String> seen = new LinkedHashSet<>();
     for (String line : Files.readAllLines(declaration())) {
       String trimmed = line.strip();
-      if (!trimmed.startsWith("env.") || !trimmed.endsWith(":")) {
+      boolean isKeyLine =
+          trimmed.endsWith(":")
+              && (trimmed.startsWith("env.")
+                  || trimmed.matches("(mounts|publishes|groups|aliases)\\[\\d{1,4}]:"));
+      if (!isKeyLine) {
         continue;
       }
       assertTrue(seen.add(trimmed), "declared twice: " + trimmed);
