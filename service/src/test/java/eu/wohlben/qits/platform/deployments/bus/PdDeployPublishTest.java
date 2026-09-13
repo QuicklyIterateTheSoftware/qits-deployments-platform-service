@@ -15,6 +15,7 @@ import eu.wohlben.qits.platform.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeclarationSeed;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProvisioner;
+import eu.wohlben.qits.platform.deployments.deployments.control.FakeIdpClientProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
@@ -74,6 +75,7 @@ public class PdDeployPublishTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
   @Inject FakeDeclarationSeed seeds;
   @Inject DeployService deployService;
 
@@ -92,6 +94,7 @@ public class PdDeployPublishTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
     seeds.reset();
     QuarkusTransaction.requiringNew()
         .run(() -> outbox.createQuery("delete from OutboxEvent").executeUpdate());

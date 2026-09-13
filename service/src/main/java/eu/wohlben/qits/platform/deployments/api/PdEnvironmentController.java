@@ -40,12 +40,14 @@ import org.jboss.logging.Logger;
  *
  * <p><b>The writes and the reads want different callers, and the roles say so.</b> The writer here
  * is a machine — the bootstrap and the deploy path — so the writes take {@code
- * qits-platform:system}, the role qits-platform-idp puts in a machine token's {@code groups} claim,
- * and call {@link MachineAuth#require()} on top of it for the audience. The reads are the opposite:
- * a person drives them through qits-gateway's session and the web client polls them, so they take
- * {@code qits:admin}, which only a forwarded {@code X-Qits-Roles} header carries. Neither
- * caller can reach the other's half. {@code MachineAuth} alone is gated off by {@code
- * qits.auth.machine.required} until qits-platform-idp grants this audience; the roles are not.
+ * qits-platform:system} (or {@code qits:system}, additively — the open calling model's "a service
+ * calling a service" role), the role qits-platform-idp puts in a machine token's {@code groups}
+ * claim, and call {@link MachineAuth#require()} on top of it for the audience. The reads are the
+ * opposite: a person drives them through qits-gateway's session and the web client polls them, so
+ * they take {@code qits:admin}, which only a forwarded {@code X-Qits-Roles} header carries. Neither
+ * caller can reach the other's half — {@code qits:system} and {@code qits:admin} still do not
+ * overlap. {@code MachineAuth} alone is gated off by {@code qits.auth.machine.required} until
+ * qits-platform-idp grants this audience; the roles are not.
  */
 @Path("/environments")
 @Produces(MediaType.APPLICATION_JSON)
@@ -118,7 +120,7 @@ public class PdEnvironmentController {
   @APIResponse(responseCode = "409", description = "An environment of that name already exists")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   @APIResponse(responseCode = "403", description = "Gate on and the token is for another service")
-  @jakarta.annotation.security.RolesAllowed("qits-platform:system")
+  @jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:system"})
   public Response create(@Valid CreateEnvironmentRequest request) {
     machineAuth.require();
     if (request.applications() != null && !request.applications().isEmpty()) {
@@ -155,7 +157,7 @@ public class PdEnvironmentController {
       description = "Another environment already has that name, or the platform designation was cleared rather than moved")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   @APIResponse(responseCode = "403", description = "Gate on and the token is for another service")
-  @jakarta.annotation.security.RolesAllowed("qits-platform:system")
+  @jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:system"})
   public EnvironmentResponse update(
       @PathParam("environmentId") String environmentId, UpdateEnvironmentRequest request) {
     machineAuth.require();
@@ -242,7 +244,7 @@ public class PdEnvironmentController {
   @APIResponse(responseCode = "409", description = "This is the platform environment")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   @APIResponse(responseCode = "403", description = "Gate on and the token is for another service")
-  @jakarta.annotation.security.RolesAllowed("qits-platform:system")
+  @jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:system"})
   public Response delete(@PathParam("environmentId") String environmentId) {
     machineAuth.require();
     environments.delete(environmentId);

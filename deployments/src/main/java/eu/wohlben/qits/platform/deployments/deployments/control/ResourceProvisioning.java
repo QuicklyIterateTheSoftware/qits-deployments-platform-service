@@ -5,6 +5,7 @@ import eu.wohlben.qits.platform.deployments.deployments.entity.PdResource;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdResourceRepository;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -21,20 +22,27 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * Everything between "the repository asked for a database" and "the container is started with the
- * credential for one": read the registry, resolve which postgres to talk to, generate a candidate
- * password, drive the {@link ResourceProvisioner} seam, record what came back, and answer with the
- * bindings the argv needs.
+ * Everything between "the repository asked for a resource" and "the container is started with the
+ * credential for it": read the registry, resolve which server to talk to, drive the right seam,
+ * record what came back, and answer with the bindings the argv needs.
  *
  * <p><b>It runs on the deploy worker, before the pull.</b> The worker has no request context, so
  * every read and every write brackets itself in {@link QuarkusTransaction#requiringNew()} — and,
- * just as deliberately, <b>no transaction spans the call to the seam</b>. That call opens a socket
- * to another server and runs DDL on it; holding a database transaction across it would put this
- * component's own connection pool behind somebody else's server for as long as it takes to answer.
+ * just as deliberately, <b>no transaction spans the call to a seam</b>. Both seams open a socket to
+ * another server; holding a database transaction across either would put this component's own
+ * connection pool behind somebody else's server for as long as it takes to answer.
  *
  * <p><b>Nothing here is ever dropped.</b> The failure modes are all shaped as convergence: a role
  * that is missing is created, a database that is missing is created, an ownership that drifted is
- * put back. A resource the deployment no longer declares is left exactly where it is.
+ * put back, an idp client nobody remembers is recreated or rotated. A resource the deployment no
+ * longer declares is left exactly where it is.
+ *
+ * <p><b>Two resource types now, dispatched by {@link ResourceSpec.Type}</b>: {@code postgresql} over
+ * {@link ResourceProvisioner}, one idempotent {@code ensure} call; {@code idp-client} over {@link
+ * IdpClientProvisioner}, a read and up to two writes, because qits-idp's own API has no single call
+ * that means "converge, whatever the state" — see that interface's javadoc. The admin password is
+ * read, and demanded, only when a postgres resource is actually declared: an idp-only declaration
+ * needs no postgres credential at all.
  */
 @ApplicationScoped
 public class ResourceProvisioning {
@@ -44,7 +52,7 @@ public class ResourceProvisioning {
   /** Every platform repository carries it, and no database identifier may. */
   private static final String NAME_PREFIX = "qits-";
 
-  /** The one resource type, and the application name the platform's postgres deploys under. */
+  /** The postgres resource type, and the application name the platform's postgres deploys under. */
   static final String POSTGRES_APPLICATION = "qits-oci-postgresql";
 
   /**
@@ -56,11 +64,26 @@ public class ResourceProvisioning {
 
   static final String RESOURCE_TYPE = "postgresql";
 
+  /**
+   * The idp client's fixed resource name — reserved, because there is one idp per platform and
+   * therefore nothing for a repository to name. {@code DeploymentSpecParser} refuses a repository
+   * that tries to use it for a postgres resource instead.
+   */
+  static final String IDP_RESOURCE_NAME = "idp";
+
+  static final String IDP_RESOURCE_TYPE = "idp-client";
+
+  /** The application qits-platform-idp deploys under, and the port every service reaches it on. */
+  static final String IDP_APPLICATION = "qits-platform-idp";
+
+  static final int IDP_PORT = 8080;
+
   /** 128 bits, hex — argv-safe, URL-safe, and it needs no quoting in a SQL string literal. */
   private static final int PASSWORD_BYTES = 16;
 
   @Inject PdResourceRepository resources;
   @Inject ResourceProvisioner provisioner;
+  @Inject IdpClientProvisioner idpClients;
 
   @ConfigProperty(name = "qits.platform.deployments.postgres.admin-username")
   String adminUsername;
@@ -68,18 +91,28 @@ public class ResourceProvisioning {
   /**
    * Deliberately without a default. There is no password this repository could ship that would be
    * right, and a wrong one fails at the first CREATE ROLE with an authentication error nobody reads
-   * as "nothing configured this". Absent, a deployment that declares a resource fails naming the
-   * key — which is the only actionable thing to say.
+   * as "nothing configured this". Absent, a deployment that declares a postgres resource fails
+   * naming the key — which is the only actionable thing to say. Read only when a postgres resource
+   * is actually declared: an idp-only declaration never touches it.
    */
   @ConfigProperty(name = "qits.platform.deployments.postgres.admin-password")
   Optional<String> adminPassword;
 
   /**
    * One resource with its database resolved — what a {@code Target} carries. The spec's null
-   * database has been replaced by the convention here, so nothing downstream has to know there was
-   * ever a default.
+   * database has been replaced by the convention here for a postgres resource, so nothing downstream
+   * has to know there was ever a default; an idp-client resource's database stays null, because it
+   * has none.
+   *
+   * <p>The two-argument constructor keeps defaulting to {@link ResourceSpec.Type#POSTGRESQL}, so
+   * every existing caller of the postgres shape is unaffected.
    */
-  public record Resolved(String name, String database) {}
+  public record Resolved(String name, String database, ResourceSpec.Type type) {
+
+    public Resolved(String name, String database) {
+      this(name, database, ResourceSpec.Type.POSTGRESQL);
+    }
+  }
 
   /**
    * Fill in the databases the file left out, and refuse the collision only a resolved list can see.
@@ -87,7 +120,8 @@ public class ResourceProvisioning {
    * <p>The convention is {@code qits_} plus the application name without its {@code qits-} prefix,
    * dashes to underscores — so qits-artifacts gets {@code qits_artifacts} and this component gets
    * {@code qits_deployments}. It is resolved here, at registration, because this is the first place
-   * that knows the application's name; the parser never does.
+   * that knows the application's name; the parser never does. An {@code idp-client} entry has no
+   * database to resolve and passes through unchanged.
    *
    * <p>The parser already refused two entries naming one <b>literal</b> database. What it could not
    * see is two entries whose defaults collide, which after resolution is the same mistake, so it is
@@ -101,6 +135,10 @@ public class ResourceProvisioning {
     List<Resolved> resolved = new ArrayList<>();
     Set<String> databases = new HashSet<>();
     for (ResourceSpec spec : declared) {
+      if (spec.type() == ResourceSpec.Type.IDP_CLIENT) {
+        resolved.add(new Resolved(spec.name(), null, spec.type()));
+        continue;
+      }
       String database =
           spec.database() != null ? spec.database() : conventionDatabase(applicationName);
       if (!databases.add(database)) {
@@ -111,7 +149,7 @@ public class ResourceProvisioning {
                 + database
                 + "` — name one of them explicitly");
       }
-      resolved.add(new Resolved(spec.name(), database));
+      resolved.add(new Resolved(spec.name(), database, spec.type()));
     }
     return List.copyOf(resolved);
   }
@@ -127,6 +165,16 @@ public class ResourceProvisioning {
   }
 
   /**
+   * Make every declared resource exist and answer with what to inject for it — the environment
+   * plane's shape, where {@code idp:client} is never declared (D10) and no caller needs to name a
+   * plane. Delegates to the four-argument form with {@link PdDeploymentTarget#ENVIRONMENT}.
+   */
+  public List<DeploymentDriver.ResourceBinding> ensureAll(
+      String applicationName, String environmentName, List<Resolved> declared) {
+    return ensureAll(applicationName, environmentName, PdDeploymentTarget.ENVIRONMENT, declared);
+  }
+
+  /**
    * Make every declared resource exist and answer with what to inject for it.
    *
    * <p><b>The tier is part of the key and there is always one.</b> It used to be null for a
@@ -138,33 +186,57 @@ public class ResourceProvisioning {
    * same name for its own rows, from the same designation, which is what keeps this component's
    * first self-deploy on the no-op arm rather than rotating a password its pools are holding.
    *
+   * <p>{@code target} decides nothing about postgres — the tier's instance is the tier's instance on
+   * either plane — but it is what an idp-client resource's client id is derived with: {@link
+   * PdNetworks#alias} answers bare for the platform plane and tier-qualified for an environment one.
+   *
    * @param environmentName the tier — the designated platform environment for a platform service
-   * @throws ResourceException with an operator-facing sentence, and no password in it
+   * @param target which plane this deployment is on
+   * @throws ResourceException with an operator-facing sentence, and no credential in it
    */
   public List<DeploymentDriver.ResourceBinding> ensureAll(
-      String applicationName, String environmentName, List<Resolved> declared) {
+      String applicationName,
+      String environmentName,
+      PdDeploymentTarget target,
+      List<Resolved> declared) {
     if (declared == null || declared.isEmpty()) {
       return List.of();
     }
-    String host = postgresHost(environmentName);
-    String admin =
-        adminPassword
-            .map(String::strip)
-            .filter(password -> !password.isEmpty())
-            .orElseThrow(
-                () ->
-                    new ResourceException(
-                        "this deployment declares resources and nothing configured"
-                            + " qits.platform.deployments.postgres.admin-password"));
+    if (environmentName == null) {
+      throw new ResourceException(
+          "this deployment declares resources and names no environment, so there is nowhere to"
+              + " provision them — designate a platform environment");
+    }
+
+    boolean needsPostgres =
+        declared.stream().anyMatch(r -> r.type() == ResourceSpec.Type.POSTGRESQL);
+    String host = needsPostgres ? PdNetworks.alias(environmentName, POSTGRES_APPLICATION) : null;
+    String admin = needsPostgres ? requireAdminPassword() : null;
 
     List<DeploymentDriver.ResourceBinding> bindings = new ArrayList<>();
     for (Resolved resource : declared) {
-      bindings.add(ensure(applicationName, environmentName, host, admin, resource));
+      bindings.add(
+          switch (resource.type()) {
+            case POSTGRESQL ->
+                ensurePostgres(applicationName, environmentName, host, admin, resource);
+            case IDP_CLIENT -> ensureIdpClient(applicationName, environmentName, target, resource);
+          });
     }
     return List.copyOf(bindings);
   }
 
-  private DeploymentDriver.ResourceBinding ensure(
+  private String requireAdminPassword() {
+    return adminPassword
+        .map(String::strip)
+        .filter(password -> !password.isEmpty())
+        .orElseThrow(
+            () ->
+                new ResourceException(
+                    "this deployment declares resources and nothing configured"
+                        + " qits.platform.deployments.postgres.admin-password"));
+  }
+
+  private DeploymentDriver.ResourceBinding ensurePostgres(
       String applicationName,
       String environmentName,
       String host,
@@ -236,6 +308,7 @@ public class ResourceProvisioning {
               row.resourceType = RESOURCE_TYPE;
               row.databaseName = database;
               row.roleName = database;
+              row.clientId = null;
               row.password = inEffect;
               row.lastProvisionedAt = Instant.now();
               // Persist LAST, with every not-null column set: Hibernate queues the insert with the
@@ -248,29 +321,135 @@ public class ResourceProvisioning {
     LOG.infof(
         "Resource %s of %s (%s) is database %s on %s",
         name, applicationName, environmentName == null ? "platform" : environmentName, database, host);
-    return new DeploymentDriver.ResourceBinding(
+    return DeploymentDriver.ResourceBinding.postgres(
         name, "jdbc:postgresql://" + host + ":" + POSTGRES_PORT + "/" + database, database, inEffect);
   }
 
   /**
-   * Which postgres this deployment's resources live on: its own tier's instance, at the wire alias
-   * that tier's postgres answers to — derived rather than configured, because it is the same
-   * derivation every other address on the platform uses.
+   * The four-arm idp-client matrix — the registry row crossed with what qits-idp answers for the
+   * client id:
    *
-   * <p><b>There is one branch fewer here than there was.</b> A platform-plane deployment had no
-   * tier and this method reached for the designated environment's on its behalf; a platform service
-   * is deployed into that very environment now, so the tier arrives on the {@link
-   * DeployService.Target} and the answer is the same address by the ordinary route. The refusal
-   * survives as the guard it always was — a queued deployment cannot get here without a tier, since
-   * both register arms come from {@code entryTiers()} and return nothing when none is designated.
+   * <table>
+   *   <caption>the matrix</caption>
+   *   <tr><th>row</th><th>idp</th><th>action</th></tr>
+   *   <tr><td>present</td><td>present</td><td>nothing; inject the stored secret</td></tr>
+   *   <tr><td>present</td><td>absent</td><td>create → store → inject</td></tr>
+   *   <tr><td>absent</td><td>present</td><td>rotate → store → inject</td></tr>
+   *   <tr><td>absent</td><td>absent</td><td>create → store → inject (409 falls back to rotate
+   *       once)</td></tr>
+   * </table>
+   *
+   * <p>The presence check is one {@code GET} and is always made — it is what tells "nothing to do"
+   * apart from "the row is stale", which a caller cannot see from its own registry alone.
    */
-  private String postgresHost(String environmentName) {
-    if (environmentName == null) {
-      throw new ResourceException(
-          "this deployment declares resources and names no environment, so there is no postgres to"
-              + " provision on — designate a platform environment");
+  private DeploymentDriver.ResourceBinding ensureIdpClient(
+      String applicationName, String environmentName, PdDeploymentTarget target, Resolved resource) {
+    String clientId =
+        PdIdentifiers.requireName(
+            PdNetworks.alias(target, environmentName, applicationName), "idp client id");
+
+    // The registry read, and the cross-application check, in one bracket — the postgres arm's own
+    // shape. Structurally this should never fire (the client id is derived one-to-one from
+    // (application, environment, plane)), but a derivation bug is exactly the case worth refusing
+    // loudly rather than handing one application's credential to another's container.
+    String stored =
+        QuarkusTransaction.requiringNew()
+            .call(
+                () -> {
+                  for (PdResource claim : resources.listByClientId(clientId)) {
+                    if (!claim.applicationName.equals(applicationName)) {
+                      throw new ResourceException(
+                          "the idp client "
+                              + clientId
+                              + " is already provisioned for "
+                              + claim.applicationName
+                              + " — two applications cannot share one idp client");
+                    }
+                  }
+                  return resources
+                      .findOne(applicationName, environmentName, IDP_RESOURCE_NAME)
+                      .map(row -> row.password)
+                      .orElse(null);
+                });
+
+    // OUTSIDE any transaction, deliberately — see the class javadoc.
+    boolean idpHasIt = idpClients.databaseClientPresent(clientId);
+
+    String secret = stored;
+    if (stored == null || !idpHasIt) {
+      IdpClientProvisioner.Result result;
+      if (stored != null) {
+        // present/absent: idp lost the database row a reset or a restore would explain; a fresh
+        // client replaces the stale secret, since qits-idp never accepts a caller-supplied one.
+        result = idpClients.create(clientId);
+      } else if (idpHasIt) {
+        // absent/present: this registry lost its row, but idp already knows the client — rotate.
+        result = rotateGuarded(applicationName, clientId);
+      } else {
+        // absent/absent: create, falling back to one rotate on a 409 — a drift the presence check
+        // above did not catch, such as another process creating it between the two calls.
+        IdpClientProvisioner.Result created = idpClients.create(clientId);
+        result = created.conflict() ? rotateGuarded(applicationName, clientId) : created;
+      }
+      if (!result.ok()) {
+        throw new ResourceException(
+            "could not provision the idp client " + clientId + ": " + result.detail());
+      }
+      secret = result.secret();
+      String freshSecret = secret;
+      QuarkusTransaction.requiringNew()
+          .run(() -> storeIdpRow(applicationName, environmentName, clientId, freshSecret));
     }
-    return PdNetworks.alias(environmentName, POSTGRES_APPLICATION);
+
+    LOG.infof(
+        "Resource %s of %s (%s) is the idp client %s",
+        IDP_RESOURCE_NAME, applicationName, environmentName == null ? "platform" : environmentName,
+        clientId);
+    return DeploymentDriver.ResourceBinding.idp(IDP_RESOURCE_NAME, idpUrl(), clientId, secret);
+  }
+
+  /**
+   * The rotate arm, refused for this component's own client (D9): rotating the deployer's own
+   * secret mid-deployment would wedge the platform — no extras read, no idp call and no image pull
+   * work without it, and there is no third party left to redeploy it.
+   */
+  private IdpClientProvisioner.Result rotateGuarded(String applicationName, String clientId) {
+    if (BootResourceRegistration.APPLICATION.equals(applicationName)) {
+      throw new ResourceException(
+          "this is qits-deployments' own idp client, and it never rotates its own secret — a"
+              + " lost row is recovered by BootResourceRegistration from its own environment, not"
+              + " by asking qits-idp for a new one");
+    }
+    return idpClients.rotate(clientId);
+  }
+
+  private void storeIdpRow(
+      String applicationName, String environmentName, String clientId, String secret) {
+    Optional<PdResource> existing =
+        resources.findOne(applicationName, environmentName, IDP_RESOURCE_NAME);
+    PdResource row = existing.orElseGet(PdResource::new);
+    if (existing.isEmpty()) {
+      row.id = UUID.randomUUID().toString();
+      row.applicationName = applicationName;
+      row.environmentName = environmentName;
+      row.resourceName = IDP_RESOURCE_NAME;
+      row.createdAt = Instant.now();
+    }
+    row.resourceType = IDP_RESOURCE_TYPE;
+    row.databaseName = null;
+    row.roleName = null;
+    row.clientId = clientId;
+    row.password = secret;
+    row.lastProvisionedAt = Instant.now();
+    // Persist LAST, with every not-null column set — the postgres arm's own note applies here too.
+    if (existing.isEmpty()) {
+      resources.persist(row);
+    }
+  }
+
+  /** {@code http://qits-platform-idp:8080/idp} — derived, like the postgres host, never configured. */
+  private static String idpUrl() {
+    return "http://" + PdNetworks.platformAlias(IDP_APPLICATION) + ":" + IDP_PORT + "/idp";
   }
 
   /**

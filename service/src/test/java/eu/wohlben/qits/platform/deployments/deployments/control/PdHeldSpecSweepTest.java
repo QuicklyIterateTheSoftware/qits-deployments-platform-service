@@ -46,6 +46,7 @@ public class PdHeldSpecSweepTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
   @Inject FakeDeclarationSeed seeds;
   @Inject PdDeploymentRepository deployments;
 
@@ -54,6 +55,7 @@ public class PdHeldSpecSweepTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
     seeds.reset();
   }
 

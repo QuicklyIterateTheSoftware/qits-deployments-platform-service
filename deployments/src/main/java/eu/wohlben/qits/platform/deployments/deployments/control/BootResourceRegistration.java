@@ -93,6 +93,28 @@ public class BootResourceRegistration {
    */
   static final List<String> RESOURCES = List.of(RESOURCE_NAME, EVENTSTREAM_RESOURCE_NAME);
 
+  /**
+   * The idp client's fixed resource name — {@code ResourceProvisioning}'s own constant, mirrored
+   * here rather than shared: this class is warn-only at boot and must not fail to start over a
+   * missing dependency between two classes that record the same kind of row for different reasons.
+   */
+  static final String IDP_RESOURCE_NAME = "idp";
+
+  static final String IDP_RESOURCE_TYPE = "idp-client";
+
+  /**
+   * The idp triple's fallback names — today's {@code quarkus.oidc-client.configuration.*} extras,
+   * read directly rather than through {@code ${…}} because this class reads raw env, not config.
+   * This component does not declare {@code idp:client} for itself (D10), so {@code
+   * QITS_RESOURCE_IDP_*} stays unset today and every boot takes this fallback — the same pair the
+   * adapter and the {@code configuration} named oidc client both read.
+   */
+  static final String FALLBACK_URL = "QUARKUS_OIDC_CLIENT_CONFIGURATION_AUTH_SERVER_URL";
+
+  static final String FALLBACK_CLIENT_ID = "QUARKUS_OIDC_CLIENT_CONFIGURATION_CLIENT_ID";
+
+  static final String FALLBACK_CLIENT_SECRET = "QUARKUS_OIDC_CLIENT_CONFIGURATION_CREDENTIALS_SECRET";
+
   static final String ENVIRONMENT_VARIABLE = "QITS_ENVIRONMENT";
 
   @Inject PdResourceRepository resources;
@@ -122,6 +144,68 @@ public class BootResourceRegistration {
         LOG.warnf(e, "Could not record this instance's own %s resource row", resourceName);
       }
     }
+    try {
+      recordIdp(environmentName);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Could not record this instance's own idp resource row");
+    }
+  }
+
+  /**
+   * The idp triple, in its own method rather than folded into the loop above: it has no database to
+   * derive from a url, its resource type is a different word, and its fallback is a THIRD env
+   * family rather than the postgres siblings' own name. Package-private for its own test.
+   */
+  void recordIdp(String environmentName) {
+    Optional<String> url =
+        value(variable(IDP_RESOURCE_NAME, "URL")).or(() -> value(FALLBACK_URL));
+    Optional<String> clientId =
+        value(variable(IDP_RESOURCE_NAME, "CLIENT_ID")).or(() -> value(FALLBACK_CLIENT_ID));
+    Optional<String> secret =
+        value(variable(IDP_RESOURCE_NAME, "CLIENT_SECRET")).or(() -> value(FALLBACK_CLIENT_SECRET));
+    if (url.isEmpty() || clientId.isEmpty() || secret.isEmpty()) {
+      LOG.debugf(
+          "Not recording this instance's own idp resource: it was started without the full"
+              + " %s triple or the %s/%s/%s fallback",
+          variable(IDP_RESOURCE_NAME, "*"), FALLBACK_URL, FALLBACK_CLIENT_ID, FALLBACK_CLIENT_SECRET);
+      return;
+    }
+    recordIdp(clientId.get(), secret.get(), environmentName);
+  }
+
+  /**
+   * Upsert the idp row — {@link #record}'s shape, minus the database this resource type has none of.
+   * Package-private for the same reason {@link #record} is.
+   */
+  void recordIdp(String clientId, String secret, String environmentName) {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              Optional<PdResource> existing =
+                  resources.findOne(APPLICATION, environmentName, IDP_RESOURCE_NAME);
+              PdResource resource = existing.orElseGet(PdResource::new);
+              if (existing.isEmpty()) {
+                resource.id = UUID.randomUUID().toString();
+                resource.applicationName = APPLICATION;
+                resource.environmentName = environmentName;
+                resource.resourceName = IDP_RESOURCE_NAME;
+                resource.createdAt = Instant.now();
+              }
+              resource.resourceType = IDP_RESOURCE_TYPE;
+              resource.databaseName = null;
+              resource.roleName = null;
+              resource.clientId = clientId;
+              resource.password = secret;
+              // Deliberately NOT touched, the postgres siblings' own note: this component provisioned
+              // nothing here either, and a timestamp would claim a check that never happened.
+              // resource.lastProvisionedAt stays as it is.
+              if (existing.isEmpty()) {
+                resources.persist(resource);
+              }
+            });
+    LOG.infof(
+        "Recorded this instance's own resource: %s/idp is the idp client %s",
+        environmentName == null ? "platform" : environmentName, clientId);
   }
 
   /**

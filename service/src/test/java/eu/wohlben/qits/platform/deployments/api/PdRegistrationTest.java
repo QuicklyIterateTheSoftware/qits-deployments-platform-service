@@ -11,6 +11,7 @@ import eu.wohlben.qits.platform.deployments.deployments.control.DeployService;
 import eu.wohlben.qits.platform.deployments.deployments.control.DeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProvisioner;
+import eu.wohlben.qits.platform.deployments.deployments.control.FakeIdpClientProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
@@ -47,6 +48,7 @@ public class PdRegistrationTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
   @Inject DeployService deployService;
 
   @BeforeEach
@@ -54,6 +56,7 @@ public class PdRegistrationTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
   }
 
   @Test

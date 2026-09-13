@@ -363,6 +363,43 @@ class DeploymentSpecParserTest {
   }
 
   @Test
+  void anIdpClientResourceIsTheReservedNameWithNoDatabase() {
+    // idp:client names no resource of its own — there is one idp per platform, so there is nothing
+    // for a repository to call it — and it carries the second Type.
+    assertEquals(
+        List.of(new ResourceSpec("idp", null, ResourceSpec.Type.IDP_CLIENT)),
+        parse("resources: idp:client\n").resources());
+    // Alongside a postgres resource, on one line, exactly like two postgres resources are.
+    assertEquals(
+        List.of(
+            new ResourceSpec("db", null),
+            new ResourceSpec("idp", null, ResourceSpec.Type.IDP_CLIENT)),
+        parse("resources: postgresql:db, idp:client\n").resources());
+  }
+
+  @Test
+  void idpAloneOrWithTheWrongSecondSegmentIsAnError() {
+    assertTrue(messageOf("resources: idp\n").contains("resources"), "idp with no colon at all");
+    assertTrue(messageOf("resources: idp:secret\n").contains("idp"), "idp knows only client");
+    assertTrue(
+        messageOf("resources: idp:client:extra\n").contains("idp"),
+        "idp:client refuses a third segment — there is nothing to name");
+  }
+
+  @Test
+  void idpClientTwiceIsAnErrorTheSameWayARepeatedNameIs() {
+    assertTrue(messageOf("resources: idp:client, idp:client\n").contains("twice"));
+  }
+
+  @Test
+  void postgresqlIdpIsRefusedBecauseTheNameIsReserved() {
+    // A repository cannot shadow the idp:client resource's fixed name with a postgres resource of
+    // its own — the reservation is the point, not an accident of the charset.
+    assertTrue(messageOf("resources: postgresql:idp\n").contains("reserved"));
+    assertTrue(messageOf("resources: postgresql:idp:qits_something\n").contains("reserved"));
+  }
+
+  @Test
   void aResourceNameOrDatabaseOutsideItsCharsetIsAnError() {
     // Both values are repository-authored and both end up somewhere that cannot be parametrized —
     // the name in an env key on a docker run, the database in DDL against the platform's shared

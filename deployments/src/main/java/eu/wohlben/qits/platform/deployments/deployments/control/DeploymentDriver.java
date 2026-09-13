@@ -516,17 +516,52 @@ public interface DeploymentDriver {
 
   /**
    * One provisioned resource, as the service is told about it: {@code
-   * QITS_RESOURCE_<NAME>_URL/_USERNAME/_PASSWORD}, with {@code name} uppercased and its dashes
-   * underscored.
+   * QITS_RESOURCE_<NAME>_<SUFFIX>} for each of {@code values}, in order, with {@code name}
+   * uppercased and its dashes underscored.
    *
-   * <p><b>The contract is generic on purpose.</b> An application maps these three variables in its
-   * own shipped configuration defaults — this component names no framework and no datasource key,
-   * so a Quarkus service, a plain image and whatever comes next are all deployed by the same code.
+   * <p><b>The contract is generic on purpose, and it generalised the day a second resource type
+   * arrived.</b> A postgres resource carries {@code URL}/{@code USERNAME}/{@code PASSWORD}; an
+   * idp-client resource carries {@code URL}/{@code CLIENT_ID}/{@code CLIENT_SECRET} — two different
+   * shapes an application maps in its own shipped configuration defaults, and this component names
+   * no framework and no datasource key for either. {@link #postgres} and {@link #idp} are the two
+   * shapes today; a third resource type adds a third factory rather than a new field.
    *
-   * <p>The password here is a value this component generated and holds in its own registry. Nothing
-   * arriving over HTTP contributes it, and nothing writes it to a log.
+   * <p>Every value here is one this component generated or received from the resource's own server
+   * and holds in its own registry. Nothing arriving over HTTP contributes it, and nothing writes it
+   * to a log.
    */
-  record ResourceBinding(String name, String url, String username, String password) {}
+  record ResourceBinding(String name, List<Value> values) {
+
+    /** One {@code QITS_RESOURCE_<NAME>_<suffix>} entry — {@code suffix} is upper-cased already. */
+    public record Value(String suffix, String value) {}
+
+    /** The postgres shape: {@code URL}, {@code USERNAME}, {@code PASSWORD}, in that order. */
+    public static ResourceBinding postgres(String name, String url, String username, String password) {
+      return new ResourceBinding(
+          name,
+          List.of(new Value("URL", url), new Value("USERNAME", username), new Value("PASSWORD", password)));
+    }
+
+    /** The idp-client shape: {@code URL}, {@code CLIENT_ID}, {@code CLIENT_SECRET}, in that order. */
+    public static ResourceBinding idp(String name, String url, String clientId, String clientSecret) {
+      return new ResourceBinding(
+          name,
+          List.of(
+              new Value("URL", url),
+              new Value("CLIENT_ID", clientId),
+              new Value("CLIENT_SECRET", clientSecret)));
+    }
+
+    /** The value carried for one suffix, or null when this binding carries none by that name. */
+    public String value(String suffix) {
+      for (Value entry : values) {
+        if (entry.suffix().equals(suffix)) {
+          return entry.value();
+        }
+      }
+      return null;
+    }
+  }
 
   enum PullOutcome {
     OK,

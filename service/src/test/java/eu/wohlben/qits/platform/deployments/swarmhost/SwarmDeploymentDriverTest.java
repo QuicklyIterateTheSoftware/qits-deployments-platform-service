@@ -1034,7 +1034,7 @@ class SwarmDeploymentDriverTest {
                     PdDeploymentTarget.ENVIRONMENT,
                     DeploymentDriver.UpdateOrder.START_FIRST,
                     List.of(
-                        new DeploymentDriver.ResourceBinding(
+                        DeploymentDriver.ResourceBinding.postgres(
                             "read-replica",
                             "jdbc:postgresql://dev-qits-oci-postgresql:5432/qits_gateway",
                             "qits_gateway",
@@ -1048,6 +1048,52 @@ class SwarmDeploymentDriverTest {
         argv.toString());
     assertTrue(argv.contains("QITS_RESOURCE_READ_REPLICA_USERNAME=qits_gateway"));
     assertTrue(argv.contains("QITS_RESOURCE_READ_REPLICA_PASSWORD=0123456789abcdef"));
+  }
+
+  @Test
+  void anIdpClientResourceArrivesAsItsOwnThreeVariables() {
+    // The second resource type's shape: URL / CLIENT_ID / CLIENT_SECRET rather than postgres'
+    // URL / USERNAME / PASSWORD — the same loop, a different ordered list of suffixes.
+    List<String> argv =
+        driver()
+            .buildCreateArgv(
+                spec(
+                    PdDeploymentTarget.ENVIRONMENT,
+                    DeploymentDriver.UpdateOrder.START_FIRST,
+                    List.of(
+                        DeploymentDriver.ResourceBinding.idp(
+                            "idp",
+                            "http://qits-platform-idp:8080/idp",
+                            "dev-qits-gateway",
+                            "an-idp-issued-secret"))),
+                "dev-qits-gateway",
+                List.of("qits-net"));
+
+    assertTrue(argv.contains("QITS_RESOURCE_IDP_URL=http://qits-platform-idp:8080/idp"), argv.toString());
+    assertTrue(argv.contains("QITS_RESOURCE_IDP_CLIENT_ID=dev-qits-gateway"), argv.toString());
+    assertTrue(argv.contains("QITS_RESOURCE_IDP_CLIENT_SECRET=an-idp-issued-secret"), argv.toString());
+    assertFalse(argv.contains("QITS_RESOURCE_IDP_USERNAME=dev-qits-gateway"), "not the postgres shape");
+  }
+
+  @Test
+  void anUpdateNeverRemovesAProvisionedIdpClientTriple() {
+    // QITS_RESOURCE_* is a prefix, not a list of three names — the idp shape is covered by the
+    // exact guard the postgres triple is, and this pins it under its own keys rather than trusting
+    // that the prefix test above generalises.
+    SwarmDeploymentDriver driver = driver();
+    cli.script(
+        SwarmDeploymentDriver.SPEC_ENV_FORMAT,
+        result(
+            0,
+            "QITS_ENVIRONMENT=dev\n"
+                + "QITS_APPLICATION=qits-gateway\n"
+                + "QITS_RESOURCE_IDP_URL=http://qits-platform-idp:8080/idp\n"
+                + "QITS_RESOURCE_IDP_CLIENT_ID=dev-qits-gateway\n"
+                + "QITS_RESOURCE_IDP_CLIENT_SECRET=an-idp-issued-secret\n"));
+
+    List<String> argv = driver.buildUpdateArgv(spec(), "dev-qits-gateway");
+
+    assertFalse(argv.contains("--env-rm"), "the idp triple is never removed: " + argv);
   }
 
   @Test

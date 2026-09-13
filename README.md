@@ -129,10 +129,12 @@ charset allowlist, because it grants the repository nothing it does not already 
 container — only a length cap and one line.
 
 `resources:` is what a repository asks to have **provisioned before its container starts**. The
-grammar is flat, because this file has no YAML sequences: `postgresql:<name>[:<database>]`,
-comma-separated. Omit the database and it defaults to `qits_` plus the application name without its
-`qits-` prefix. Before the cutover, this component idempotently creates the login role and the
-database on its tier's postgres and then starts the container with
+grammar is flat, because this file has no YAML sequences: `postgresql:<name>[:<database>]` for a
+role and database of the repository's own, or the reserved `idp:client` for a qits-idp service
+client — comma-separated, one or more of either. Omit a postgres database and it defaults to
+`qits_` plus the application name without its `qits-` prefix. Before the cutover, this component
+idempotently creates the login role and the database on its tier's postgres and then starts the
+container with
 
 ```
 QITS_RESOURCE_<NAME>_URL       jdbc:postgresql://<tier>-qits-oci-postgresql:5432/<database>
@@ -140,11 +142,26 @@ QITS_RESOURCE_<NAME>_USERNAME  <database>        # the role IS the database, one
 QITS_RESOURCE_<NAME>_PASSWORD  generated here, stored in pd_resource, never in a file
 ```
 
-The contract is **generic on purpose**: an application maps those three in its own shipped config
-defaults, so this component names no framework and no datasource key. It is idempotent because it
-runs on every deployment — a redeployment changes nothing, a reset postgres volume brings the role
-back with the recorded password, and a reset registry rotates a password nothing knew any more.
-**Never a `DROP`.** This component is adopter #1: its own store is a database provisioned this way.
+`idp:client` asks qits-idp for a service client instead — created or rotated, never handed a
+caller-supplied secret, under the fixed resource name `idp` (reserved: a repository cannot use it
+for a postgres resource of its own, since there is one idp per platform and nothing to name). It
+starts the container with the same generic shape, three variables instead:
+
+```
+QITS_RESOURCE_IDP_URL            http://qits-platform-idp:8080/idp          # derived, like the postgres host
+QITS_RESOURCE_IDP_CLIENT_ID      this deployment's own wire alias (PdNetworks.alias)
+QITS_RESOURCE_IDP_CLIENT_SECRET  issued by qits-idp, stored in pd_resource, never in a file
+```
+
+The contract is **generic on purpose**: an application maps those variables in its own shipped
+config defaults, so this component names no framework and no datasource key for either resource
+type. Both are idempotent because they run on every deployment — a redeployment changes nothing, a
+reset postgres volume brings the role back with the recorded password, a reset registry rotates a
+password or a secret nothing knew any more, and an idp client nobody remembers is recreated rather
+than left broken. **Never a `DROP`, and never a rotate of qits-deployments' own idp client** — this
+component is adopter #1 of the postgres resource (its own store is a database provisioned this
+way), and it deliberately does not adopt `idp:client` for itself yet (rotating itself mid-deployment
+would wedge the platform with nobody left to redeploy it).
 
 A repository with **no file** gets every default and behaves exactly as it did before the file
 existed. A file that cannot be read or parsed **fails the deployment** with the cause on the row —
@@ -371,9 +388,12 @@ serving, and the sha a rollback would put back.
 - **Every endpoint carries a role, and the role says who the caller is meant to be.** The reads
   need `qits:admin`, which reaches this service only as a forwarded header — an admin
   session through the edge, or the bootstrap's own hop. The pins, the topology writes and the
-  build-succeeded intake need `qits-platform:system`, which qits-platform-idp puts in a machine
-  token's `groups` claim. The two sets do not overlap: a machine cannot read the surface and a
-  browser session cannot write it. The writes and the intake additionally call `MachineAuth.require()`
+  build-succeeded intake need `qits-platform:system` **or `qits:system`** (additive: a machine
+  token carries either or both, and both are accepted), which qits-platform-idp puts in a machine
+  token's `groups` claim — `qits:system` is the open calling model's "a service calling a service"
+  role, and `qits-platform:system` is the one it is replacing over time. The two sets — the system
+  roles and `qits:admin` — do not overlap: a machine cannot read the surface and a browser session
+  cannot write it. The writes and the intake additionally call `MachineAuth.require()`
   (audience `qits-platform-deployments`), behind a gate that ships **off** —
   `QITS_AUTH_MACHINE_REQUIRED=true` turns it on, only once the senders are sending.
 
