@@ -45,6 +45,7 @@ public class PdApplicationScaleTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
   @Inject DeploymentObserver observer;
   @Inject DeployService deployService;
   @Inject PdDeploymentRepository deployments;
@@ -54,6 +55,7 @@ public class PdApplicationScaleTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
   }
 
   /**

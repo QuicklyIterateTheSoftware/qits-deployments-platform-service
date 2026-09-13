@@ -408,6 +408,53 @@ public class PdSchemaTest {
     }
   }
 
+  @Test
+  public void v12LetsAnIdpClientRowLeaveDatabaseAndRoleNullAndCarryAClientId() throws Exception {
+    // Migrate to V11 first and insert an ordinary postgres row, so V12's ALTER runs against a
+    // schema holding real data — the shape V8's backfill test is written in, applied to a migration
+    // that widens rather than backfills.
+    String url = EmbeddedPg.url("pd_deployments_" + UUID.randomUUID().toString().replace("-", ""));
+    migrate(url, "11");
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      resource(sql, "r-pg", "qits-ci", "'dev'", "db", "qits_ci");
+    }
+
+    migrate(url, null);
+
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      // The pre-V12 postgres row reads back exactly as it did — nothing backfilled, nothing lost.
+      assertEquals(
+          List.of("qits_ci|qits_ci"),
+          rows(sql, "select database_name || '|' || role_name from pd_resource where id = 'r-pg'"));
+
+      // An idp-client row: no database, no role, and the new client_id column instead.
+      sql.execute(
+          "insert into pd_resource (id, application_name, environment_name, resource_name,"
+              + " resource_type, client_id, password, created_at) values ('r-idp', 'qits-ci',"
+              + " 'dev', 'idp', 'idp-client', 'dev-qits-ci', 'not-a-real-secret', timestamp with"
+              + " time zone '2026-09-13 12:00:00Z')");
+
+      assertEquals(
+          List.of("dev-qits-ci"),
+          rows(sql, "select client_id from pd_resource where id = 'r-idp'"));
+      assertEquals(
+          List.of(""),
+          rows(sql, "select coalesce(database_name, '') from pd_resource where id = 'r-idp'"),
+          "database_name and role_name accept null now — an idp client has neither");
+      assertEquals(
+          List.of(""),
+          rows(sql, "select coalesce(role_name, '') from pd_resource where id = 'r-idp'"));
+
+      // The index exists and is usable — the same "is this id already claimed" question the
+      // database name index answers for postgres resources.
+      assertEquals(
+          List.of("r-idp"),
+          rows(sql, "select id from pd_resource where client_id = 'dev-qits-ci'"));
+    }
+  }
+
   private static void request(
       Statement sql, String id, String applicationName, String version, String priority)
       throws SQLException {

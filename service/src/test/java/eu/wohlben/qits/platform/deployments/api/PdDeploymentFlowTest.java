@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeclarationSeed;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProvisioner;
+import eu.wohlben.qits.platform.deployments.deployments.control.FakeIdpClientProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.ResourceProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.DeployService;
@@ -63,6 +64,7 @@ public class PdDeploymentFlowTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
   @Inject FakeDeclarationSeed declarations;
   @Inject DeployService deployService;
   @Inject PdDeploymentRepository deployments;
@@ -72,6 +74,7 @@ public class PdDeploymentFlowTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
     declarations.reset();
   }
 

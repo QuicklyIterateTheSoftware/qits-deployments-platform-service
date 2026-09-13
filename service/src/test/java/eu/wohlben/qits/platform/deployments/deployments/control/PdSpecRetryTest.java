@@ -50,6 +50,7 @@ public class PdSpecRetryTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
   @Inject FakeDeclarationSeed seeds;
 
   /** The bus door, for the one case whose rule is the bus door's — see the method. */
@@ -60,6 +61,7 @@ public class PdSpecRetryTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
     seeds.reset();
   }
 

@@ -59,6 +59,7 @@ public class PdSwarmDeployFlowTest {
   @Inject FakeDeploymentDriver fake;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
 
   @Inject
   @PersistenceUnit("eventstream")
@@ -68,6 +69,7 @@ public class PdSwarmDeployFlowTest {
   void reset() {
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
     fake.reset();
     QuarkusTransaction.requiringNew()
         .run(() -> outbox.createQuery("delete from OutboxEvent").executeUpdate());

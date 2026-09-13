@@ -42,6 +42,7 @@ public class PdDeploymentObservationTest {
   @Inject FakeDeploymentDriver driver;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
   @Inject DeploymentObserver observer;
   @Inject DeployService deployService;
   @Inject PdDeploymentRepository deployments;
@@ -51,6 +52,7 @@ public class PdDeploymentObservationTest {
     driver.reset();
     specs.reset();
     provisioner.reset();
+    idpProvisioner.reset();
   }
 
   private String deployment(

@@ -1,8 +1,10 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdResource;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdResourceRepository;
@@ -272,6 +274,109 @@ public class BootResourceRegistrationTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> BootResourceRegistration.databaseOf("jdbc:postgresql://host:5432/"));
+  }
+
+  @Test
+  public void theIdpRowIsRecordedDirectly() {
+    registration.recordIdp("boot-g-idp-client", "an-idp-secret", "boot-g");
+
+    PdResource row = rowOf("boot-g", BootResourceRegistration.IDP_RESOURCE_NAME);
+    assertEquals("qits-deployments", row.applicationName);
+    assertEquals("idp-client", row.resourceType);
+    assertEquals("boot-g-idp-client", row.clientId);
+    assertEquals("an-idp-secret", row.password);
+    assertNull(row.databaseName, "an idp client has no database");
+    assertNull(row.roleName, "an idp client has no role");
+  }
+
+  @Test
+  public void aBootWithTheFullQitsResourceIdpTripleRecordsTheRow() {
+    System.setProperty(BootResourceRegistration.variable("idp", "URL"), "http://qits-platform-idp:8080/idp");
+    System.setProperty(BootResourceRegistration.variable("idp", "CLIENT_ID"), "boot-h-idp-client");
+    System.setProperty(BootResourceRegistration.variable("idp", "CLIENT_SECRET"), "the-resource-secret");
+    try {
+      registration.recordIdp("boot-h");
+    } finally {
+      System.clearProperty(BootResourceRegistration.variable("idp", "URL"));
+      System.clearProperty(BootResourceRegistration.variable("idp", "CLIENT_ID"));
+      System.clearProperty(BootResourceRegistration.variable("idp", "CLIENT_SECRET"));
+    }
+
+    PdResource row = rowOf("boot-h", BootResourceRegistration.IDP_RESOURCE_NAME);
+    assertEquals("boot-h-idp-client", row.clientId);
+    assertEquals("the-resource-secret", row.password);
+  }
+
+  @Test
+  public void aBootWithOnlyTheConfigurationExtrasFallbackStillRecordsTheRow() {
+    // This component does not declare idp:client for itself yet (D10), so every boot today takes
+    // this arm — the pair the `configuration` named oidc client and the HTTP adapter both read.
+    System.setProperty(BootResourceRegistration.FALLBACK_URL, "http://qits-platform-idp:8080/idp");
+    System.setProperty(BootResourceRegistration.FALLBACK_CLIENT_ID, "boot-i-fallback-client");
+    System.setProperty(BootResourceRegistration.FALLBACK_CLIENT_SECRET, "the-fallback-secret");
+    try {
+      registration.recordIdp("boot-i");
+    } finally {
+      System.clearProperty(BootResourceRegistration.FALLBACK_URL);
+      System.clearProperty(BootResourceRegistration.FALLBACK_CLIENT_ID);
+      System.clearProperty(BootResourceRegistration.FALLBACK_CLIENT_SECRET);
+    }
+
+    PdResource row = rowOf("boot-i", BootResourceRegistration.IDP_RESOURCE_NAME);
+    assertEquals("boot-i-fallback-client", row.clientId);
+    assertEquals("the-fallback-secret", row.password);
+  }
+
+  @Test
+  public void aBootWithOnlyAPartialIdpPairRecordsNothing() {
+    // Neither name family is complete — the client id alone, with no url and no secret from either
+    // family. Warn-only: this component must still start, and there is nothing safe to record.
+    System.setProperty(BootResourceRegistration.variable("idp", "CLIENT_ID"), "boot-j-partial-client");
+    try {
+      registration.recordIdp("boot-j");
+    } finally {
+      System.clearProperty(BootResourceRegistration.variable("idp", "CLIENT_ID"));
+    }
+
+    assertTrue(
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    resources
+                        .findOne(
+                            BootResourceRegistration.APPLICATION,
+                            "boot-j",
+                            BootResourceRegistration.IDP_RESOURCE_NAME)
+                        .isEmpty()),
+        "a partial pair records nothing rather than a half-true row");
+  }
+
+  @Test
+  public void theIdpRowNeverBlocksTheOtherTwoResourcesOnStartup() {
+    // onStart's own arrangement: this is the shape, proven at the unit the startup observer calls
+    // package-privately, the PdSweepAdoptionTest stance the rest of this class already takes. A
+    // failure recording the idp row must not cost `db`/`eventstream` their rows — each resource
+    // recorded independently, the postgres siblings' own note.
+    registration.record(
+        BootResourceRegistration.RESOURCE_NAME,
+        "jdbc:postgresql://boot-k-qits-oci-postgresql:5432/qits_deployments_k",
+        "qits_deployments_k",
+        "a-registry-password",
+        "boot-k");
+    // No idp env at all: recordIdp is a no-op, and the postgres row above is untouched by it.
+    registration.recordIdp("boot-k");
+
+    assertEquals("qits_deployments_k", rowOf("boot-k").databaseName);
+    assertFalse(
+        QuarkusTransaction.requiringNew()
+            .call(
+                () ->
+                    resources
+                        .findOne(
+                            BootResourceRegistration.APPLICATION,
+                            "boot-k",
+                            BootResourceRegistration.IDP_RESOURCE_NAME)
+                        .isPresent()));
   }
 
   /** Inside a transaction, so the returned entity is managed and a field write is persisted. */

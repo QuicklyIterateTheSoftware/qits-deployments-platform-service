@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
@@ -24,10 +25,12 @@ public class ResourceProvisioningWithoutAdminPasswordTest {
 
   @Inject ResourceProvisioning provisioning;
   @Inject FakeResourceProvisioner provisioner;
+  @Inject FakeIdpClientProvisioner idpProvisioner;
 
   @BeforeEach
   void reset() {
     provisioner.reset();
+    idpProvisioner.reset();
   }
 
   @Test
@@ -53,5 +56,21 @@ public class ResourceProvisioningWithoutAdminPasswordTest {
   public void aDeploymentThatDeclaresNothingIsUnaffected() {
     // Which is every application on the platform today: the key is read only where it is needed.
     assertEquals(List.of(), provisioning.ensureAll("no-admin", "no-admin-env", List.of()));
+  }
+
+  @Test
+  public void anIdpOnlyDeclarationNeedsNoAdminPasswordAtAll() {
+    // The admin password is postgres' own credential; an idp:client resource never reads it. This
+    // is the proof rather than an inference: the key is unset in this profile and the call still
+    // succeeds.
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll(
+            "no-admin-idp",
+            "no-admin-env",
+            List.of(new ResourceProvisioning.Resolved("idp", null, ResourceSpec.Type.IDP_CLIENT)));
+
+    assertEquals(1, bindings.size());
+    assertEquals("idp", bindings.get(0).name());
+    assertEquals(List.of(), provisioner.requests(), "the postgres seam was never touched");
   }
 }
