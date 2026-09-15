@@ -580,7 +580,6 @@ paths:
       - Pd Environment Controller
       security:
       - SecurityScheme:
-        - qits-platform:system
         - qits:system
   /platform-deployments/api/environments/{environmentId}:
     patch:
@@ -619,7 +618,6 @@ paths:
       - Pd Environment Controller
       security:
       - SecurityScheme:
-        - qits-platform:system
         - qits:system
     get:
       summary: One environment with the applications it tracks
@@ -671,7 +669,6 @@ paths:
       - Pd Environment Controller
       security:
       - SecurityScheme:
-        - qits-platform:system
         - qits:system
   /platform-deployments/api/environments/{environmentId}/links:
     get:
@@ -721,7 +718,6 @@ paths:
       - Pd Pin Controller
       security:
       - SecurityScheme:
-        - qits-platform:system
         - qits:system
         - qits:agent
   /platform-deployments/api/services:
@@ -782,7 +778,6 @@ paths:
       - Pd Service Controller
       security:
       - SecurityScheme:
-        - qits-platform:system
         - qits:system
     delete:
       summary: Remove a service and its links
@@ -805,8 +800,7 @@ paths:
       - Pd Service Controller
       security:
       - SecurityScheme:
-        - qits-platform:system
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.912.174637
+  version: 2026.915.50701

@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The whole guarded surface with the gate on — the posture a deployment reaches by setting {@code
- * QITS_AUTH_MACHINE_REQUIRED=true} once qits-platform-idp grants the {@code
- * qits-platform-deployments} audience.
+ * QITS_AUTH_MACHINE_REQUIRED=true} once qits-platform-idp is minting the {@code qits-platform}
+ * audience.
  *
  * <p>Tokens are real: signed RS256, verified by quarkus-oidc against the public key in {@link
  * MachineGuardEnforcedProfile}. So these tests fail if the OIDC configuration in
@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
  *       forwarded {@code X-Qits-Roles} header: the platform edge asserts it for an authenticated
  *       admin session, and the bootstrap asserts it on its own hop over qits-net. A machine token
  *       never carries it, which is the point — the read surface is a person's.
- *   <li><b>{@code qits-platform:system}</b> — the pins, the topology writes and the build-succeeded
+ *   <li><b>{@code qits:system}</b> — the pins, the topology writes and the build-succeeded
  *       intake. qits-platform-idp copies it into every platform service client's {@code groups}
  *       claim, so a machine bearer carries it and a browser session does not.
  * </ul>
@@ -42,6 +42,13 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 @TestProfile(MachineGuardEnforcedProfile.class)
 class MachineGuardEnforcedTest {
+
+  /**
+   * The one audience this platform mints and the one {@code quarkus.oidc.token.audience} accepts. A
+   * literal, because the shipped properties state a literal: what a caller may do is decided by its
+   * roles, and never by which service its token was addressed to.
+   */
+  private static final String AUDIENCE = "qits-platform";
 
   private static final String ENVIRONMENTS = "/platform-deployments/api/environments";
   private static final String SERVICES = "/platform-deployments/api/services";
@@ -169,7 +176,7 @@ class MachineGuardEnforcedTest {
     // signed, correctly addressed, empty `groups`. It authenticates and covers nothing, which is a
     // 403 rather than the 401 an absent token gets — the distinction an operator needs to tell a
     // missing grant from a missing sender.
-    String roleless = "Bearer " + MachineTokens.rolelessToken("qits-ci", "qits-platform-deployments");
+    String roleless = "Bearer " + MachineTokens.rolelessToken("qits-ci", AUDIENCE);
 
     given()
         .contentType(ContentType.JSON)
@@ -244,15 +251,14 @@ class MachineGuardEnforcedTest {
   }
 
   @Test
-  void aQitsSystemOnlyTokenPassesEveryMachineDoor() {
-    // The additive acceptance: a client minted with only the open calling model's role must reach
-    // everything a `qits-platform:system` bearer does, with no other change to the surface.
-    String systemOnly =
-        "Bearer " + MachineTokens.systemOnlyToken("qits-ci", "qits-platform-deployments");
+  void aMachineBearerPassesEveryMachineDoor() {
+    // One sweep over the whole machine half with the credential a platform service client actually
+    // holds: the intake, both topology writes, the pins and both deletes, in one caller's hands.
+    String machineBearer = "Bearer " + MachineTokens.token("qits-ci", AUDIENCE);
 
     given()
         .contentType(ContentType.JSON)
-        .header("Authorization", systemOnly)
+        .header("Authorization", machineBearer)
         .body(EVENT)
         .when()
         .post(INTAKE)
@@ -262,8 +268,8 @@ class MachineGuardEnforcedTest {
     String environmentId =
         given()
             .contentType(ContentType.JSON)
-            .header("Authorization", systemOnly)
-            .body("{\"name\":\"guarded-system-only\"}")
+            .header("Authorization", machineBearer)
+            .body("{\"name\":\"guarded-machine\"}")
             .when()
             .post(ENVIRONMENTS)
             .then()
@@ -273,23 +279,23 @@ class MachineGuardEnforcedTest {
 
     given()
         .contentType(ContentType.JSON)
-        .header("Authorization", systemOnly)
+        .header("Authorization", machineBearer)
         .body(SERVICE_BODY)
         .when()
-        .put(SERVICES + "/guarded-system-only")
+        .put(SERVICES + "/guarded-machine")
         .then()
         .statusCode(201);
 
-    given().header("Authorization", systemOnly).when().get(PINS).then().statusCode(200);
+    given().header("Authorization", machineBearer).when().get(PINS).then().statusCode(200);
 
     given()
-        .header("Authorization", systemOnly)
+        .header("Authorization", machineBearer)
         .when()
-        .delete(SERVICES + "/guarded-system-only")
+        .delete(SERVICES + "/guarded-machine")
         .then()
         .statusCode(204);
     given()
-        .header("Authorization", systemOnly)
+        .header("Authorization", machineBearer)
         .when()
         .delete(ENVIRONMENTS + "/" + environmentId)
         .then()
@@ -297,32 +303,14 @@ class MachineGuardEnforcedTest {
   }
 
   @Test
-  void theOldSystemRoleAloneStillPassesEveryMachineDoor() {
-    // qits-platform:system is not retired in this change — a client the idp has not re-minted yet
-    // must keep working exactly as it did.
-    String legacyOnly =
-        "Bearer " + MachineTokens.legacySystemOnlyToken("qits-ci", "qits-platform-deployments");
-    given()
-        .contentType(ContentType.JSON)
-        .header("Authorization", legacyOnly)
-        .body(EVENT)
-        .when()
-        .post(INTAKE)
-        .then()
-        .statusCode(202);
-    given().header("Authorization", legacyOnly).when().get(PINS).then().statusCode(200);
-  }
-
-  @Test
   void qitsAdminInAMachineTokensGroupsIsStillRefusedOnEveryMachineOnlyDoor() {
-    // The two sets do not overlap, and qits:system widening who may hold the machine roles must not
-    // widen what a caller can do WITHOUT it. `@RolesAllowed` reads the groups claim regardless of
-    // transport — a bearer naming qits:admin passes an admin-only read exactly as a forwarded header
-    // would, which is why this asserts the machine-ONLY surface (the intake, the pins) rather than
-    // the reads: a correctly signed, correctly addressed token whose groups claim names only
-    // qits:admin still has no qits-platform:system or qits:system, and is refused 403 there.
+    // The two sets do not overlap. `@RolesAllowed` reads the groups claim regardless of transport —
+    // a bearer naming qits:admin passes an admin-only read exactly as a forwarded header would,
+    // which is why this asserts the machine-ONLY surface (the intake, the pins) rather than the
+    // reads: a correctly signed, correctly addressed token whose groups claim names only qits:admin
+    // has no qits:system, and is refused 403 there.
     String adminGroups =
-        "Bearer " + MachineTokens.adminGroupsToken("qits-ci", "qits-platform-deployments");
+        "Bearer " + MachineTokens.adminGroupsToken("qits-ci", AUDIENCE);
     given()
         .contentType(ContentType.JSON)
         .header("Authorization", adminGroups)
@@ -343,7 +331,7 @@ class MachineGuardEnforcedTest {
         .header(
             "Authorization",
             "Bearer "
-                + MachineTokens.token("qits-platform-artifacts", "qits-platform-deployments"))
+                + MachineTokens.token("qits-platform-artifacts", AUDIENCE))
         .when()
         .get(PINS)
         .then()
@@ -378,7 +366,7 @@ class MachineGuardEnforcedTest {
         .then()
         .statusCode(200);
 
-    // A machine holds qits-platform:system and never qits:admin, so the token that just
+    // A machine holds qits:system and never qits:admin, so the token that just
     // created the environment cannot read it back. That asymmetry is the contract, not an oversight.
     machine().when().get(ENVIRONMENTS).then().statusCode(403);
     machine().when().get(SERVICES).then().statusCode(403);
@@ -439,7 +427,7 @@ class MachineGuardEnforcedTest {
     return given()
         .header(
             "Authorization",
-            "Bearer " + MachineTokens.token("qits-ci", "qits-platform-deployments"));
+            "Bearer " + MachineTokens.token("qits-ci", AUDIENCE));
   }
 
   /** A platform admin, as the edge and the bootstrap assert one. */

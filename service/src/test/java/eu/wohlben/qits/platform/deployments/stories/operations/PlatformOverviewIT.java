@@ -184,7 +184,7 @@ public class PlatformOverviewIT {
       entirely.
 
       It is a machine peer's read and not a person's: the collector holds a bearer for this
-      service's audience with qits-platform:system in it, and no browser session has business here.
+      platform audience with qits:system in it, and no browser session has business here.
       And it reads NOTHING but the deployment rows — no orchestrator, no topology, no peer — which
       is what lets a collector ask before every sweep and abort the whole plan when the answer does
       not come.

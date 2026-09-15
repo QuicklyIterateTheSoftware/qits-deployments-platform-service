@@ -20,7 +20,7 @@ import java.util.Set;
  *
  * <p><b>{@code groups} is not decoration.</b> quarkus-oidc reads that claim as the identity's roles
  * with no configuration at all, which is what lets a machine caller satisfy the {@code
- * @RolesAllowed("qits-platform:system")} the guarded surface carries. A token minted without it
+ * @RolesAllowed("qits:system")} the guarded surface carries. A token minted without it
  * authenticates perfectly and is then refused 403 — the shape a client that was granted no roles
  * has, and the reason {@link #rolelessToken} exists to assert it.
  */
@@ -33,11 +33,11 @@ final class MachineTokens {
   static final String ISSUER = "http://qits-platform-idp:8080/idp";
 
   /**
-   * The two coarse machine roles qits-platform-idp grants every platform service client — the
-   * shipped {@code qits.idp.client.<id>.roles} of qits-ci, qits-platform-artifacts,
-   * qits-workspaces and qits-gateway alike.
+   * The coarse machine role qits-platform-idp grants every platform service client — the shipped
+   * {@code qits.idp.client.<id>.roles} of qits-ci, qits-platform-artifacts, qits-workspaces and
+   * qits-gateway alike.
    */
-  static final Set<String> SYSTEM_ROLES = Set.of("qits:system", "qits-platform:system");
+  static final Set<String> SYSTEM_ROLES = Set.of("qits:system");
 
   /**
    * A token from {@code clientId}, addressed to {@code audiences}, carrying the machine roles a
@@ -53,24 +53,6 @@ final class MachineTokens {
    */
   static String rolelessToken(String clientId, String... audiences) {
     return token(clientId, Set.of(), audiences);
-  }
-
-  /**
-   * A token carrying only {@code qits:system} — the open calling model's role, and what a service
-   * client minted after the {@code qits-platform:system} retirement carries. Every {@code
-   * @RolesAllowed("qits-platform:system")} on this surface accepts it additively, so this token must
-   * pass everywhere {@link #token} does.
-   */
-  static String systemOnlyToken(String clientId, String... audiences) {
-    return token(clientId, Set.of("qits:system"), audiences);
-  }
-
-  /**
-   * A token carrying only the legacy {@code qits-platform:system} — a client the idp has not
-   * re-minted yet. It must keep passing until that role is retired.
-   */
-  static String legacySystemOnlyToken(String clientId, String... audiences) {
-    return token(clientId, Set.of("qits-platform:system"), audiences);
   }
 
   /**

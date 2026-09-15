@@ -35,7 +35,7 @@ import org.junit.jupiter.api.TestMethodOrder;
  * <b>The two role sets, and the fact that they do not overlap.</b>
  *
  * <p>Every endpoint of this surface carries a {@code @RolesAllowed} and there are exactly two roles.
- * {@code qits-platform:system} is a machine's and arrives only in an idp-minted bearer; it opens the
+ * {@code qits:system} is a machine's and arrives only in an idp-minted bearer; it opens the
  * build intake, every topology write and the rollback pins. {@code qits:admin} is a
  * person's and arrives only as the {@code X-Qits-Roles} header the platform edge asserts for an
  * authenticated admin session; it opens every read.
@@ -95,7 +95,7 @@ public class AccessRefusalIT {
   @UserStoryDescription(
       """
       qits-ci holds a perfectly good bearer for this service: the right issuer, the right signature,
-      the right audience, and qits-platform:system in its groups claim — the credential that opens
+      the right audience, and qits:system in its groups claim — the credential that opens
       the build intake it uses every day. It opens none of the reads.
 
       That is a decision rather than an omission. The read surface describes the whole platform —

@@ -442,7 +442,7 @@ Eight things about it, each easy to undo by accident:
 
 **The role is `qits:admin`, the reader's**, and that is a decision rather than an
 oversight: this is a person's operational action driven from this component's own client through the
-edge's forwarded header. `qits-platform:system` is deliberately not granted — nothing on the
+edge's forwarded header. `qits:system` is deliberately not granted — nothing on the
 platform should be able to stop an application as a side effect of holding a service token, and the
 two sets do not overlap. `MachineGuardEnforcedTest` arms it in both directions.
 
@@ -1266,15 +1266,14 @@ carries a `@RolesAllowed`, and there are exactly three roles:
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
 | `qits:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
-| `qits-platform:system` **or `qits:system`** (additive) | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. `qits:system` is the open calling model's role — "a service calling a service" — and every `@RolesAllowed("qits-platform:system")` here also accepts it, so a client minted with only the newer role still passes. `qits-platform:system` is not removed yet; it goes when every minting side has moved |
+| `qits:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
 | `qits:agent` | every read — the ones `qits:admin` has, plus the pins — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (`principal-bound-git-refs-plan.md`, C7) |
 
-**The two sets — the system roles and `qits:admin` — do not overlap and must not.** A machine token
+**The two sets — `qits:system` and `qits:admin` — do not overlap and must not.** A machine token
 never carries `qits:admin`, so the read surface is a person's; a browser session never carries
-`qits-platform:system` or `qits:system`, so the machine surface is a machine's. `qits:system` widens
-who may hold the machine roles, not what they reach — under the open calling model a service calling
-a service may do basically everything a machine bearer here could already do, so accepting the new
-role beside the old one changes no endpoint's reach. **The read half is a change** — reads were open
+`qits:system`, so the machine surface is a machine's. The role says who may hold a machine door, not
+what that door reaches — under the open calling model a service calling a service may do basically
+everything a machine bearer here can do. **The read half is a change** — reads were open
 until the surface was protected, on the reasoning both ancestors gave — and the collector that reads
 the pins is a machine peer, so it presents its own token rather than nothing.
 
@@ -1288,8 +1287,8 @@ The guard is **gated off** by `qits.auth.machine.required` (default `false`, shi
 (`quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}`) — gate off, there is no OIDC
 tenant, nothing fetches a JWKS, and a clone-alone build needs no issuer. There is no third state.
 `@RolesAllowed` does **not** follow that gate: it is on in every posture, and what keeps a
-credential-free `./mvnw test` green is `qits-auth-core`'s `%test` dev user, which is granted all
-four platform roles.
+credential-free `./mvnw test` green is `qits-auth-core`'s `%test` dev user, which is granted every
+platform role the library ships, `qits:admin` and `qits:system` among them.
 
 **Three doors, and knowing which shut is how a grant is debugged.** A token for another service is
 refused 401 by `quarkus.oidc.token.audience` before any identity exists; a token addressed here but
@@ -2294,7 +2293,7 @@ against.
   clears `auth-server-url`**, precisely so it needs no idp — so the boot-time JWKS fetch,
   `discovery-enabled=false` with `jwks-path=jwks` joined onto the URL, and `connection-delay` are
   exercised here or nowhere. Both its stories drive `GET /platform-deployments/api/pins`, the one
-  guarded read whose caller is a machine (`qits-platform:system`, qits-platform-artifacts' image
+  guarded read whose caller is a machine (`qits:system`, qits-platform-artifacts' image
   collector) and which reads nothing but deployment rows.
 
 ### The userflow catalogue

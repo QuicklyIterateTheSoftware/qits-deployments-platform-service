@@ -42,19 +42,17 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
  *
  * <p>Hidden from the OpenAPI document (a wire/system API).
  *
- * <p><b>{@code qits-platform:system} (or {@code qits:system}, additively) and {@link
- * MachineAuth#require()} are both here because nothing human reaches this path</b> — its callers
- * are machines and bootstraps, so a bearer is the only credential one could ever hold, and the role
- * is one an idp-minted token carries. Under the open calling model {@code qits:system} is a service
- * calling a service and is accepted beside the older role rather than in its place. The reads next
- * door take the admin role no token has, and {@code qits:system} does not reach that role either —
- * {@code qits:system} and {@code qits:admin} still do not overlap. That split is the rule, not a
- * phasing.
+ * <p><b>{@code qits:system} and {@link MachineAuth#require()} are both here because nothing human
+ * reaches this path</b> — its callers are machines and bootstraps, so a bearer is the only
+ * credential one could ever hold, and the role is one an idp-minted token carries: under the open
+ * calling model {@code qits:system} is a service calling a service. The reads next door take the
+ * admin role no token has, and {@code qits:system} does not reach that role either — {@code
+ * qits:system} and {@code qits:admin} do not overlap. That split is the rule, not a phasing.
  */
 @Path("/events")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:system"})
+@jakarta.annotation.security.RolesAllowed({"qits:system"})
 public class PdEventController {
 
   @Inject ReleaseAnnouncements announcements;

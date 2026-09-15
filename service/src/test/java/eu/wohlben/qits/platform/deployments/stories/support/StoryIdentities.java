@@ -10,7 +10,7 @@ import io.restassured.specification.RequestSpecification;
  * <h2>The two role sets do not overlap, and that is the whole design</h2>
  *
  * <ul>
- *   <li><b>{@code qits-platform:system} is a MACHINE's</b>, and it arrives only in an idp-minted
+ *   <li><b>{@code qits:system} is a MACHINE's</b>, and it arrives only in an idp-minted
  *       bearer: qits-platform-idp copies a client's granted roles into the token's {@code groups}
  *       claim and quarkus-oidc reads it as roles with no configuration at all. It opens the build
  *       intake, every topology write and the rollback pins.
@@ -38,16 +38,16 @@ import io.restassured.specification.RequestSpecification;
 public final class StoryIdentities {
 
   /**
-   * The audience this service enforces, and it is a LITERAL rather than a variable name. {@code
-   * qits.auth.machine.audience=qits-platform-deployments} is spelled out in {@code
-   * application.properties} and {@code quarkus.oidc.token.audience} references it, so the audience
-   * under test is the shipped one and there is no expression to feed. A deployment still overrides
-   * it by environment — prod sends {@code prod-qits-deployments}.
+   * The one audience this platform mints, and the one {@code quarkus.oidc.token.audience} accepts.
+   * It is spelled out as a literal in {@code application.properties} and repeated as a literal here,
+   * so the audience under test is the shipped one and there is no expression to feed. Every token
+   * carries it — a service's, a bootstrap's and a person's CLI token alike — and what a caller may
+   * do is decided by its roles.
    */
-  public static final String AUDIENCE = "qits-platform-deployments";
+  public static final String AUDIENCE = "qits-platform";
 
   /** The machine role: the intake, the topology writes and the pins. */
-  public static final String MACHINE_ROLE = "qits-platform:system";
+  public static final String MACHINE_ROLE = "qits:system";
 
   /** The person's role, which reaches this service only as a forwarded header. */
   public static final String HUMAN_ROLE = "qits:admin";

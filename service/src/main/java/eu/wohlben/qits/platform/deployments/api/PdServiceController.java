@@ -34,14 +34,12 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * plane flip points at is a {@code DELETE} here, and reading the catalogue is what the web client
  * and a person do.
  *
- * <p><b>Both writes take {@code qits-platform:system} (or {@code qits:system}, additively) and call
- * {@link MachineAuth#require()}; the read takes {@code qits:admin} and does not.</b> The writes are
- * a machine's, so the role is one an idp-minted token carries; the read is driven by people through
- * the client, so the role is the one the edge asserts for an admin session. Under the open calling
- * model {@code qits:system} means "a service calling a service", so it is accepted beside the older
- * {@code qits-platform:system} rather than in place of it — {@code qits:system} and {@code
- * qits:admin} still do not overlap. See the class javadoc of {@link PdEnvironmentController} for the
- * whole split.
+ * <p><b>Both writes take {@code qits:system} and call {@link MachineAuth#require()}; the read takes
+ * {@code qits:admin} and does not.</b> The writes are a machine's, so the role is one an idp-minted
+ * token carries — under the open calling model {@code qits:system} means "a service calling a
+ * service"; the read is driven by people through the client, so the role is the one the edge asserts
+ * for an admin session. {@code qits:system} and {@code qits:admin} do not overlap. See the class
+ * javadoc of {@link PdEnvironmentController} for the whole split.
  */
 @Path("/services")
 @Produces(MediaType.APPLICATION_JSON)
@@ -101,7 +99,7 @@ public class PdServiceController {
       description = "A platform service cannot become an environment service")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   @APIResponse(responseCode = "403", description = "Gate on and the token is for another service")
-  @jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:system"})
+  @jakarta.annotation.security.RolesAllowed({"qits:system"})
   public Response upsert(@PathParam("name") String name, UpsertServiceRequest request) {
     machineAuth.require();
     UpsertServiceRequest body =
@@ -158,7 +156,7 @@ public class PdServiceController {
   @APIResponse(responseCode = "404", description = "No such service")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   @APIResponse(responseCode = "403", description = "Gate on and the token is for another service")
-  @jakarta.annotation.security.RolesAllowed({"qits-platform:system", "qits:system"})
+  @jakarta.annotation.security.RolesAllowed({"qits:system"})
   public Response delete(@PathParam("name") String name) {
     machineAuth.require();
     catalog.delete(name);

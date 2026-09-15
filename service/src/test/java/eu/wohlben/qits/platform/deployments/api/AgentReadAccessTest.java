@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p>The identity is the forward-auth pair. With {@code X-Qits-User} present, the roles are exactly
  * {@code X-Qits-Roles}, so the {@code %test} dev user's roles do not leak in. Seeding sends no
- * header and so runs as that dev user, which holds {@code qits-platform:system}.
+ * header and so runs as that dev user, which holds {@code qits:system}.
  */
 @QuarkusTest
 class AgentReadAccessTest {

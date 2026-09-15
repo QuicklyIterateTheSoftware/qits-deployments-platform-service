@@ -59,7 +59,7 @@ import org.junit.jupiter.api.TestMethodOrder;
  *
  * <p><b>The route both stories drive is {@code GET /platform-deployments/api/pins}</b>, and it is
  * chosen because it is the one guarded read here whose caller is a MACHINE: {@link PdPinController}
- * takes {@code qits-platform:system} rather than the {@code qits:admin} the environment
+ * takes {@code qits:system} rather than the {@code qits:admin} the environment
  * and deployment listings take, its one caller is qits-platform-artifacts' OCI garbage collector,
  * and it reads nothing but deployment rows — so what it answers is a fact about this instance's
  * own history and never about a peer this IT would then have to stand in for. A write would have
@@ -180,8 +180,8 @@ public class TokenValidationBootstrapIT {
         .body("pins", notNullValue());
     story
         .note(
-            "the collector's bearer (aud=qits-platform-deployments,"
-                + " groups=[qits-platform:system]) opens the pin ledger")
+            "the collector's bearer (aud=qits-platform,"
+                + " groups=[qits:system]) opens the pin ledger")
         .as("pins-served");
   }
 

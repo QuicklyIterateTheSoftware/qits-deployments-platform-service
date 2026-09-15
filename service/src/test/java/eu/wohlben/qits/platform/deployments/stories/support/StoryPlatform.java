@@ -25,7 +25,7 @@ import java.util.Set;
  * filter is attached to, and not one fixture request becomes an arrow into the deployer.
  *
  * <p>The tier is created with a MACHINE bearer and read back with the PERSON's header pair, because
- * that is what each door takes: a topology write is {@code qits-platform:system}'s and the
+ * that is what each door takes: a topology write is {@code qits:system}'s and the
  * deployment listing is {@code qits:admin}'s. A fixture that presented one credential
  * everywhere would be a fixture that could not exist against the running service.
  *

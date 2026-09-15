@@ -51,7 +51,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * <p><b>All three take {@code qits:admin}, the reader's role, and that is a decision.</b> This
  * is a person's operational action, driven from this component's own web client through the
  * platform edge's forwarded {@code X-Qits-Roles} header — the same caller every read on this surface
- * has. The machine role {@code qits-platform:system} is deliberately NOT granted: the two sets do
+ * has. The machine role {@code qits:system} is deliberately NOT granted: the two sets do
  * not overlap, and nothing on the platform should be able to stop an application as a side effect of
  * holding a service token. A machine door for this is a separate decision with a separate argument.
  *

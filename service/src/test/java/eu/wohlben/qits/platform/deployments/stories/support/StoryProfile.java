@@ -40,7 +40,11 @@ import java.util.Map;
  *   <li><b>{@code qits.auth.machine.required=true}</b> — the gate. The shipped tenant is {@code
  *       quarkus.oidc.tenant-enabled=${qits.auth.machine.required:false}}, so this one key is the
  *       difference between a service that validates machine bearers and one that does not. Every
- *       refusal in this catalogue is a claim only a gate-on packaged run can make.
+ *       refusal in this catalogue is a claim only a gate-on packaged run can make. {@code
+ *       qits.auth.machine.audience} rides with it: the shipped properties carry no such key — there
+ *       is one audience on this platform and {@code quarkus.oidc.token.audience} names it as a
+ *       literal — but qits-auth-core refuses to start with the gate on and the key unset, so the
+ *       value here is that same one audience.
  *   <li><b>{@code quarkus.oidc.auth-server-url}</b> — where the idp is. Discovery stays off and
  *       {@code jwks-path} stays {@code jwks}, joined onto this URL, so the shipped boot-time fetch
  *       is exercised rather than replaced.
@@ -106,6 +110,7 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
 
     // The gate, and where the keys it validates against come from.
     overrides.put("qits.auth.machine.required", "true");
+    overrides.put("qits.auth.machine.audience", StoryIdentities.AUDIENCE);
     overrides.put("quarkus.oidc.auth-server-url", idp.baseUrl());
 
     // Dark outside a deployment, like %dev/%test. Both are runtime keys, and both ship ENABLED
