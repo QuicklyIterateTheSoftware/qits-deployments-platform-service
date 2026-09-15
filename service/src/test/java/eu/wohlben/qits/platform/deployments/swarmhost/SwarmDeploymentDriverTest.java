@@ -115,8 +115,8 @@ class SwarmDeploymentDriverTest {
     driver.runtime = "docker";
     driver.healthIntervalSeconds = 3;
     driver.healthRetries = 3;
-    driver.healthStartPeriodSeconds = 10;
-    driver.updateMonitorSeconds = 30;
+    driver.healthStartPeriodSeconds = 60;
+    driver.updateMonitorSeconds = 60;
     driver.flatNetwork = "qits-net";
     driver.outputMaxChars = 65536;
     cli = new ScriptedCli();
@@ -206,10 +206,13 @@ class SwarmDeploymentDriverTest {
     assertTrue(argv.contains("curl -fsS http://localhost:8080/q/health/ready || exit 1"));
     assertTrue(argv.containsAll(List.of("--health-interval", "3s")));
     assertTrue(argv.containsAll(List.of("--health-retries", "3")));
-    assertTrue(argv.containsAll(List.of("--health-start-period", "10s")));
+    // 60s of grace, measured against qits-projects' ~45s worst-case boot rather than derived.
+    assertTrue(argv.containsAll(List.of("--health-start-period", "60s")));
     // ...and the cutover is three flags rather than four hundred lines.
     assertTrue(argv.containsAll(List.of("--update-order", "start-first")));
-    assertTrue(argv.containsAll(List.of("--update-monitor", "30s")));
+    // The other half of the same window: the monitor moves with the start period or the raise only
+    // changes which of the two binds.
+    assertTrue(argv.containsAll(List.of("--update-monitor", "60s")));
     assertTrue(argv.containsAll(List.of("--update-failure-action", "rollback")));
     // The bookkeeping labels, on the service AND on its task container: everything that reads them
     // reads them by name and does not care what created them.
@@ -1158,6 +1161,32 @@ class SwarmDeploymentDriverTest {
     assertEquals(DeploymentDriver.ConvergenceOutcome.ROLLED_BACK, converged.outcome());
     assertTrue(converged.detail().contains("rollback completed"), converged.detail());
     assertFalse(converged.converged());
+  }
+
+  @Test
+  void aRollbackCarriesTheTasksAndTheLogTailBecauseTheRowIsAllAnybodyGets() {
+    // The 2026-09-14 dev-qits-projects rollback could not be diagnosed at all: swarm had already
+    // reverted the spec, the failed task was gone with its logs, and the row said only that
+    // something had failed. The arm captures the same two things the timeout arm always did.
+    SwarmDeploymentDriver driver = driverThatIssuedAnUpdate();
+    cli.script(
+        ".UpdateStatus",
+        result(0, "rollback_completed|" + stamp(ISSUED) + "|update rolled back due to failure"));
+    cli.script("service ps", result(0, "dev-qits-gateway.1  Failed 2 seconds ago  task: non-zero"));
+    cli.script("service logs", result(0, "Failed to fetch JWKS from the idp\n"));
+
+    DeploymentDriver.Convergence converged =
+        driver.awaitConverged("dev-qits-gateway", Duration.ofSeconds(30));
+
+    assertEquals(DeploymentDriver.ConvergenceOutcome.ROLLED_BACK, converged.outcome());
+    assertTrue(
+        converged.detail().contains("update rolled back due to failure"), converged.detail());
+    assertTrue(converged.detail().contains("Failed 2 seconds ago"), converged.detail());
+    assertTrue(
+        converged.detail().contains("Failed to fetch JWKS from the idp"), converged.detail());
+    // Bounded by the tail the log capture asks for, not by a cap this arm invented.
+    assertTrue(
+        cli.matching("service logs").containsAll(List.of("--tail", "200")), cli.calls.toString());
   }
 
   @Test

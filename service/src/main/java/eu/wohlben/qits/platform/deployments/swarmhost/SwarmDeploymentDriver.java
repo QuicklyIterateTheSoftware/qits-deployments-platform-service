@@ -454,7 +454,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    *   <li>{@code completed} — the successor is running and healthy; DNS points at it.
    *   <li>{@code rollback_completed} — the successor never went healthy, swarm reverted the spec,
    *       and under {@code start-first} the predecessor never stopped serving. A failed deployment
-   *       with nothing lost.
+   *       with nothing lost. The detail carries the evidence: swarm's own message, then {@code
+   *       service ps} and the log tail.
    *   <li>{@code paused} / {@code rollback_paused} — swarm stopped trying and is waiting for a
    *       person. A failure, with its message as the diagnosis.
    *   <li>{@code updating} / {@code rollback_started} — keep waiting.
@@ -484,6 +485,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * waits forever: the caller's deadline ends it either way, and the timeout detail names what was
    * last seen, so an update whose status never arrives fails as an update rather than passing as
    * one.
+   *
+   * <p><b>Every failing arm carries its own evidence, because the row is all anybody gets.</b> The
+   * detail is what {@code DeployService} writes onto the deployment, and by the time a person reads
+   * it swarm has already reverted the spec — the failed task is gone, and its logs go with it. The
+   * timeout arm always captured {@code service ps} and the log tail; {@code rollback_completed},
+   * the arm a failed deployment ACTUALLY reaches, captured neither, and its one line ({@code
+   * "update rolled back due to failure…"}) says that something failed without saying what. It
+   * cost a whole investigation of the 2026-09-14 dev-qits-projects rollback, which could not
+   * establish what state the task had been left in. So it captures the same two things, in the same
+   * order — both bounded by {@code qits.platform.deployments.output-max-chars}, which every {@link
+   * #run} already truncates to, on top of the {@code --tail} the log capture asks for.
    */
   @Override
   public Convergence awaitConverged(String name, Duration timeout) {
@@ -518,11 +530,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
               return Convergence.converged(List.of());
             }
             case "rollback_completed" -> {
+              // The evidence, in the same shape the timeout below uses: swarm's sentence, then the
+              // tasks, then the log tail. This is the arm a failed deployment actually lands in.
               return Convergence.rolledBack(
                   "swarm rolled "
                       + name
                       + " back to its predecessor: "
-                      + (message.isBlank() ? "the successor never went healthy" : message));
+                      + (message.isBlank() ? "the successor never went healthy" : message)
+                      + "\n"
+                      + tasks(name)
+                      + "\n"
+                      + logs(name));
             }
             case "paused", "rollback_paused" -> {
               return Convergence.failed(
