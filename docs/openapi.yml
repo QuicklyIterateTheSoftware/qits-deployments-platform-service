@@ -479,6 +479,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:agent
+        - qits:system
   /platform-deployments/api/deployment-requests/{id}:
     get:
       summary: "One deployment request, with the deployment it produced"
@@ -507,6 +508,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:agent
+        - qits:system
   /platform-deployments/api/deployments:
     get:
       summary: "One plane's recorded deployments, newest-first — an environment id,\
@@ -803,4 +805,4 @@ paths:
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.915.50701
+  version: 2026.915.232733

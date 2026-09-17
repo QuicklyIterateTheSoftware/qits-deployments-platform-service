@@ -387,11 +387,14 @@ serving, and the sha a rollback would put back.
   statement containing a password is ever logged, and no failure message names one.
 - **Every endpoint carries a role, and the role says who the caller is meant to be.** The reads
   need `qits:admin`, which reaches this service only as a forwarded header — an admin
-  session through the edge, or the bootstrap's own hop. The pins, the topology writes and the
-  build-succeeded intake need `qits:system`, which qits-platform-idp puts in a machine token's
-  `groups` claim — the open calling model's "a service calling a service" role. The two sets —
-  `qits:system` and `qits:admin` — do not overlap: a machine cannot read the surface and a browser
-  session cannot write it. The writes and the intake additionally call `MachineAuth.require()`
+  session through the edge, or the bootstrap's own hop. The pins, the deployment-request listing,
+  the topology writes and the build-succeeded intake need `qits:system`, which qits-platform-idp
+  puts in a machine token's `groups` claim — the open calling model's "a service calling a service"
+  role. The two sets — `qits:system` and `qits:admin` — do not overlap: no token holds both, so a
+  browser session cannot write the surface and a machine bearer reaches only the two reads granted
+  to it by name. Those two are the pins, which qits-platform-artifacts' collector plans a sweep
+  from, and `GET /deployment-requests`, which qits-projects draws a release's deploy phase from;
+  everything else a read answers is a person's. The writes and the intake additionally call `MachineAuth.require()`
   (audience `qits-platform`, the platform's one), behind a gate that ships **off** —
   `QITS_AUTH_MACHINE_REQUIRED=true` turns it on, only once the senders are sending.
 

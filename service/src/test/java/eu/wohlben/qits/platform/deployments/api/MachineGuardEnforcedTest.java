@@ -27,9 +27,10 @@ import org.junit.jupiter.api.Test;
  *       forwarded {@code X-Qits-Roles} header: the platform edge asserts it for an authenticated
  *       admin session, and the bootstrap asserts it on its own hop over qits-net. A machine token
  *       never carries it, which is the point — the read surface is a person's.
- *   <li><b>{@code qits:system}</b> — the pins, the topology writes and the build-succeeded
- *       intake. qits-platform-idp copies it into every platform service client's {@code groups}
- *       claim, so a machine bearer carries it and a browser session does not.
+ *   <li><b>{@code qits:system}</b> — the pins, the topology writes, the build-succeeded intake and
+ *       the deployment-request listing qits-projects draws a release's deploy phase from.
+ *       qits-platform-idp copies it into every platform service client's {@code groups} claim, so a
+ *       machine bearer carries it and a browser session does not.
  * </ul>
  *
  * <p><b>Three doors now, and this suite pins which shuts first.</b> A token minted for another
@@ -54,6 +55,7 @@ class MachineGuardEnforcedTest {
   private static final String SERVICES = "/platform-deployments/api/services";
   private static final String INTAKE = "/platform-deployments/api/events/software-released";
   private static final String PINS = "/platform-deployments/api/pins";
+  private static final String REQUESTS = "/platform-deployments/api/deployment-requests";
 
   /** An application nothing here ever deployed — the operator levers' own three paths. */
   private static final String APPLICATION = "/platform-deployments/api/applications/platform:guarded-app";
@@ -370,6 +372,46 @@ class MachineGuardEnforcedTest {
     // created the environment cannot read it back. That asymmetry is the contract, not an oversight.
     machine().when().get(ENVIRONMENTS).then().statusCode(403);
     machine().when().get(SERVICES).then().statusCode(403);
+
+    machine().when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
+  }
+
+  @Test
+  void theDeploymentRequestListingAnswersAMachinePeerAndThePersonBoth() {
+    // qits-projects draws a release request as one pipeline of three phases and reads the third —
+    // the deployment request for (repoId, version) — from this listing. It is a platform peer
+    // rather than a person or an agent, so its service client carries qits:system: without the
+    // grant its only way in would be to forward somebody's session headers.
+    String environmentId =
+        machine()
+            .contentType(ContentType.JSON)
+            .body("{\"name\":\"guarded-requests\"}")
+            .when()
+            .post(ENVIRONMENTS)
+            .then()
+            .statusCode(201)
+            .extract()
+            .path("environment.id");
+
+    machine()
+        .when()
+        .get(REQUESTS + "?repoId=guarded-repo&version=2026.903.193059")
+        .then()
+        .statusCode(200);
+    machine().when().get(REQUESTS + "?environmentId=" + environmentId).then().statusCode(200);
+
+    // ...and nothing was taken away: the person who polls this listing in the client still reads it.
+    admin().when().get(REQUESTS + "?environmentId=" + environmentId).then().statusCode(200);
+
+    // The grant is this listing's alone. The rest of the read surface is still a person's, and so
+    // are the operator's levers — the two role sets do not overlap, and this changed who may ask
+    // one read rather than what a machine bearer reaches.
+    machine().when().get(ENVIRONMENTS).then().statusCode(403);
+    machine()
+        .when()
+        .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+        .then()
+        .statusCode(403);
 
     machine().when().delete(ENVIRONMENTS + "/" + environmentId).then().statusCode(204);
   }

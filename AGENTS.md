@@ -1266,7 +1266,7 @@ carries a `@RolesAllowed`, and there are exactly three roles:
 | role | endpoints | how a caller holds it |
 | --- | --- | --- |
 | `qits:admin` | every read — applications, deployments, the environment listing/aggregate/links, the service listing — **and the operator's two levers**, `POST /applications/{id}/scale` and `/restart` | the forwarded `X-Qits-Roles` header only: the platform edge asserts it for an authenticated admin session, and the bootstrap asserts it on its own qits-net hop (`PdApi.ADMIN_HEADERS`) |
-| `qits:system` | the pins, every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
+| `qits:system` | the pins, the **deployment-request listing** (`GET /deployment-requests`, the read qits-projects draws a release's deploy phase from), every topology **write** (environment create/patch/delete, service upsert/delete) and the release intake | a machine bearer: qits-platform-idp copies `qits.idp.client.<id>.roles` into the token's `groups` claim, which quarkus-oidc reads as roles with no configuration at all. It is the open calling model's role — "a service calling a service" |
 | `qits:agent` | every read — the ones `qits:admin` has, plus the pins — and no write | an agent's own bearer: a commissioned client whose kind maps to this role (`principal-bound-git-refs-plan.md`, C7) |
 
 **The two sets — `qits:system` and `qits:admin` — do not overlap and must not.** A machine token
@@ -1276,6 +1276,18 @@ what that door reaches — under the open calling model a service calling a serv
 everything a machine bearer here can do. **The read half is a change** — reads were open
 until the surface was protected, on the reasoning both ancestors gave — and the collector that reads
 the pins is a machine peer, so it presents its own token rather than nothing.
+
+**A read a machine peer may also ask is not a hole in that, and there are two of them now.** The
+pins were the first; the deployment-request listing is the second, because qits-projects draws a
+release request as one pipeline of three phases — QA, publish and **deploy**, which is this
+component's request for a (repoId, version) pair — and it is a platform peer rather than a person
+or an agent. Without the grant its only way in would be to forward somebody's session headers, a
+service impersonating a user to read a listing it is itself entitled to. What the non-overlap
+forbids is a TOKEN holding both roles, and that is untouched: no machine bearer carries
+`qits:admin`, the rest of the read surface is still a person's, and the operator's levers on
+`PdApplicationController` — scale, restart and decommission — stay `qits:admin`-only, because
+nothing on the platform should be able to stop or retire an application as a side effect of holding
+a service token. Granting one read says who may ask it; it says nothing about what is answered.
 
 **Where `machineAuth.require()` goes** is the same question one layer in: on the paths whose callers
 are machines — the intake and every topology write. It re-asks the audience question the token
@@ -1549,7 +1561,9 @@ rows written before that.)
   in the queueing transaction before a real gate has an opinion, or the first one arrives as a
   migration over live history. Whatever asks a question later answers in that one method — it takes
   the release AND the target, because a real gate is about a (version, place) pair.
-- **It is a read surface too** (`PdDeploymentRequestController`, `qits:admin`, every read
+- **It is a read surface too** (`PdDeploymentRequestController`, `qits:admin` + `qits:agent` +
+  `qits:system` — the last so qits-projects can draw a release's deploy phase without forwarding a
+  person's session headers; see *Addressing and auth* — with every read
   wrapped in `PdReadPatience`), and it is a separate resource from the deployment listing rather
   than a richer answer to it, for the reason the table exists at all: **a refused request queues
   nothing**, so it has no deployment row to be seen through, and a client reading only the

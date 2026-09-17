@@ -93,10 +93,12 @@ public class PlatformOverviewIT {
       category = CATEGORY)
   @UserStoryDescription(
       """
-      Nothing on this surface is open, and the role says who a caller is meant to be: every read
-      here takes qits:admin, which reaches this service only as a forwarded X-Qits-Roles
-      header from an authenticated admin session. A machine bearer never carries it, so the read
-      half is a person's and stays one.
+      Nothing on this surface is open, and the role says who a caller is meant to be: all four
+      reads below take qits:admin, which reaches this service only as a forwarded X-Qits-Roles
+      header from an authenticated admin session. A machine bearer never carries that role, so the
+      operator's half of the surface is a person's and stays one — the two reads a machine peer may
+      also ask, the rollback pins and the deployment-request listing, are granted to qits:system by
+      name and are not among these.
 
       The four reads answer four different questions and are deliberately not one endpoint. The
       tiers say which places exist, and which of them a release enters at. The catalogue says which

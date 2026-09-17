@@ -13,7 +13,8 @@ import io.restassured.specification.RequestSpecification;
  *   <li><b>{@code qits:system} is a MACHINE's</b>, and it arrives only in an idp-minted
  *       bearer: qits-platform-idp copies a client's granted roles into the token's {@code groups}
  *       claim and quarkus-oidc reads it as roles with no configuration at all. It opens the build
- *       intake, every topology write and the rollback pins.
+ *       intake, every topology write, the rollback pins and the deployment-request listing
+ *       qits-projects draws a release's deploy phase from.
  *   <li><b>{@code qits:admin} is a PERSON's</b>, and it arrives only as the {@code
  *       X-Qits-User} / {@code X-Qits-Roles} pair the platform edge asserts for an authenticated
  *       admin session. It opens every read of this surface — the applications, the services, the

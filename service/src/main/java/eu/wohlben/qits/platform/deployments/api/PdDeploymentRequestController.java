@@ -70,12 +70,29 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * screen is. So the deployment travels inside this answer, nullable for the refusal that produced
  * none.
  *
- * <p>Read-only and a person's: {@code qits:admin}, the role qits-gateway forwards, like
- * every other listing the web client polls.
+ * <p><b>Read-only, and asked by three kinds of caller: {@code qits:admin}, {@code qits:agent} and
+ * — since qits-projects drew the pipeline — {@code qits:system}.</b> The first is the role
+ * qits-gateway forwards for a person's session, like every other listing the web client polls; the
+ * second is an agent's own bearer. The third is a platform PEER: qits-projects draws a release
+ * request as one pipeline of three phases — QA (a qits-ci run), publish (a qits-ci run), and
+ * deploy, which is this service's deployment request for a (repoId, version) pair — and it draws
+ * the third phase by reading {@code ?repoId=&version=}, the filter above, unchanged. That service
+ * is not a person and not an agent: its service client carries {@code qits:system}, so without the
+ * grant its only way in would be to forward a person's {@code X-Qits-User}/{@code X-Qits-Roles}
+ * session headers — a service impersonating a user to read a listing it is itself entitled to.
+ *
+ * <p><b>It changes who may ask and nothing about what is answered.</b> The non-overlap the two
+ * role sets keep is that no token holds both: a machine bearer still never carries {@code
+ * qits:admin} and a browser session still never carries {@code qits:system}. Nothing here grants a
+ * machine token the person's role, and the operator's levers stay exactly where they were —
+ * {@code POST /applications/{id}/scale}, {@code /restart} and {@code /decommission} on {@code
+ * PdApplicationController} are {@code qits:admin}-only, because nothing on the platform should be
+ * able to stop or retire an application as a side effect of holding a service token. What this
+ * listing does is join {@code GET /pins} as a guarded READ a machine peer may also ask.
  */
 @Path("/deployment-requests")
 @Produces(MediaType.APPLICATION_JSON)
-@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent"})
+@jakarta.annotation.security.RolesAllowed({"qits:admin", "qits:agent", "qits:system"})
 public class PdDeploymentRequestController {
 
   @Inject DeployService deployService;

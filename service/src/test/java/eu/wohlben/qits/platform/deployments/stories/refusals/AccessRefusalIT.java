@@ -36,7 +36,8 @@ import org.junit.jupiter.api.TestMethodOrder;
  *
  * <p>Every endpoint of this surface carries a {@code @RolesAllowed} and there are exactly two roles.
  * {@code qits:system} is a machine's and arrives only in an idp-minted bearer; it opens the
- * build intake, every topology write and the rollback pins. {@code qits:admin} is a
+ * build intake, every topology write, the rollback pins and the deployment-request listing
+ * qits-projects draws a release's deploy phase from. {@code qits:admin} is a
  * person's and arrives only as the {@code X-Qits-Roles} header the platform edge asserts for an
  * authenticated admin session; it opens every read.
  *
@@ -96,7 +97,7 @@ public class AccessRefusalIT {
       """
       qits-ci holds a perfectly good bearer for this service: the right issuer, the right signature,
       the right audience, and qits:system in its groups claim — the credential that opens
-      the build intake it uses every day. It opens none of the reads.
+      the build intake it uses every day. It opens none of the operator's reads.
 
       That is a decision rather than an omission. The read surface describes the whole platform —
       which applications exist, which tiers they are in, what was deployed and what failed — and it
@@ -107,7 +108,7 @@ public class AccessRefusalIT {
       """)
   @UserflowRunsAfter(TokenValidationBootstrapIT.class)
   @Order(1)
-  void aPlatformPeersBearerIsRefusedByEveryRead(Interactions story) {
+  void aPlatformPeersBearerIsRefusedByTheOperatorsReads(Interactions story) {
     NetworkCapture.actor(StoryIdentities.CI);
     String bearer = StoryIdentities.machineToken(StoryIdentities.CI);
     MINTED.add(bearer);
