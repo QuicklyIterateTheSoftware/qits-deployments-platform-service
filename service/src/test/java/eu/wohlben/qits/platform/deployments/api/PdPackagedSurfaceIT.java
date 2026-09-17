@@ -10,6 +10,7 @@ import io.quarkus.test.junit.QuarkusIntegrationTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
+import io.restassured.specification.RequestSpecification;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -215,12 +216,46 @@ public class PdPackagedSurfaceIT {
     given().when().get(SEGMENT + "/q/swagger-ui/").then().statusCode(200);
   }
 
+  /**
+   * The identity a call on this surface has to carry, and the reason it is a header pair rather
+   * than a bearer.
+   *
+   * <p>Every endpoint here carries a {@code @RolesAllowed} and has done since the surface was
+   * closed, so an anonymous request is a 401 whatever else is right about the artifact. This
+   * profile leaves the machine gate at its shipped {@code false}, which is what keeps
+   * {@code quarkus.oidc.tenant-enabled} off and this IT free of an idp to reach — so there is no
+   * tenant to validate a bearer with, and the forward-auth pair qits-auth-core reads is the only
+   * identity a packaged process in this posture accepts. It is a real one: the platform edge
+   * asserts it for a session, and the bootstrap asserts it on its own hop over qits-net.
+   *
+   * <p><b>Nothing here is a claim about authorization</b> — the three doors and the fact that the
+   * two role sets do not overlap are {@code MachineGuardEnforcedTest}'s and {@code
+   * stories.refusals.AccessRefusalIT}'s, both of which run with the gate ON and real tokens. What
+   * this IT needs is to get past the annotation so it can assert what it is actually about: the
+   * baked-in route prefixes, the shipped datasource expressions and the migrations. So each call
+   * states the ONE role its own door names — never both at once, which would be a caller the
+   * platform does not have.
+   */
+  private static final String USER_HEADER = "X-Qits-User";
+
+  private static final String ROLES_HEADER = "X-Qits-Roles";
+
+  /** {@code given()} carrying the machine role the writes and the intake name. */
+  private static RequestSpecification machine() {
+    return given().header(USER_HEADER, "packaged-surface-it").header(ROLES_HEADER, "qits:system");
+  }
+
+  /** …and the person's role every read of this surface names. */
+  private static RequestSpecification person() {
+    return given().header(USER_HEADER, "packaged-surface-it").header(ROLES_HEADER, "qits:admin");
+  }
+
   @Test
   public void theReleaseIntakeIsAtTheAddressAReplayPostsTo() {
     // The manual door is fire-and-forget: a wrong path raises no error on either side and
     // deployments simply never happen, so the address is asserted from the artifact. An empty body
     // must reach @Valid — a 400 proves the resource, not the router's 404.
-    given()
+    machine()
         .contentType(ContentType.JSON)
         .body("{}")
         .when()
@@ -235,7 +270,7 @@ public class PdPackagedSurfaceIT {
     // writes execution history (pd_deployment) — so a migration that did not make it into the
     // artifact shows up here, whichever table it was for.
     String environmentId =
-        given()
+        machine()
             .contentType(ContentType.JSON)
             // The entry tier: a release lands in the designated platform environment.
             .body(Map.of("name", "packaged-env", "platform", true))
@@ -246,7 +281,7 @@ public class PdPackagedSurfaceIT {
             .extract()
             .path("environment.id");
 
-    given()
+    person()
         .when()
         .get(SEGMENT + "/api/environments")
         .then()
@@ -256,7 +291,7 @@ public class PdPackagedSurfaceIT {
     // This process has no git host, so the spec read fails and resolution falls back to what the
     // catalogue already holds — the only path that reaches a deployment row here, and one that
     // needs the topology and the history in one transaction.
-    given()
+    machine()
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -268,7 +303,7 @@ public class PdPackagedSurfaceIT {
         .then()
         .statusCode(201);
 
-    given()
+    machine()
         .contentType(ContentType.JSON)
         .body(
             Map.of(
@@ -286,7 +321,7 @@ public class PdPackagedSurfaceIT {
     String runId = null;
     while (runId == null && System.currentTimeMillis() < deadline) {
       runId =
-          given()
+          person()
               .when()
               .get(SEGMENT + "/api/deployments?environmentId=" + environmentId)
               .then()
