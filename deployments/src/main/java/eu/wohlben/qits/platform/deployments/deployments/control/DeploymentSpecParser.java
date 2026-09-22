@@ -12,7 +12,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Fifteen scalar keys, no nesting, no YAML
+ * The strict reader of {@code .config/qits/deployments.yml}. Sixteen scalar keys, no nesting, no YAML
  * lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
@@ -23,6 +23,7 @@ import java.util.Set;
  * health_path: /q/health/ready         # default: /&lt;name without the qits- prefix&gt;/q/health/ready
  * health_cmd: pg_isready -U postgres   # instead of health_path: the probe runs in the container
  * resources: postgresql:db             # a database of its own, injected as QITS_RESOURCE_DB_*
+ * volumes: private:data:/data          # a volume of its own, mounted at /data
  * update_order: start-first            # default | stop-first for anything single-writer
  * publish_mode: host                   # default | ingress for a port the routing mesh holds
  * routes: /artifacts,/v2               # optional public path prefixes, in navigation order
@@ -150,6 +151,27 @@ import java.util.Set;
  * PdIdentifiers#requireDatabaseName}), and the {@code qits_} prefix is what keeps the namespace it
  * can reach disjoint from the instance's own.
  *
+ * <p><b>{@code volumes} is the same statement about storage that {@code resources} is about
+ * databases.</b> A volume mount is a property of what an application IS — it needs a place to keep
+ * its data, and it needs it in every environment it is ever deployed into — so it belongs beside
+ * the rest of what the repository declares about itself, not in an indexed list in a config store
+ * authored somewhere else. The grammar is {@code private:<name>:<target>[:ro]} and {@code
+ * shared:<volume>:<target>[:ro]}, comma-separated for the reason {@code resources} is.
+ *
+ * <p><b>A private volume's NAME is derived, exactly as a resource's database is</b>: {@code
+ * private:data} on qits-workspaces is the volume {@code qits-workspaces-data}, and the repository
+ * cannot state the whole name. That is the point rather than a convenience — a derived name is what
+ * makes it impossible for one application to mount another's storage by writing its name down.
+ * {@code shared:} is the opposite case and names its volume in full, because a platform-owned
+ * volume is not this application's to derive; the vocabulary is closed ({@link #SHARED_VOLUMES}).
+ *
+ * <p><b>HOST BINDS ARE DELIBERATELY NOT IN THIS GRAMMAR, and completing it later would be a
+ * mistake.</b> {@code bind:/var/run/docker.sock:…} stays in deployment config
+ * ({@code qits.platform.deployments.extras.<app>.mounts[i]}, see {@link ServiceExtras}) and belongs
+ * there: a host path is a statement about the MACHINE — which socket exists, which directory the
+ * operator laid out — and it is true of a platform rather than of an application. That is the line
+ * this key draws. A repository that could name a host path could mount any of it.
+ *
  * <p><b>Once this key ships it can never become unknown again</b>, and that is worth writing down
  * in the commit that adds it rather than learning later. A spec is fetched at the BUILT sha, so a
  * rollback pin or a redeploy of an older commit presents whatever file that commit carried, and an
@@ -195,6 +217,7 @@ public final class DeploymentSpecParser {
   private static final String HEALTH_PATH = "health_path";
   private static final String HEALTH_CMD = "health_cmd";
   private static final String RESOURCES = "resources";
+  private static final String VOLUMES = "volumes";
   private static final String UPDATE_ORDER = "update_order";
   private static final String PUBLISH_MODE = "publish_mode";
   private static final String ROUTES = "routes";
@@ -257,6 +280,26 @@ public final class DeploymentSpecParser {
   /** The one word {@code idp:} may be followed by. */
   private static final String IDP_CLIENT = "client";
 
+  /** The first volume scope: a volume of this application's own, whose name is DERIVED. */
+  private static final String PRIVATE = "private";
+
+  /** The second: a platform-owned volume, named in full because it is not this application's. */
+  private static final String SHARED = "shared";
+
+  /**
+   * Every shared volume the platform has — {@code qits.containers.shared-volumes} in qits-containers,
+   * spelled here because a repository naming one that does not exist would get a volume docker
+   * creates empty, which is the silent-loss failure this whole family exists to refuse.
+   *
+   * <p>Closed and quoted back at a typo, like {@link #SLOTS}. A fourth shared volume is a line here
+   * and a line there, in the same commit.
+   */
+  private static final Set<String> SHARED_VOLUMES =
+      new LinkedHashSet<>(List.of("qits_shared_dot_claude", "qits_shared_m2", "qits_shared_pnpm"));
+
+  /** The one option a mount may carry — {@link ServiceExtras.Mount}'s grammar, and no more. */
+  private static final String READ_ONLY = "ro";
+
   /** The retired vocabulary, still understood. See the class javadoc. */
   private static final String PLATFORM_ALIAS = "singleton";
 
@@ -274,6 +317,7 @@ public final class DeploymentSpecParser {
     String healthPath = null;
     String healthCmd = null;
     List<DeploymentSpec.ResourceSpec> resources = List.of();
+    List<DeploymentSpec.VolumeSpec> volumes = List.of();
     DeploymentDriver.UpdateOrder updateOrder = DeploymentDriver.UpdateOrder.START_FIRST;
     DeploymentDriver.PublishMode publishMode = DeploymentDriver.PublishMode.HOST;
     List<String> routes = List.of();
@@ -311,6 +355,7 @@ public final class DeploymentSpecParser {
         case HEALTH_PATH -> healthPath = healthPath(value, source, lineNumber);
         case HEALTH_CMD -> healthCmd = healthCmd(value, source, lineNumber);
         case RESOURCES -> resources = resources(value, source, lineNumber);
+        case VOLUMES -> volumes = volumes(value, source, lineNumber);
         case UPDATE_ORDER -> updateOrder = updateOrder(value, source, lineNumber);
         case PUBLISH_MODE -> publishMode = publishMode(value, source, lineNumber);
         case ROUTES -> routes = routes(value, source, lineNumber);
@@ -340,6 +385,8 @@ public final class DeploymentSpecParser {
                     + HEALTH_CMD
                     + ", "
                     + RESOURCES
+                    + ", "
+                    + VOLUMES
                     + ", "
                     + UPDATE_ORDER
                     + ", "
@@ -426,6 +473,7 @@ public final class DeploymentSpecParser {
         healthPath,
         healthCmd,
         resources,
+        volumes,
         updateOrder,
         publishMode,
         routes,
@@ -900,6 +948,172 @@ public final class DeploymentSpecParser {
       declared.add(new DeploymentSpec.ResourceSpec(name, database));
     }
     return List.copyOf(declared);
+  }
+
+  /**
+   * The volumes a repository asks to have mounted into its container: {@code
+   * private:<name>:<target>[:ro]} or {@code shared:<volume>:<target>[:ro]}, comma-separated. One
+   * line, because this file has no YAML sequences — and neither a scope, a name nor a target may
+   * contain a comma or a colon, which is what makes both separators safe.
+   *
+   * <p><b>A {@code private} volume's name is DERIVED and this parser deliberately cannot finish
+   * it.</b> What travels out of here is the {@code <name>} segment alone; the volume is {@code
+   * <application>-<name>}, resolved by {@code DeployService.register} — the first caller that knows
+   * the application's name — exactly as a resource's defaulted database is. That derivation is the
+   * isolation: a repository that could write a literal volume name could write a sibling's.
+   *
+   * <p><b>A {@code shared} volume is named in full, out of a closed vocabulary.</b> It is the
+   * platform's rather than this application's, so there is nothing to derive it from — and an
+   * unknown one is refused with the whole list quoted back, because docker answers an unknown
+   * volume name by creating an empty one, and a container that boots with an empty volume passes
+   * its health gate and has lost its data.
+   *
+   * <p><b>There is no {@code bind} word here and there must never be one.</b> A host path is
+   * platform topology — a statement about the machine rather than about the application — and it
+   * stays in deployment config, which is the trust domain that already holds the docker socket. See
+   * the class javadoc.
+   *
+   * <p>{@code :ro} is the only option, which is {@link ServiceExtras.Mount}'s grammar and not a
+   * narrowing of it. Both duplicates are refused: a repeated <b>target</b> would be two volumes over
+   * one directory, which no orchestrator can honour, and a repeated <b>name</b> would be one volume
+   * asked for twice — the second mount point a person meant to write elsewhere.
+   */
+  private static List<DeploymentSpec.VolumeSpec> volumes(String value, String source, int line) {
+    List<DeploymentSpec.VolumeSpec> declared = new ArrayList<>();
+    Set<String> names = new HashSet<>();
+    Set<String> targets = new HashSet<>();
+    for (String candidate : value.split(",", -1)) {
+      String entry = candidate.strip();
+      if (entry.isBlank()) {
+        // `volumes:` with nothing after it, or a trailing comma: a writer who meant to say
+        // something. A silent empty answer is exactly what this parser exists to refuse.
+        throw error(source, line, "`" + VOLUMES + "` has a blank entry");
+      }
+      String[] parts = entry.split(":", -1);
+      if (parts.length < 3 || parts.length > 4) {
+        throw error(source, line, "`" + VOLUMES + "` entries are " + grammar() + ", got: " + entry);
+      }
+      boolean shared;
+      if (SHARED.equals(parts[0])) {
+        shared = true;
+      } else if (PRIVATE.equals(parts[0])) {
+        shared = false;
+      } else {
+        throw error(
+            source,
+            line,
+            "`"
+                + VOLUMES
+                + "` knows the types `"
+                + PRIVATE
+                + "` and `"
+                + SHARED
+                + "` and no others — a host path is deployment config rather than a repository's"
+                + " own declaration, got: "
+                + parts[0]);
+      }
+      String name = shared ? sharedVolume(parts[1], entry, source, line)
+          : privateVolume(parts[1], entry, source, line);
+      String target;
+      try {
+        target = DeploymentIdentifiers.requireMountTarget(parts[2]);
+      } catch (RuntimeException e) {
+        throw error(
+            source,
+            line,
+            "`"
+                + VOLUMES
+                + "` targets are absolute paths inside the container — segments of letters, digits,"
+                + " dots, underscores and inner dashes, never `/` alone — got: "
+                + parts[2]);
+      }
+      if (parts.length == 4 && !READ_ONLY.equals(parts[3])) {
+        throw error(
+            source,
+            line,
+            "`" + parts[3] + "` is not a `" + VOLUMES + "` option here — only `" + READ_ONLY
+                + "` is");
+      }
+      // The scope is part of the key: `private:m2` and `shared:qits_shared_m2` are two volumes and
+      // not one, whatever the segment after the colon happens to spell.
+      if (!names.add(parts[0] + ":" + name)) {
+        throw error(source, line, "`" + VOLUMES + "` names `" + name + "` twice");
+      }
+      if (!targets.add(target)) {
+        throw error(source, line, "`" + VOLUMES + "` names the target `" + target + "` twice");
+      }
+      declared.add(
+          new DeploymentSpec.VolumeSpec(
+              shared
+                  ? DeploymentSpec.VolumeSpec.Scope.SHARED
+                  : DeploymentSpec.VolumeSpec.Scope.PRIVATE,
+              name,
+              target,
+              parts.length == 4));
+    }
+    return List.copyOf(declared);
+  }
+
+  /**
+   * The {@code <name>} half of a private volume — the segment the application's own name is
+   * prefixed to. An absolute path here is the mistake worth its own sentence: it is a repository
+   * reaching for a host bind, which this grammar does not have.
+   */
+  private static String privateVolume(String value, String entry, String source, int line) {
+    if (value.startsWith("/")) {
+      throw error(
+          source,
+          line,
+          "`"
+              + VOLUMES
+              + "` takes a volume name after `"
+              + PRIVATE
+              + ":`, not the path `"
+              + value
+              + "` — a host path is deployment config, never a repository's own declaration");
+    }
+    try {
+      return DeploymentIdentifiers.requireVolumeName(value);
+    } catch (RuntimeException e) {
+      throw error(
+          source,
+          line,
+          "`"
+              + VOLUMES
+              + "` names are lowercase letters, digits and inner dashes (max 32) — the volume is"
+              + " `<application>-<name>` — got: "
+              + value);
+    }
+  }
+
+  /** One of the platform's own volumes, quoted back with the whole vocabulary at a typo. */
+  private static String sharedVolume(String value, String entry, String source, int line) {
+    if (!SHARED_VOLUMES.contains(value)) {
+      throw error(
+          source,
+          line,
+          "`"
+              + VOLUMES
+              + "` knows the shared volumes "
+              + String.join(", ", SHARED_VOLUMES)
+              + " and no others — a volume this platform does not have is one docker creates empty"
+              + " — got: "
+              + (value.isBlank() ? entry : value));
+    }
+    return value;
+  }
+
+  /** The two entry shapes, spelled once so every refusal quotes the same sentence back. */
+  private static String grammar() {
+    return "`"
+        + PRIVATE
+        + ":<name>:<target>[:"
+        + READ_ONLY
+        + "]` or `"
+        + SHARED
+        + ":<volume>:<target>[:"
+        + READ_ONLY
+        + "]`";
   }
 
   private static PdDeploymentTarget target(String value, String source, int line) {

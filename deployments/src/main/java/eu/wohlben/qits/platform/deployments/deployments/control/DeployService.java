@@ -1241,6 +1241,7 @@ public class DeployService implements ReleaseAnnouncements {
       String healthPath,
       String healthCmd,
       List<ResourceProvisioning.Resolved> resources,
+      List<DeploymentDriver.VolumeMount> volumes,
       DeploymentDriver.UpdateOrder updateOrder,
       DeploymentDriver.PublishMode publishMode,
       List<String> routes,
@@ -1973,6 +1974,7 @@ public class DeployService implements ReleaseAnnouncements {
     // would be a fresh, empty store on the first deployment after the identity rollback.
     List<ResourceProvisioning.Resolved> resources =
         ResourceProvisioning.resolve(applicationName, spec.resources());
+    List<DeploymentDriver.VolumeMount> volumes = volumeMounts(applicationName, spec);
     catalog.upsert(
         new ServiceCatalog.Upsert(
             applicationName,
@@ -1999,6 +2001,7 @@ public class DeployService implements ReleaseAnnouncements {
               healthPath,
               spec.healthCmd(),
               resources,
+              volumes,
               spec.updateOrder(),
               spec.publishMode(),
               spec.routes(),
@@ -2070,6 +2073,7 @@ public class DeployService implements ReleaseAnnouncements {
     String healthPath = resolveHealthPath(applicationName, spec, known);
     List<ResourceProvisioning.Resolved> resources =
         ResourceProvisioning.resolve(applicationName, spec.resources());
+    List<DeploymentDriver.VolumeMount> volumes = volumeMounts(applicationName, spec);
     catalog.upsert(
         new ServiceCatalog.Upsert(
             applicationName,
@@ -2141,6 +2145,7 @@ public class DeployService implements ReleaseAnnouncements {
             healthPath,
             spec.healthCmd(),
             resources,
+            volumes,
             spec.updateOrder(),
             spec.publishMode(),
             spec.routes(),
@@ -2148,6 +2153,27 @@ public class DeployService implements ReleaseAnnouncements {
             browserHost(applicationName, spec),
             spec.navigationEntries(),
             spec.apiDocs()));
+  }
+
+  /**
+   * The volumes the repository declared, with every name resolved — which is this method's whole
+   * job, and it is the {@code resources} arrangement exactly: the parser reads what the file says
+   * and validates it, and the NAME is finished here, because this is the first place that knows
+   * which application the file was read for. A private {@code volumes: private:data:/data} becomes
+   * the volume {@code <application>-data}; a shared one was named in full and passes through.
+   *
+   * <p>It is also why a repository cannot reach another application's storage: the name it writes
+   * is a segment, and the prefix is not its to choose. See {@code DeploymentSpec.VolumeSpec}.
+   */
+  private static List<DeploymentDriver.VolumeMount> volumeMounts(
+      String applicationName, DeploymentSpec spec) {
+    List<DeploymentDriver.VolumeMount> mounts = new ArrayList<>();
+    for (DeploymentSpec.VolumeSpec volume : spec.volumes()) {
+      mounts.add(
+          new DeploymentDriver.VolumeMount(
+              volume.source(applicationName), volume.target(), volume.readOnly()));
+    }
+    return List.copyOf(mounts);
   }
 
   /**
@@ -2261,6 +2287,7 @@ public class DeployService implements ReleaseAnnouncements {
               linked.service().healthPath,
               null,
               List.of(),
+              List.of(),
               null,
               null,
               List.of(),
@@ -2282,6 +2309,7 @@ public class DeployService implements ReleaseAnnouncements {
                 linked.service().availableOnEnv,
                 linked.service().healthPath,
                 null,
+                List.of(),
                 List.of(),
                 null,
                 null,
@@ -2501,6 +2529,11 @@ public class DeployService implements ReleaseAnnouncements {
 
     List<ResourceProvisioning.Resolved> resources() {
       return target.resources();
+    }
+
+    /** What the repository declared in {@code volumes:}, with every name already resolved. */
+    List<DeploymentDriver.VolumeMount> volumes() {
+      return target.volumes();
     }
 
     boolean platform() {
@@ -2939,7 +2972,12 @@ public class DeployService implements ReleaseAnnouncements {
         plan.availableOnEnv(),
         plan.updateOrder(),
         plan.publishMode(),
-        bindings);
+        bindings,
+        // The storage the repository declared, names already resolved at registration. It rides
+        // beside the resource bindings because it is the same kind of fact — what this application
+        // needs to exist before it can serve — and, unlike the extras, it is the application's own
+        // statement rather than the platform's.
+        plan.volumes());
   }
 
   /**

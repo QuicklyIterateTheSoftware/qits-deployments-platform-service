@@ -65,9 +65,18 @@ import org.jboss.logging.Logger;
  *
  * <p><b>What a service keeps across an update</b> is its mounts, its networks and its published
  * ports: {@link #buildUpdateArgv} changes the image, the identity labels, the environment and the
- * update policy, and nothing else. Changing the SHAPE of a service — a new volume, another port —
+ * update policy, and nothing else. Changing the SHAPE of a service — another port, a new alias —
  * is therefore a {@code service rm} and a redeploy, which is the honest reading of it: a change of
  * shape is not a deployment.
+ *
+ * <p><b>A DECLARED volume is the one shape change a deployment performs for itself</b>, and the
+ * distinction is what a repository said rather than what an operator did: {@code volumes:} in
+ * {@code .config/qits/deployments.yml} is the application stating the storage it needs, and a
+ * statement no deployment can ever honour would be worse than no key at all. So {@link #apply}
+ * asks whether the live service has each declared volume, and a missing one makes this deployment
+ * a {@code service rm} and a create — never an update with a mount bolted on, which swarm has no
+ * flag for. The rule is one-directional and the asymmetry is load-bearing: see {@link
+ * #missingDeclaredVolume}.
  *
  * <p><b>Two verbs here are not swarm-shaped at all</b>, and they are kept for what they answer:
  * {@code docker pull} classifies a missing image (swarm pulls on its own, but a task that never
@@ -154,6 +163,17 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   static final String SPEC_ENV_FORMAT =
       "{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}";
+
+  /**
+   * The mounts the live service carries, one {@code <source>|<target>} per line — what a declared
+   * volume is looked for in. It reads the SPEC rather than a running task for {@link
+   * #SPEC_ENV_FORMAT}'s reason: the spec is what the next task would inherit.
+   *
+   * <p>A service with no mounts prints nothing, which is the honest answer and the one that makes a
+   * declaration reach an application that never had a volume.
+   */
+  static final String SPEC_MOUNTS_FORMAT =
+      "{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Source}}|{{.Target}}{{println}}{{end}}";
 
   /**
    * The DESIRED task count the service spec holds. Guarded by {@code if}, because a global-mode
@@ -398,14 +418,33 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     boolean self = own.equals(name) || own.equals(SEED_STACK_PREFIX + name);
     String target = self ? own : name;
     boolean exists = serviceExists(target);
+    // A declared volume the live service does not have can only reach it through a CREATE — see
+    // `missingDeclaredVolume`. Never for a self-update: removing the service this process answers
+    // on would leave nothing to create the successor.
+    String missingVolume = exists && !self ? missingDeclaredVolume(spec, target) : null;
+    boolean recreate = missingVolume != null;
+    boolean updating = exists && !recreate;
     List<String> argv;
     try {
-      argv = exists ? buildUpdateArgv(spec, target) : buildCreateArgv(spec, target, networks);
+      argv = updating ? buildUpdateArgv(spec, target) : buildCreateArgv(spec, target, networks);
     } catch (ServiceExtras.Refused e) {
       // Deployment config said something swarm cannot express. Nothing was applied — the argv is
       // built before the command runs — so this deployment changed nothing.
       LOG.warnf("Refusing to deploy %s: %s", name, e.getMessage());
       return new ApplyResult(ApplyOutcome.REFUSED, e.getMessage());
+    }
+    if (recreate) {
+      // Destructive, and announced before it happens: the writable layer of the running task goes
+      // with the service. Everything an application is supposed to keep is on a volume — which is
+      // exactly what this deployment is putting right — but the sentence is what a person reads
+      // afterwards to know why a container they were looking at is gone. Removed after the argv is
+      // built, like the seed twin below, so a REFUSED deployment changes nothing.
+      LOG.warnf(
+          "Recreating service %s: it declares the volume %s and the live service does not have it."
+              + " A service update cannot add a mount, so the service is removed and created"
+              + " again — its writable layer goes with it.",
+          target, missingVolume);
+      removeForRecreate(target);
     }
     if (!self) {
       // The seed twin dies at cutover, and it dies FIRST. It holds the wire alias (DNS would
@@ -418,18 +457,20 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     }
     PdProcess.Result result = run(argv, APPLY_TIMEOUT);
     if (result.exitCode() != 0 || result.timedOut()) {
-      LOG.warnf("Could not %s service %s: %s", exists ? "update" : "create", name, result.output());
+      LOG.warnf(
+          "Could not %s service %s: %s", updating ? "update" : "create", name, result.output());
       return new ApplyResult(ApplyOutcome.REFUSED, result.output());
     }
-    if (exists && !self) {
+    if (updating && !self) {
       // WHICH update the verdict is about, recorded the only place that knows. See
       // `awaitConverged`: a service that has been cut over before answers with the PREVIOUS
       // update's terminal state until the daemon has replaced it, and one poll of that is a
       // deployment declared live 43 milliseconds after it was issued.
       rememberIssued(target);
-    } else if (!exists) {
+    } else if (!updating) {
       // A create has no update to wait for, and a service that was removed and made again must not
-      // inherit the removed one's issue instant — its empty status would then never settle.
+      // inherit the removed one's issue instant — its empty status would then never settle. That
+      // second sentence is the recreate above, which is exactly such a service.
       issuedUpdates.remove(target);
     }
     if (self) {
@@ -1033,6 +1074,27 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           twin, removed.output());
       return;
     }
+    if (awaitTasksGone(twin)) {
+      LOG.infof("Removed the seed service %s: %s takes the alias and the ports", twin, name);
+      return;
+    }
+    LOG.warnf(
+        "The seed service %s is removed but its task is still stopping — the successor may start"
+            + " beside it",
+        twin);
+  }
+
+  /**
+   * Whether the removed service's task containers are gone yet, waited on for at most {@link
+   * #TWIN_DRAIN_ATTEMPTS} × {@link #TWIN_DRAIN_WAIT}.
+   *
+   * <p>{@code service rm} returns while the task is still shutting down, and the wait is about
+   * VOLUMES rather than ports — see {@link #reapSeedTwin}, which measured it twice on postgres.
+   * Both callers remove a service whose successor is created on the same storage, so both owe the
+   * same wait; the give-up arm exists so a wedged task cannot hold every deployment hostage, and
+   * each caller says what it risks.
+   */
+  private boolean awaitTasksGone(String service) {
     for (int attempt = 0; attempt < TWIN_DRAIN_ATTEMPTS; attempt++) {
       PdProcess.Result tasks =
           run(
@@ -1041,23 +1103,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                   "ps",
                   "--quiet",
                   "--filter",
-                  "label=" + SWARM_SERVICE_LABEL + "=" + twin),
+                  "label=" + SWARM_SERVICE_LABEL + "=" + service),
               INSPECT_TIMEOUT);
       if (tasks.exitCode() == 0 && safe(tasks.output()).strip().isEmpty()) {
-        LOG.infof("Removed the seed service %s: %s takes the alias and the ports", twin, name);
-        return;
+        return true;
       }
       try {
         Thread.sleep(TWIN_DRAIN_WAIT.toMillis());
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
-        return;
+        return false;
       }
     }
-    LOG.warnf(
-        "The seed service %s is removed but its task is still stopping — the successor may start"
-            + " beside it",
-        twin);
+    return false;
   }
 
   /**
@@ -1365,9 +1423,51 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       argv.add("--env");
       argv.add(variable);
     }
-    extras(argv, extras, spec.publishMode());
+    // The repository's own volumes first, and what they cover is what deployment config no longer
+    // contributes. See `volumeFlags` for why the order and the dedupe are the whole migration.
+    Set<String> declaredTargets = volumeFlags(argv, spec);
+    extras(argv, extras, spec.publishMode(), declaredTargets);
     argv.add(spec.imageRef());
     return List.copyOf(argv);
+  }
+
+  /**
+   * The volumes the repository DECLARED, as {@code --mount type=volume}, and the targets they
+   * occupy.
+   *
+   * <p>Every mount here is a named volume by construction: the repository's grammar has no host
+   * bind in it, because a host path is a statement about the machine rather than about the
+   * application. So there is no kind to decide — {@code type=volume} is not a default, it is the
+   * only thing this can be.
+   *
+   * <p><b>The names are re-validated here, at the last line before the argv</b>, which is the
+   * health path's rule: the source is a derived name and the target is repository-authored, and
+   * both are spliced into a comma-separated {@code --mount} argument where a stray comma would
+   * forge a field.
+   *
+   * <p><b>The returned targets are what makes the migration safe</b>, and the caller is what uses
+   * them: an application whose {@code deployments.yml} declares {@code /data} while the platform's
+   * deployment config still carries a {@code mounts[0]} for {@code /data} would otherwise get two
+   * {@code --mount} flags for one directory and a {@code service create} that fails outright. With
+   * the dedupe, the declaration lands and is provably inert for as long as config supplies the same
+   * value — which is the estate's two-step rule (configuration-yml.md §7.5) applied to this family:
+   * ship the declaration, watch it change nothing, then retire the config entry.
+   */
+  private Set<String> volumeFlags(List<String> argv, ServiceSpec spec) {
+    Set<String> targets = new LinkedHashSet<>();
+    for (VolumeMount volume : spec.volumes()) {
+      String source = DeploymentIdentifiers.requireVolumeSource(volume.source());
+      String target = DeploymentIdentifiers.requireMountTarget(volume.target());
+      argv.add("--mount");
+      argv.add(
+          "type=volume,source="
+              + source
+              + ",target="
+              + target
+              + (volume.readOnly() ? ",readonly" : ""));
+      targets.add(target);
+    }
+    return targets;
   }
 
   /**
@@ -1419,6 +1519,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * at worst would append a second copy of a mount. What changes on a deployment is the image, the
    * identity this deployment stamps on the service, the replica count, and the policy the update
    * itself runs under.
+   *
+   * <p><b>A declared volume that is missing does not change that — it means this argv is never
+   * built.</b> {@link #apply} asks the question before it chooses, and a volume the live service
+   * lacks makes the deployment a {@code service rm} and a {@link #buildCreateArgv}. Nothing was
+   * added to the update path, and nothing should be: swarm has no add-a-mount, and a mount stated
+   * here would be a second copy of one the service already holds. See {@link
+   * #missingDeclaredVolume} for why the question is asked in one direction only.
    *
    * <p><b>The replica count is restated and that is a decision, not symmetry with the create.</b> It
    * is desired state rather than shape — see the flag's own comment below — and leaving it alone
@@ -1646,6 +1753,84 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
+   * The first volume this deployment declares that the live service does not have — or null, which
+   * is the answer on every deployment this platform performs today.
+   *
+   * <p><b>Why this exists at all.</b> {@link #buildUpdateArgv} states no mounts, and deliberately:
+   * a service update keeps the shape it is not asked to change, and re-stating a mount would append
+   * a second copy of it. Swarm has no add-a-mount either. So a volume a repository has just started
+   * declaring can reach a running service by exactly one route — {@code service rm} and a create —
+   * and a deployment that did not take it would go green while the application kept writing to a
+   * container layer that vanishes at the next cutover. Which is the failure this whole change is
+   * about: a declared mount that can never arrive.
+   *
+   * <p><b>The rule is ONE-DIRECTIONAL and that is not a simplification.</b> A declared volume the
+   * live service lacks means recreate. Everything else — a mount the live service has and nothing
+   * declares, a mount at a different target, an application that declares nothing at all — takes
+   * the ordinary update path, untouched. A symmetric "the two sets differ" comparison would be a
+   * platform-wide outage on its first run: every service on this estate carries extras-supplied
+   * mounts and declares none, so every one of them would be removed and recreated on its next
+   * deployment, each losing its writable layer for no reason anybody asked for.
+   *
+   * <p><b>A mount matches on BOTH halves.</b> The same target fed by a different volume is not this
+   * volume — it is the application reading somebody else's storage, or its own under the name it
+   * had before — and answering "present" there would leave the declaration permanently unhonoured.
+   *
+   * <p><b>An inspect that cannot answer recreates NOTHING</b>, with a WARN, which is {@link
+   * #currentSpecEnvKeys}' stance one step more strictly: that one risks carrying a stale variable
+   * one more deployment, and this one risks destroying a running service over a CLI call that
+   * failed. The next deployment asks again.
+   */
+  private String missingDeclaredVolume(ServiceSpec spec, String name) {
+    if (spec.volumes().isEmpty()) {
+      // The whole estate today. Not one CLI call is spent on a service that declares nothing.
+      return null;
+    }
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "service", "inspect", "--format", SPEC_MOUNTS_FORMAT, name),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      LOG.warnf(
+          "Could not read the mounts of %s, so this deployment updates it in place — a declared"
+              + " volume may still be missing, and the next deployment asks again: %s",
+          name, inspected.output());
+      return null;
+    }
+    Set<String> live = new HashSet<>(lines(inspected.output()));
+    for (VolumeMount volume : spec.volumes()) {
+      if (!live.contains(volume.source() + "|" + volume.target())) {
+        return volume.source() + " at " + volume.target();
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Remove the service so the create that follows can declare the shape it needs — and WAIT for its
+   * task to be gone, for {@link #reapSeedTwin}'s reason and more sharply: the successor is created
+   * on the very volumes the predecessor is still writing to, so an overlap of seconds is two
+   * writers on one store rather than a moment of duplicated serving.
+   */
+  private void removeForRecreate(String name) {
+    PdProcess.Result removed = run(List.of(runtime, "service", "rm", name), CLEANUP_TIMEOUT);
+    if (removed.exitCode() != 0) {
+      // The create that follows will fail on the name still being taken, and that is the honest
+      // outcome: a REFUSED deployment naming what could not be removed, with the predecessor still
+      // serving.
+      LOG.warnf("Could not remove %s to recreate it with its declared volumes: %s",
+          name, removed.output());
+      return;
+    }
+    if (!awaitTasksGone(name)) {
+      LOG.warnf(
+          "The service %s is removed but its task is still stopping — the successor may start"
+              + " beside it, on the same volumes",
+          name);
+    }
+  }
+
+  /**
    * The environment keys the LIVE service carries, so an update can state what is no longer stated.
    *
    * <p>Read with the same {@code service inspect} the rest of this class asks its questions with.
@@ -1726,9 +1911,24 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * {@link ServiceExtras} in {@code service create}'s vocabulary. Only this application's own keys
    * are read, and that is the security property: one application's socket bind cannot ride along
    * on a sibling's deployment.
+   *
+   * <p>{@code declaredTargets} is what the repository's own {@code volumes:} already mounted, and a
+   * config mount naming one of those targets is <b>dropped</b> rather than rendered beside it — see
+   * {@link #volumeFlags}. It is silent by design: during the migration the two state the same
+   * thing, so a warning would fire on every deployment of every migrated application and say
+   * nothing a person can act on.
    */
-  private void extras(List<String> argv, ServiceExtras extras, PublishMode publishMode) {
+  private void extras(
+      List<String> argv,
+      ServiceExtras extras,
+      PublishMode publishMode,
+      Set<String> declaredTargets) {
     for (ServiceExtras.Mount mount : extras.mounts()) {
+      if (declaredTargets.contains(mount.target())) {
+        // The repository declared this directory itself and the flag is already in the argv. Two
+        // --mounts for one target is not a duplicate swarm tolerates: it refuses the create.
+        continue;
+      }
       // Swarm names the kind rather than inferring it from a leading slash, which is what config
       // states — so this is a spelling, not a decision.
       argv.add("--mount");

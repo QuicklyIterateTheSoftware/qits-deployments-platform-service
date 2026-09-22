@@ -54,6 +54,24 @@ public final class DeploymentIdentifiers {
    */
   private static final String ATTRIBUTE_VALUE = "[A-Za-z0-9._/:-]{1,255}";
 
+  /**
+   * The {@code <name>} a repository writes in {@code volumes: private:<name>:<target>}. The
+   * dns-label charset, because the volume it becomes half of is {@code <application>-<name>} and
+   * the other half is a name the topology already holds to that rule.
+   */
+  private static final String VOLUME_NAME = "[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?";
+
+  /**
+   * A volume name as it reaches a {@code --mount}: a derived private one, or one of the platform's
+   * shared volumes, which are spelled with underscores ({@code qits_shared_m2}).
+   */
+  private static final String VOLUME_SOURCE = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}";
+
+  /** Where a volume is mounted in the container: absolute, and never the bare root. */
+  private static final String MOUNT_TARGET = "(?:/[A-Za-z0-9._-]+)+";
+
+  private static final int MOUNT_TARGET_MAX_CHARS = 255;
+
   /** How long a {@code health_cmd} may be. Long enough for a real probe, short enough to read. */
   public static final int HEALTH_CMD_MAX_CHARS = 512;
 
@@ -215,5 +233,62 @@ public final class DeploymentIdentifiers {
               + " characters");
     }
     return healthCmd;
+  }
+
+  /**
+   * The {@code <name>} half of a repository's {@code volumes: private:<name>:<target>} — never the
+   * whole volume name, which is {@code <application>-<name>} and is derived one layer up.
+   *
+   * <p>The charset is the dns-label one the rest of this platform's derived names use, because that
+   * is what it becomes half of: a docker volume name, one {@code --mount} field away from the
+   * {@code source=} it is spliced into. A comma or an equals sign there would forge a second field
+   * of that mount, and neither is in the charset.
+   *
+   * @throws BadRequestException if the segment could not be half of a volume name
+   */
+  public static String requireVolumeName(String name) {
+    if (name == null || !name.matches(VOLUME_NAME)) {
+      throw new BadRequestException(
+          "Invalid volume name — lowercase letters, digits and inner dashes, at most 32 characters");
+    }
+    return name;
+  }
+
+  /**
+   * A volume name as it reaches the argv: a private volume's derived {@code <application>-<name>},
+   * or one of the platform's shared volumes, whose spelling carries underscores. Checked at the
+   * last line before the {@code --mount}, the health path's rule — the two halves of a derived name
+   * were each checked where they were written, and this is the check on what they made.
+   *
+   * @throws BadRequestException if the source could forge a field of the mount it is rendered into
+   */
+  public static String requireVolumeSource(String source) {
+    if (source == null || !source.matches(VOLUME_SOURCE)) {
+      throw new BadRequestException(
+          "Invalid volume source — letters, digits, dots, underscores and inner dashes, at most 64"
+              + " characters");
+    }
+    return source;
+  }
+
+  /**
+   * Where a volume is mounted inside the container: an absolute path, and never {@code /} alone.
+   *
+   * <p>It is rendered into the same comma-separated {@code --mount} argument the source is, so the
+   * charset excludes the two characters that would forge a field, and whitespace with them — an
+   * argv element is never re-split, so a space would simply be part of a path nothing exists at.
+   * The bare root is refused because mounting a volume over {@code /} is not a thing a repository
+   * can have meant.
+   *
+   * @throws BadRequestException if the target is not an absolute container path
+   */
+  public static String requireMountTarget(String target) {
+    if (target == null || target.length() > MOUNT_TARGET_MAX_CHARS || !target.matches(MOUNT_TARGET)) {
+      throw new BadRequestException(
+          "Invalid mount target — an absolute path inside the container, at most "
+              + MOUNT_TARGET_MAX_CHARS
+              + " characters");
+    }
+    return target;
   }
 }

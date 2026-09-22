@@ -237,6 +237,7 @@ public class PdDeployPublishTest {
             null,
             null,
             null,
+            null,
             List.of("/nohost"),
             8080,
             null,
@@ -259,6 +260,7 @@ public class PdDeployPublishTest {
     return new DeploymentSpec(
         PdDeploymentTarget.ENVIRONMENT,
         false,
+        null,
         null,
         null,
         null,

@@ -1253,6 +1253,54 @@ The admin credential and the untrusted-input rules for the two names are in **Un
 above. `PgResourceProvisionerTest` runs the matrix against a real postgres because the arms differ
 only in which statement runs — a fake there would be asserting the test's own model of the server.
 
+## Volumes: what the application declares, and the one shape change a deployment performs
+
+`volumes: private:<name>:<target>[:ro], shared:<volume>:<target>[:ro]` in
+`.config/qits/deployments.yml` is the `resources:` statement applied to storage. A volume mount is a
+property of what an application IS — it needs a place to keep its data, in every environment it is
+ever deployed into — so it belongs in the repository's own file rather than in
+`qits.platform.deployments.extras.<app>.mounts[i]`, where it was an indexed list, authored in
+**another repository** (`qits-bootstrap-cli`'s `ComposeTemplate.java`), identical everywhere, and
+whose only identity was the index. Four things decide how it behaves:
+
+- **A `private` volume's NAME is DERIVED**, `<application>-<name>`, exactly as a resource's defaulted
+  database is and resolved in the same place — `DeployService.register`, the first caller that knows
+  the application's name. `private:data:/data` on qits-workspaces is `qits-workspaces-data`, which
+  is what every private volume on this estate is already called. **A repository may never state a
+  literal private volume name**: the derivation is what makes it impossible to mount a sibling's
+  storage. `shared:` is the opposite case and names its volume in full out of a **closed**
+  vocabulary (`qits_shared_dot_claude`, `qits_shared_m2`, `qits_shared_pnpm` —
+  `qits.containers.shared-volumes` in qits-containers), because a platform-owned volume is not this
+  application's to derive, and docker answers an unknown volume name by creating an empty one.
+- **HOST BINDS ARE DELIBERATELY NOT IN THIS GRAMMAR.** `bind:/var/run/docker.sock:…` stays in extras
+  config on qits-containers, qits-deployments and qits-platform-system. A host path is platform
+  topology — a statement about the machine, not about the application — and that is the line this key
+  draws. Do not "complete" the grammar later; the parser's javadoc says so for the same reason.
+- **The create renders declared volumes FIRST and then drops every extras mount naming a target a
+  declaration already covers.** That dedupe is what makes the migration safe rather than tidy: an
+  application declaring `/data` while `ComposeTemplate` still supplies `mounts[0]` for `/data` would
+  otherwise get two `--mount` flags for one directory and a `service create` that fails outright.
+  With it, the declaration lands and is provably inert while bootstrap supplies the same value —
+  `configuration-yml.md` §7.5's two-step rule applied to this family. It is silent by design: during
+  the migration the two say the same thing.
+- **A declared volume MISSING from the live service forces a `service rm` and a create**, because
+  `buildUpdateArgv` states no mounts and swarm has no add-a-mount — so without it a declaration could
+  never reach a running service while every deployment went green. **The rule is one-directional and
+  that is not negotiable.** A declared volume absent → recreate. Anything else — a mount the service
+  has and nothing declares, an application that declares nothing at all — takes the update path
+  untouched. Every service on this estate carries extras-supplied mounts and declares none, so a
+  symmetric "the sets differ" comparison would remove and recreate the whole platform on its next
+  deployment, each service losing its writable layer.
+  `aLiveServiceWithConfigMountsAndNoDeclarationsIsUPDATEDANDNOTRECREATED` is what holds that, and it
+  is named so nobody deletes it. A recreate WARNs first, naming the service and the volume, and
+  matches on **both** halves of a mount: the same target fed by another volume is not this volume.
+  An inspect that cannot answer recreates **nothing** — `envRemovals`' stance, one step more
+  strictly, since the cost here is a destroyed service rather than a stale variable. A self-update
+  never recreates: there would be nothing left to create the successor.
+
+And, like every spec key: **it must ship in the deployer before any repository writes the line**,
+since a spec is read at the released tag and an unknown key fails a deployment.
+
 ## Addressing and auth
 
 `quarkus.rest.path=/platform-deployments/api` lives in the service module's

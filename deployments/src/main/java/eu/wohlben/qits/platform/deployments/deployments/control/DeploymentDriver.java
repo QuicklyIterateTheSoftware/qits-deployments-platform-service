@@ -413,10 +413,18 @@ public interface DeploymentDriver {
    * per resource the repository declared. Empty for every application that stores nothing, which is
    * most of them.
    *
-   * <p><b>What is deliberately NOT here: mounts, ports and extra env.</b> Those are {@link
+   * <p>{@code volumes} is what the repository declared in {@code volumes:}, with every name already
+   * resolved — a private volume is {@code <application>-<name>} by the time it gets here. It sits
+   * beside {@code resources} because it is the same kind of statement: the application says what
+   * storage it needs, and the platform makes it exist. Empty for every application that keeps
+   * nothing, which is most of them.
+   *
+   * <p><b>What is deliberately NOT here: host binds, ports and extra env.</b> Those are {@link
    * ServiceExtras}, read by the driver from deployment config, which is the trust domain that
    * already holds the socket. Routing them through this record would put a value that reaches an
-   * argv on a path that starts at an HTTP intake.
+   * argv on a path that starts at an HTTP intake. A declared VOLUME is the opposite case and that
+   * is why it may travel here: it names no host path, and its name is derived rather than stated,
+   * so nothing a repository writes can address storage that is not its own.
    */
   record ServiceSpec(
       String environmentId,
@@ -437,12 +445,14 @@ public interface DeploymentDriver {
       boolean availableOnEnv,
       UpdateOrder updateOrder,
       PublishMode publishMode,
-      List<ResourceBinding> resources) {
+      List<ResourceBinding> resources,
+      List<VolumeMount> volumes) {
 
     /** Null lists and empty ones are the same statement: this application declared none. */
     public ServiceSpec {
       networks = networks == null ? List.of() : List.copyOf(networks);
       resources = resources == null ? List.of() : List.copyOf(resources);
+      volumes = volumes == null ? List.of() : List.copyOf(volumes);
       updateOrder = updateOrder == null ? UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? PublishMode.HOST : publishMode;
     }
@@ -513,6 +523,22 @@ public interface DeploymentDriver {
       return name().toLowerCase(java.util.Locale.ROOT);
     }
   }
+
+  /**
+   * One volume the application declared, resolved: {@code source} is the volume itself — a private
+   * volume's {@code <application>-<name>} already derived, or one of the platform's shared volumes
+   * — and {@code target} is where it is mounted inside the container.
+   *
+   * <p><b>There is no kind here, and that is the point rather than an omission.</b> Every mount
+   * that can reach this record is a named volume: a repository's grammar has no host bind in it,
+   * because a host path is a statement about the machine and belongs to deployment config. A
+   * renderer therefore never has to ask which kind it is holding. See {@code
+   * SpecSource.DeploymentSpec.VolumeSpec}.
+   *
+   * <p>{@code readOnly} is the one option the grammar carries, which is {@link ServiceExtras.Mount}'s
+   * own.
+   */
+  record VolumeMount(String source, String target, boolean readOnly) {}
 
   /**
    * One provisioned resource, as the service is told about it: {@code

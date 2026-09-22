@@ -196,6 +196,13 @@ public interface SpecSource {
    * starts — a database of its own, whose credential arrives as {@code QITS_RESOURCE_<NAME>_*}. An
    * empty list is every application that stores nothing, which is most of them.
    *
+   * <p>{@code volumes} is the same statement about storage: where this application keeps its data,
+   * declared because a volume mount is a property of what the application IS rather than of the
+   * platform it happens to run on. A private volume's name is derived from the application's, so
+   * what is carried here is only the segment — see {@link VolumeSpec}. Empty is most applications,
+   * and empty stays empty while a platform's deployment config still supplies the same mount: the
+   * driver renders a declared volume and drops the config mount that names the same target.
+   *
    * <p>{@code updateOrder} is how a replacement may overlap what it replaces — {@code start-first}
    * unless the repository says otherwise. It is a repository's answer rather than a platform-wide
    * one because only the repository knows whether two of its processes may run at once: a public
@@ -239,6 +246,7 @@ public interface SpecSource {
       String healthPath,
       String healthCmd,
       List<ResourceSpec> resources,
+      List<VolumeSpec> volumes,
       DeploymentDriver.UpdateOrder updateOrder,
       DeploymentDriver.PublishMode publishMode,
       List<String> routes,
@@ -253,6 +261,7 @@ public interface SpecSource {
     public DeploymentSpec {
       deployBranches = deployBranches == null ? List.of() : List.copyOf(deployBranches);
       resources = resources == null ? List.of() : List.copyOf(resources);
+      volumes = volumes == null ? List.of() : List.copyOf(volumes);
       updateOrder = updateOrder == null ? DeploymentDriver.UpdateOrder.START_FIRST : updateOrder;
       publishMode = publishMode == null ? DeploymentDriver.PublishMode.HOST : publishMode;
       routes = routes == null ? List.of() : List.copyOf(routes);
@@ -295,6 +304,7 @@ public interface SpecSource {
           healthPath,
           healthCmd,
           resources,
+          List.of(),
           updateOrder,
           publishMode,
           List.of(),
@@ -330,6 +340,45 @@ public interface SpecSource {
       public enum Type {
         POSTGRESQL,
         IDP_CLIENT
+      }
+    }
+
+    /**
+     * One volume a repository declares — {@code private:<name>:<target>[:ro]} or {@code
+     * shared:<volume>:<target>[:ro]}.
+     *
+     * <p><b>{@code name} is not the volume for a {@link Scope#PRIVATE} entry</b>: it is the segment
+     * the application's own name is prefixed to, and the volume is {@code <application>-<name>}.
+     * The parser does not know the application name — exactly as it does not for a resource's
+     * defaulted database — so {@code DeployService.register} resolves it. That is the isolation
+     * rather than a convenience: a repository cannot write a literal volume name, so it cannot
+     * write a sibling's.
+     *
+     * <p>For {@link Scope#SHARED} the name IS the volume, out of the closed vocabulary the parser
+     * holds: a platform-owned volume is not this application's to derive.
+     *
+     * <p><b>There is no host-bind scope, deliberately.</b> A host path is a statement about the
+     * machine rather than about the application, and it stays in deployment config — see {@code
+     * DeploymentSpecParser}'s class javadoc for the whole argument.
+     */
+    public record VolumeSpec(Scope scope, String name, String target, boolean readOnly) {
+
+      /** Whose volume it is, which decides whether the name is derived or stated. */
+      public enum Scope {
+        PRIVATE,
+        SHARED
+      }
+
+      /**
+       * The volume this mounts, once the application's name is known: {@code <application>-<name>}
+       * for a private one, and the stated name for a shared one.
+       *
+       * <p>One spelling of the derivation, here, because everything that has to agree about which
+       * volume an application holds takes it from this method — the argv that mounts it, and the
+       * comparison against a live service that decides whether the mount is there at all.
+       */
+      public String source(String applicationName) {
+        return scope == Scope.SHARED ? name : applicationName + "-" + name;
       }
     }
 

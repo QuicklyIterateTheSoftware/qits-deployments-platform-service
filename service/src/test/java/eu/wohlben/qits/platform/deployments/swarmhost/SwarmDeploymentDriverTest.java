@@ -144,6 +144,25 @@ class SwarmDeploymentDriverTest {
       DeploymentDriver.UpdateOrder order,
       DeploymentDriver.PublishMode publishMode,
       List<DeploymentDriver.ResourceBinding> resources) {
+    return spec(target, order, publishMode, resources, List.of());
+  }
+
+  /** The same application, having declared volumes of its own in its {@code deployments.yml}. */
+  private DeploymentDriver.ServiceSpec spec(List<DeploymentDriver.VolumeMount> volumes) {
+    return spec(
+        PdDeploymentTarget.ENVIRONMENT,
+        DeploymentDriver.UpdateOrder.START_FIRST,
+        DeploymentDriver.PublishMode.HOST,
+        List.of(),
+        volumes);
+  }
+
+  private DeploymentDriver.ServiceSpec spec(
+      PdDeploymentTarget target,
+      DeploymentDriver.UpdateOrder order,
+      DeploymentDriver.PublishMode publishMode,
+      List<DeploymentDriver.ResourceBinding> resources,
+      List<DeploymentDriver.VolumeMount> volumes) {
     boolean platform = target == PdDeploymentTarget.PLATFORM;
     // BOTH PLANES CARRY THE TIER. A platform service is deployed into the designated environment,
     // so its spec names one exactly as an environment application's does; what stays the plane's
@@ -171,7 +190,8 @@ class SwarmDeploymentDriverTest {
         !platform,
         order,
         publishMode,
-        resources);
+        resources,
+        volumes);
   }
 
   @Test
@@ -426,6 +446,183 @@ class SwarmDeploymentDriverTest {
     assertTrue(update.containsAll(List.of("--update-order", "start-first")));
     assertTrue(update.containsAll(List.of("--update-failure-action", "rollback")));
     assertTrue(update.contains("--env-add"));
+  }
+
+  @Test
+  void aDeclaredVolumeIsMountedByTheCreateAndReadOnlySurvives() {
+    // What the repository declared in `volumes:`, with the names already derived one layer up.
+    // type=volume is not a default here: this grammar has no host bind in it, so a declared mount
+    // can only ever be a named volume.
+    List<String> argv =
+        driver()
+            .buildCreateArgv(
+                spec(
+                    List.of(
+                        new DeploymentDriver.VolumeMount("qits-gateway-data", "/data", false),
+                        new DeploymentDriver.VolumeMount("qits_shared_m2", "/m2", true))),
+                "dev-qits-gateway",
+                List.of("qits-net"));
+
+    assertTrue(
+        argv.containsAll(List.of("--mount", "type=volume,source=qits-gateway-data,target=/data")),
+        argv.toString());
+    assertTrue(
+        argv.containsAll(List.of("--mount", "type=volume,source=qits_shared_m2,target=/m2,readonly")),
+        argv.toString());
+  }
+
+  @Test
+  void aDeclaredVolumeAndAConfigMountForOneTargetRenderExactlyOneFlag() {
+    // THE MIGRATION STEP. Every application with a volume today gets it from deployment config, so
+    // the release that starts declaring one has both statements live at once — and two --mounts for
+    // one target is not a duplicate swarm tolerates, it is a `service create` that fails outright.
+    // The declaration wins and the config mount for that target is dropped, which is what makes the
+    // declaration land and be provably inert while bootstrap still supplies the same value.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[0]",
+                    "volume:qits-gateway-data:/data",
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.mounts[1]",
+                    "bind:/var/run/docker.sock:/var/run/docker.sock"));
+
+    List<String> argv =
+        driver.buildCreateArgv(
+            spec(List.of(new DeploymentDriver.VolumeMount("qits-gateway-data", "/data", false))),
+            "dev-qits-gateway",
+            List.of("qits-net"));
+
+    assertEquals(
+        1,
+        argv.stream().filter(argument -> argument.contains("target=/data")).count(),
+        "one target, one --mount: " + argv);
+    assertTrue(
+        argv.containsAll(List.of("--mount", "type=volume,source=qits-gateway-data,target=/data")),
+        argv.toString());
+    // What config states about a target the repository did NOT declare is untouched — the host bind
+    // in particular, which is the half of this family that stays deployment config forever.
+    assertTrue(
+        argv.containsAll(
+            List.of("--mount", "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock")),
+        argv.toString());
+  }
+
+  @Test
+  void aDeclaredVolumeMissingFromTheLiveServiceIsRemovedAndCreatedAgain() {
+    // A service update cannot add a mount — swarm has no flag for it and buildUpdateArgv states
+    // none — so a volume a repository has just started declaring reaches a running service by
+    // exactly one route. Without this the declaration would be permanently unhonoured while every
+    // deployment went green.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("ContainerSpec.Mounts", result(0, "some-other-volume|/elsewhere\n"));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(spec(List.of(new DeploymentDriver.VolumeMount("qits-gateway-data", "/data", false))));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service update").isEmpty(), "an update could never carry the mount");
+    assertEquals(
+        List.of("docker", "service", "rm", "dev-qits-gateway"), cli.matching("service rm"));
+    List<String> created = cli.matching("service create");
+    assertTrue(
+        created.containsAll(
+            List.of("--mount", "type=volume,source=qits-gateway-data,target=/data")),
+        created.toString());
+    // …and the mount the live service already had, which config still states, is not lost: it is
+    // rendered from the extras exactly as it always was.
+    assertTrue(cli.count("ps --quiet") > 0, "the task is waited out before the successor starts");
+  }
+
+  @Test
+  void aLiveServiceWithConfigMountsAndNoDeclarationsIsUPDATEDANDNOTRECREATED() {
+    // THIS IS THE TEST THAT PROTECTS THE ESTATE — do not delete it. Every service running today
+    // carries extras-supplied mounts and declares none of them. A symmetric "the two sets differ"
+    // comparison would read that as a shape change and remove and recreate every service on the
+    // platform on its next deployment, each losing its writable layer. The rule is one-directional:
+    // only a DECLARED volume that is missing is a reason to create, and an application that
+    // declares nothing spends no inspect and takes the update path untouched.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script(
+        "ContainerSpec.Mounts",
+        result(0, "qits-gateway-data|/data\n/var/run/docker.sock|/var/run/docker.sock\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "nothing is ever recreated to REMOVE a mount");
+    assertFalse(cli.matching("service update").isEmpty(), "the ordinary update path, untouched");
+    assertEquals(
+        0,
+        cli.count("ContainerSpec.Mounts"),
+        "an application that declares no volume is not even asked about them");
+  }
+
+  @Test
+  void aDeclaredVolumeTheLiveServiceAlreadyHasIsAnOrdinaryUpdate() {
+    // The state every migrated application settles into: the declaration and the config entry say
+    // the same thing, the live service already carries it, and a deployment is a deployment.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("ContainerSpec.Mounts", result(0, "qits-gateway-data|/data\n"));
+
+    driver.apply(spec(List.of(new DeploymentDriver.VolumeMount("qits-gateway-data", "/data", false))));
+
+    assertTrue(cli.matching("service rm").isEmpty());
+    assertFalse(cli.matching("service update").isEmpty());
+  }
+
+  @Test
+  void theSameTargetFedByAnotherVolumeIsNotThisVolume() {
+    // Matching on the target alone would call the declaration satisfied by whatever happens to be
+    // mounted there — the application's storage under the name it had before, or somebody else's —
+    // and the declared volume would never arrive.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("ContainerSpec.Mounts", result(0, "an-older-name|/data\n"));
+
+    driver.apply(spec(List.of(new DeploymentDriver.VolumeMount("qits-gateway-data", "/data", false))));
+
+    assertFalse(cli.matching("service rm").isEmpty(), "the declared volume is still missing");
+  }
+
+  @Test
+  void anInspectThatCannotAnswerRecreatesNothing() {
+    // The env diff's stance, one step more strictly: that one risks carrying a stale variable for
+    // one more deployment, and this one risks destroying a running service over a CLI call that
+    // failed. The next deployment asks again.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("ContainerSpec.Mounts", result(1, "Error: No such service"));
+
+    driver.apply(spec(List.of(new DeploymentDriver.VolumeMount("qits-gateway-data", "/data", false))));
+
+    assertTrue(cli.matching("service rm").isEmpty(), "a failed inspect is never a reason to remove");
+    assertFalse(cli.matching("service update").isEmpty());
+  }
+
+  @Test
+  void theDeployersOwnServiceIsNeverRemovedToGiveItAVolume() {
+    // A self-update is handed to the swarm manager precisely because neither instance can arbitrate
+    // its own succession. Removing the service this process answers on would leave nothing to
+    // create the successor — the scale-to-zero stance, for the same reason.
+    SwarmDeploymentDriver driver = driver();
+    driver.hostnameFile = hostnameFile("task-container-id");
+    cli.script("Config.Labels", result(0, "dev-qits-gateway"));
+    cli.script("--format {{.ID}}", result(0, "svc123"));
+    cli.script("ContainerSpec.Mounts", result(0, ""));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(spec(List.of(new DeploymentDriver.VolumeMount("qits-gateway-data", "/data", false))));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "never its own service");
   }
 
   @Test
@@ -776,7 +973,8 @@ class SwarmDeploymentDriverTest {
         spec.availableOnEnv(),
         spec.updateOrder(),
         spec.publishMode(),
-        spec.resources());
+        spec.resources(),
+        spec.volumes());
   }
 
   @Test
@@ -1123,6 +1321,7 @@ class SwarmDeploymentDriverTest {
             true,
             DeploymentDriver.UpdateOrder.START_FIRST,
             DeploymentDriver.PublishMode.HOST,
+            List.of(),
             List.of());
 
     SwarmDeploymentDriver driver = driver();

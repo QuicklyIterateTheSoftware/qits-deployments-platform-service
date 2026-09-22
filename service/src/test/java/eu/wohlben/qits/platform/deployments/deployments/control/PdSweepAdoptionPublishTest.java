@@ -284,6 +284,7 @@ public class PdSweepAdoptionPublishTest {
         null,
         null,
         null,
+        null,
         routes,
         upstreamPort,
         null,

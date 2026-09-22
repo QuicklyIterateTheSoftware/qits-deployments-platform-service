@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
+import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.VolumeSpec;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import java.util.List;
@@ -434,6 +435,121 @@ class DeploymentSpecParserTest {
     assertTrue(
         messageOf("resources: postgresql:a:qits_x, postgresql:b:qits_x\n").contains("twice"),
         "the same database under two names");
+  }
+
+  @Test
+  void aRepositoryDeclaresTheStorageItNeedsWithOneLine() {
+    // The shapes the grammar has: a volume of the application's own, one of the platform's, the
+    // read-only option, and two entries on one line — the `resources` arrangement exactly, because
+    // a volume mount is the same kind of statement about what an application IS.
+    assertEquals(
+        List.of(new VolumeSpec(VolumeSpec.Scope.PRIVATE, "data", "/data", false)),
+        parse("volumes: private:data:/data\n").volumes());
+    assertEquals(
+        List.of(new VolumeSpec(VolumeSpec.Scope.SHARED, "qits_shared_m2", "/home/qits/.m2", false)),
+        parse("volumes: shared:qits_shared_m2:/home/qits/.m2\n").volumes());
+    assertEquals(
+        List.of(
+            new VolumeSpec(VolumeSpec.Scope.PRIVATE, "config", "/work/config", false),
+            new VolumeSpec(VolumeSpec.Scope.SHARED, "qits_shared_pnpm", "/pnpm", true)),
+        parse("volumes: private:config:/work/config, shared:qits_shared_pnpm:/pnpm:ro\n")
+            .volumes());
+  }
+
+  @Test
+  void aPrivateVolumesNameIsDerivedFromTheApplicationAndARepositoryCannotWriteTheWholeThing() {
+    // The isolation, and the reason the name is a segment rather than a volume: the prefix is not
+    // the repository's to choose, so nothing it can write addresses a sibling's storage. It is the
+    // defaulted-database arrangement — the parser never knows which application it is reading for.
+    VolumeSpec declared = parse("volumes: private:data:/data\n").volumes().get(0);
+
+    assertEquals("data", declared.name(), "the file states a segment");
+    assertEquals("qits-workspaces-data", declared.source("qits-workspaces"));
+    assertEquals("qits-containers-data", declared.source("qits-containers"));
+    // A shared volume is the platform's and is named in full, so there is nothing to derive.
+    assertEquals(
+        "qits_shared_m2",
+        parse("volumes: shared:qits_shared_m2:/m2\n").volumes().get(0).source("qits-ci"));
+  }
+
+  @Test
+  void aHostBindIsNotInThisGrammarAndThatIsTheWholeLine() {
+    // A host path is a statement about the MACHINE — which socket exists, which directory an
+    // operator laid out — so it stays in deployment config, which is the trust domain that already
+    // holds the docker socket. Completing the grammar later would give every repository the ability
+    // to mount any of the host. The refusal names the two words that do exist.
+    String message = messageOf("volumes: bind:/var/run/docker.sock:/var/run/docker.sock\n");
+    assertTrue(message.contains("private"), message);
+    assertTrue(message.contains("shared"), message);
+    // And a path written where a private volume's NAME belongs is the same reach, said differently.
+    assertTrue(
+        messageOf("volumes: private:/var/run:/var/run\n").contains("host path"),
+        "a path is not a volume name");
+  }
+
+  @Test
+  void anUnknownSharedVolumeIsRefusedWithTheWholeVocabulary() {
+    // Docker answers an unknown volume name by creating an empty one, so a typo here is a container
+    // that boots, passes its health gate and has lost its data. The vocabulary is quoted back.
+    String message = messageOf("volumes: shared:qits_shared_maven:/m2\n");
+    assertTrue(message.contains("qits_shared_m2"), message);
+    assertTrue(message.contains("qits_shared_dot_claude"), message);
+    assertTrue(message.contains("qits_shared_pnpm"), message);
+  }
+
+  @Test
+  void aVolumeTargetIsAnAbsolutePathAndRoIsTheOnlyOption() {
+    assertTrue(messageOf("volumes: private:data:data\n").contains("absolute"));
+    assertTrue(messageOf("volumes: private:data:/\n").contains("absolute"), "never the bare root");
+    // The one option ServiceExtras.Mount has, and this grammar has no others: `rw` is not a word
+    // here, and neither is anything else.
+    assertTrue(messageOf("volumes: private:data:/data:rw\n").contains("ro"));
+    assertEquals(true, parse("volumes: private:data:/data:ro\n").volumes().get(0).readOnly());
+  }
+
+  @Test
+  void aVolumeNameOutsideItsCharsetIsAnError() {
+    // The parser end of the two checkpoints, the resource name's rule: the value is half of a
+    // docker volume name spliced into a comma-separated --mount, so the charset is the one every
+    // derived name on this platform already passes.
+    assertTrue(messageOf("volumes: private:DATA:/data\n").contains("volumes"));
+    assertTrue(messageOf("volumes: private:my data:/data\n").contains("volumes"));
+    assertTrue(messageOf("volumes: private:-data:/data\n").contains("volumes"));
+    assertTrue(messageOf("volumes: private:data-:/data\n").contains("volumes"));
+  }
+
+  @Test
+  void aBlankVolumeEntryOrAMalformedOneIsAnError() {
+    // `volumes:` with nothing after it, and a trailing comma: a writer who meant to say something.
+    assertTrue(messageOf("volumes:\n").contains("volumes"));
+    assertTrue(messageOf("volumes: private:data:/data,\n").contains("volumes"));
+    assertTrue(messageOf("volumes: private:data:/data, ,shared:qits_shared_m2:/m2\n")
+        .contains("volumes"));
+    // Too few segments and too many are both the grammar being quoted back.
+    assertTrue(messageOf("volumes: private:data\n").contains("private:<name>:<target>"));
+    assertTrue(messageOf("volumes: private:data:/data:ro:extra\n").contains("<target>"));
+  }
+
+  @Test
+  void namingOneVolumeOrOneTargetTwiceIsAnError() {
+    // Two volumes over one directory is a thing no orchestrator can honour; one volume asked for
+    // twice is the second mount point somebody meant to write elsewhere.
+    assertTrue(
+        messageOf("volumes: private:data:/data, shared:qits_shared_m2:/data\n").contains("twice"),
+        "the same target from two volumes");
+    assertTrue(
+        messageOf("volumes: private:data:/data, private:data:/other\n").contains("twice"),
+        "the same volume at two targets");
+    // The scope is part of the key: these are two different volumes that happen to share a word.
+    assertEquals(
+        2,
+        parse("volumes: private:m2:/private-m2, shared:qits_shared_m2:/m2\n").volumes().size());
+  }
+
+  @Test
+  void aFileThatNamesNoVolumesGetsAnEmptyListAndNotANull() {
+    assertEquals(List.of(), parse("available_on_env: true\n").volumes());
+    assertEquals(List.of(), DeploymentSpec.DEFAULTS.volumes());
   }
 
   @Test
