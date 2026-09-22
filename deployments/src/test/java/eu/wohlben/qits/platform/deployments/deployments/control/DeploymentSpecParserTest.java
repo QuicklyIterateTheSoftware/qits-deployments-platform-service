@@ -156,7 +156,29 @@ class DeploymentSpecParserTest {
     String message = messageOf("routes: /ci\nnavigation-entries: services.CI:1\n");
     assertTrue(message.contains("services.details"), message);
     assertTrue(message.contains("project.detail"), message);
+    assertTrue(message.contains("apps.details"), message);
     assertTrue(messageOf("routes: /ci\nnavigation-entries: CI:1\n").contains("slots"));
+    // A word that merely looks like the seventh archetype group is still outside the vocabulary:
+    // admitting `apps.details` admits one word, not a family of them.
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: apps.detail.CI:1\n").contains("slots"));
+    assertTrue(messageOf("routes: /ci\nnavigation-entries: app.details.CI:1\n").contains("slots"));
+  }
+
+  @Test
+  void theSeventhArchetypeGroupIsASlotOfItsOwn() {
+    // A standalone app is an application like any other and asks to appear the same way. The word
+    // is in the guard's ordered list between `libs.details` and `frontends.details` — an app is a
+    // sibling kind of a microfrontend, not a group after it — and qits-edge's EdgeRoutes.SLOTS
+    // holds the same words in the same order, because it sorts the rendered navigation by index.
+    assertEquals(
+        List.of(
+            new NavigationEntry("apps.details", "Docs", 1),
+            new NavigationEntry("apps.details", "API", 2, "api-docs")),
+        parse(
+                "application: qits-shop-app\n"
+                    + "routes: /shop\n"
+                    + "navigation-entries: apps.details.Docs:1, apps.details.API:2=api-docs\n")
+            .navigationEntries());
   }
 
   @Test

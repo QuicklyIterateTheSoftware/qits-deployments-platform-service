@@ -28,7 +28,7 @@ import java.util.UUID;
  *
  * <p><b>{@code navigation} is application-level and replaces the label an endpoint used to carry.</b>
  * One application can sit under several headings — a repository's Docs, CI and Workspaces are the
- * same three entries under six categories — and a per-route label could say none of that. Empty is
+ * same three entries under seven categories — and a per-route label could say none of that. Empty is
  * an application that creates no navigation option at all, which is most of them.
  *
  * <p><b>{@code apiDocsPath} is where this application's browsable API document lives</b>, under one

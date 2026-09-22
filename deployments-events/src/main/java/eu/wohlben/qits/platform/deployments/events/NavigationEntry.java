@@ -8,9 +8,11 @@ package eu.wohlben.qits.platform.deployments.events;
  *
  * <p>{@code slot} is the heading the shell renders it under, from a closed vocabulary the spec
  * parser is the guard of: {@code services.details}, {@code daemons.details}, {@code libs.details},
- * {@code frontends.details}, {@code cli.details}, {@code images.details}, {@code project.detail},
- * {@code platform} and {@code system}. A consumer that meets a word outside it refuses that entry
- * rather than inventing a heading.
+ * {@code apps.details}, {@code frontends.details}, {@code cli.details}, {@code images.details},
+ * {@code project.detail}, {@code platform} and {@code system}. A consumer that meets a word outside
+ * it refuses that entry rather than inventing a heading. The order above is the rendered one — the
+ * guard's list is ordered and the edge sorts by its index — and {@code apps.details} sits before
+ * {@code frontends.details} because a standalone app is a sibling kind of a microfrontend.
  *
  * <p>{@code position} is the repository's own number, not a rank: the consumer sorts on it, and
  * two applications naming the same number is an ordinary tie the consumer breaks by label.

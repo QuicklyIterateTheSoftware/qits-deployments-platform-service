@@ -77,7 +77,7 @@ import java.util.Set;
  *
  * <p><b>{@code navigation-entries} is where an application asks to appear, and it is a list.</b>
  * One application shows up under several headings — a repository's Docs, CI and Workspaces are the
- * same three entries under all six categories — so a single label could never have said it. An
+ * same three entries under all seven categories — so a single label could never have said it. An
  * entry is {@code <slot>.<Label>:<position>[=<subpath>]}, read from the RIGHT: the last colon
  * separates the tail, the tail's first {@code =} separates the position from the optional subpath,
  * the last dot of what remains separates the label, and everything before it is the slot. That
@@ -228,13 +228,23 @@ public final class DeploymentSpecParser {
   private static final String API_DOCS = "api-docs";
   static final int DEFAULT_UPSTREAM_PORT = 8080;
 
-  /** The slot every navigation entry names. Closed, ordered, and quoted back at a typo. */
+  /**
+   * The slot every navigation entry names. Closed, ordered, and quoted back at a typo.
+   *
+   * <p><b>The ORDER is the document's</b>, not an implementation detail: qits-edge's own {@code
+   * EdgeRoutes.SLOTS} holds the same words and sorts the rendered navigation by index, so the two
+   * lists have to stay identical. {@code apps.details} sits immediately before {@code
+   * frontends.details} because an app is a standalone application — a sibling kind of a
+   * microfrontend rather than a group of its own after it — which makes the archetype run
+   * services, daemons, libs, apps, frontends, cli, images.
+   */
   private static final Set<String> SLOTS =
       new LinkedHashSet<>(
           List.of(
               "services.details",
               "daemons.details",
               "libs.details",
+              "apps.details",
               "frontends.details",
               "cli.details",
               "images.details",
