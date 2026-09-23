@@ -592,6 +592,21 @@ Four things about the rendering, each easy to undo by accident:
   already on is an error, so a live service gains or loses one by hand (`service update --network-rm
   <net> --network-add name=<net>,alias=…`, which recreates the task) or by a `service rm` and a
   redeploy. A declared alias reaches a service only on its next **create**.
+- **…which is why a declared alias MISSING from the live service forces that create**, the declared
+  volume's arm applied to the second shape change a deployment performs for itself
+  (`missingDeclaredAlias`). Without it the environment-qualified alias above would reach only
+  services created after it shipped — measured on the estate: `qits-platform-idp` resolved and
+  `dev-qits-platform-idp` did not, after two deployments carrying the declaration. It is the lever
+  that makes the plane cutover **staggered**: nobody here has host access to run `service rm` by
+  hand, and each platform service recreates once on its own next deployment, as its own release, and
+  never again. Everything the volume arm says holds here word for word — one-directional (an alias
+  the service carries that nothing declares is not a reason to recreate, and an application
+  declaring none spends no CLI call), an inspect that cannot answer recreates **nothing**, a WARN
+  names the service and the alias first, and a self-update never recreates.
+  `aLiveServiceWithAliasesAndNoDeclarationsIsUPDATEDANDNOTRECREATED` is the estate protection and is
+  named so nobody deletes it. The live aliases are read as the **union over all attachments**, never
+  matched against the shared network by name: the daemon resolves a network name to its **id** when
+  it stores the spec, so a name match would match nothing anywhere and read as "no aliases at all".
 
 **`update_order` in `.config/qits/deployments.yml`** is `start-first` (default) or `stop-first`, per
 repository, and only the repository knows: a published host port, a single-writer store or a held

@@ -78,6 +78,15 @@ import org.jboss.logging.Logger;
  * flag for. The rule is one-directional and the asymmetry is load-bearing: see {@link
  * #missingDeclaredVolume}.
  *
+ * <p><b>A declared network ALIAS is the second, and it arrived for the same reason</b>: an
+ * attachment is restated whole or not at all, {@link #buildUpdateArgv} states no networks, and so
+ * an alias reaches a LIVE service only on its next create. A fleet that is already running is
+ * therefore a fleet the declaration never reaches — which is exactly what the environment-qualified
+ * alias of a platform service needs it to. So {@link #apply} asks the same question of the aliases,
+ * one-directionally and with the same refusal to act on an inspect that failed, and each service
+ * recreates once, on its own next deployment, and matches for good afterwards. See {@link
+ * #missingDeclaredAlias}.
+ *
  * <p><b>Two verbs here are not swarm-shaped at all</b>, and they are kept for what they answer:
  * {@code docker pull} classifies a missing image (swarm pulls on its own, but a task that never
  * starts is a much worse way to learn that nothing published this build), and {@code docker network
@@ -174,6 +183,25 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   static final String SPEC_MOUNTS_FORMAT =
       "{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Source}}|{{.Target}}{{println}}{{end}}";
+
+  /**
+   * Every network alias the live service carries, one per line, across all of its attachments —
+   * what a declared alias is looked for in. It reads the SPEC for {@link #SPEC_ENV_FORMAT}'s
+   * reason: the spec is what the next task inherits, and it is the half an operator's {@code
+   * --network-rm}/{@code --network-add} rewrites.
+   *
+   * <p><b>The attachment's network is deliberately not printed, and not matched on.</b> The daemon
+   * resolves a network NAME to its id when it stores the spec, so {@code .Target} here is an id
+   * like {@code n0mb1...} and never {@code qits-net} — matching the shared overlay by name would
+   * match nothing on every service alive, read as "no aliases at all", and recreate the estate. The
+   * union over attachments is the safe reading and costs nothing in truth: this driver emits
+   * aliases on the shared overlay and nowhere else, so the union IS that attachment's set.
+   *
+   * <p>A service with no aliases prints nothing, which is the honest answer and the one that makes
+   * a declaration reach a service that never had one — every platform service today.
+   */
+  static final String SPEC_NETWORK_ALIASES_FORMAT =
+      "{{range .Spec.TaskTemplate.Networks}}{{range .Aliases}}{{println .}}{{end}}{{end}}";
 
   /**
    * The DESIRED task count the service spec holds. Guarded by {@code if}, because a global-mode
@@ -422,7 +450,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     // `missingDeclaredVolume`. Never for a self-update: removing the service this process answers
     // on would leave nothing to create the successor.
     String missingVolume = exists && !self ? missingDeclaredVolume(spec, target) : null;
-    boolean recreate = missingVolume != null;
+    // The same sentence about aliases, and for the same reason — see `missingDeclaredAlias`. Asked
+    // only when the volumes did not already decide it: the answer would change nothing, and a
+    // recreate spends no second inspect to learn it is still a recreate. `!self` is what keeps the
+    // deployer's own succession out of it, exactly as above.
+    String missingAlias =
+        exists && !self && missingVolume == null ? missingDeclaredAlias(spec, target, networks) : null;
+    boolean recreate = missingVolume != null || missingAlias != null;
     boolean updating = exists && !recreate;
     List<String> argv;
     try {
@@ -439,11 +473,21 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // exactly what this deployment is putting right — but the sentence is what a person reads
       // afterwards to know why a container they were looking at is gone. Removed after the argv is
       // built, like the seed twin below, so a REFUSED deployment changes nothing.
-      LOG.warnf(
-          "Recreating service %s: it declares the volume %s and the live service does not have it."
-              + " A service update cannot add a mount, so the service is removed and created"
-              + " again — its writable layer goes with it.",
-          target, missingVolume);
+      if (missingVolume != null) {
+        LOG.warnf(
+            "Recreating service %s: it declares the volume %s and the live service does not have it."
+                + " A service update cannot add a mount, so the service is removed and created"
+                + " again — its writable layer goes with it.",
+            target, missingVolume);
+      } else {
+        LOG.warnf(
+            "Recreating service %s: it declares the network alias %s and the live service does not"
+                + " answer to it. A service update states no networks and swarm has no"
+                + " add-an-alias, so the service is removed and created again — its writable layer"
+                + " goes with it. It recreates once: afterwards the alias is live and every later"
+                + " deployment is an ordinary update.",
+            target, missingAlias);
+      }
       removeForRecreate(target);
     }
     if (!self) {
@@ -1579,8 +1623,14 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * {@code --network-add} of a network the service is already on is an error. So a service that is
    * gaining or losing an alias takes {@code service update --network-rm <net> --network-add
    * name=<net>,alias=…} by hand — which recreates the task — or the {@code service rm} and redeploy.
-   * A deployment after that keeps whatever the service holds, which is why an alias declared in
-   * config reaches a LIVE service only on its next create.
+   * A deployment after that keeps whatever the service holds, which is why a declared alias reaches
+   * a LIVE service only on its next create.
+   *
+   * <p><b>Which is why a missing one means this argv is never built</b>, exactly as a missing volume
+   * does. {@link #apply} asks before it chooses, and an alias the live service lacks makes the
+   * deployment a {@code service rm} and a {@link #buildCreateArgv} — never an update with a network
+   * bolted on. Nothing was added to the update path and nothing should be: see {@link
+   * #missingDeclaredAlias} for why the question is asked in one direction only.
    *
    * <p><b>The environment is the exception, and it is re-stated in full</b> — this component's own
    * variables and the deployment config's alike. A variable is a value rather than a shape: config
@@ -1844,6 +1894,82 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
+   * The first alias this deployment declares that the live service does not answer to — or null,
+   * which is the answer on every deployment once the fleet has caught up.
+   *
+   * <p><b>Why this exists at all.</b> {@link #buildUpdateArgv} states no networks, deliberately: a
+   * swarm attachment is restated whole or not at all, and {@code --network-add} of a network the
+   * service is already on is an error. So an alias reaches a LIVE service by exactly one route — a
+   * {@code service rm} and a create — and without this, {@link #aliasesOf}'s
+   * environment-qualified alias would reach only services created after it shipped. Measured on the
+   * estate the day before this landed: {@code qits-platform-idp} resolved and {@code
+   * dev-qits-platform-idp} did not, on a service that had been deployed twice since the alias was
+   * declared. A cutover cannot move a single dialer onto a name nothing answers to.
+   *
+   * <p><b>It is the lever that makes the cutover staggered rather than a big bang.</b> Nobody here
+   * has host access to run {@code service rm} by hand, and recreating the platform at once is the
+   * thing this staged plan exists to avoid. Deployer-driven, each service recreates once — on its
+   * own next deployment, as its own release — and never again, because afterwards its aliases match.
+   *
+   * <p><b>The rule is ONE-DIRECTIONAL and that is not negotiable</b>, for {@link
+   * #missingDeclaredVolume}'s reason exactly. A declared alias the live service LACKS means
+   * recreate. Everything else — an alias the service carries that nothing declares, an alias on
+   * another attachment, a service that declares none at all — takes the ordinary update path,
+   * untouched. A symmetric "the two sets differ" comparison would recreate services across the
+   * estate for no reason anybody asked for, each losing its writable layer.
+   *
+   * <p><b>An inspect that cannot answer recreates NOTHING</b>, with a WARN: the cost of being wrong
+   * here is a destroyed service, and the next deployment asks again.
+   *
+   * <p>Never asked for a self-update — {@link #apply} guards that — because removing the service
+   * this process answers on would leave nothing to create the successor. An alias is worth less
+   * than a deployer.
+   */
+  private String missingDeclaredAlias(ServiceSpec spec, String name, List<String> networks) {
+    List<String> declared;
+    try {
+      declared =
+          aliasesOf(
+              spec,
+              ServiceExtras.of(
+                  extrasSource.forDeployment(
+                      spec.applicationName(),
+                      spec.environmentName(),
+                      spec.version(),
+                      spec.declarationSeeded()),
+                  spec.applicationName()),
+              networks);
+    } catch (ServiceExtras.Refused e) {
+      // Config states something swarm cannot express. The argv build in `apply` reaches the same
+      // refusal a line later and returns REFUSED, having changed nothing — so the one thing this
+      // must not do is destroy a service on the way there.
+      return null;
+    }
+    if (declared.isEmpty()) {
+      // Every environment application that declares no alias of its own. Not one CLI call is spent.
+      return null;
+    }
+    PdProcess.Result inspected =
+        run(
+            List.of(runtime, "service", "inspect", "--format", SPEC_NETWORK_ALIASES_FORMAT, name),
+            INSPECT_TIMEOUT);
+    if (inspected.exitCode() != 0) {
+      LOG.warnf(
+          "Could not read the network aliases of %s, so this deployment updates it in place — a"
+              + " declared alias may still be missing, and the next deployment asks again: %s",
+          name, inspected.output());
+      return null;
+    }
+    Set<String> live = new HashSet<>(lines(inspected.output()));
+    for (String alias : declared) {
+      if (!live.contains(alias)) {
+        return alias;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Remove the service so the create that follows can declare the shape it needs — and WAIT for its
    * task to be gone, for {@link #reapSeedTwin}'s reason and more sharply: the successor is created
    * on the very volumes the predecessor is still writing to, so an overlap of seconds is two
@@ -1855,7 +1981,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       // The create that follows will fail on the name still being taken, and that is the honest
       // outcome: a REFUSED deployment naming what could not be removed, with the predecessor still
       // serving.
-      LOG.warnf("Could not remove %s to recreate it with its declared volumes: %s",
+      LOG.warnf("Could not remove %s to recreate it with its declared shape: %s",
           name, removed.output());
       return;
     }
