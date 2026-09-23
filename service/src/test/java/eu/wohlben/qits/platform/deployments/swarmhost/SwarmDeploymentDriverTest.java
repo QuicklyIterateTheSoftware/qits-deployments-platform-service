@@ -713,6 +713,135 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
+  void aDeclaredAliasMissingFromTheLiveServiceIsRemovedAndCreatedAgain() {
+    // THE LEVER THAT MAKES THE ALIAS REACH THE FLEET. buildUpdateArgv states no networks, an
+    // attachment is restated whole or not at all, and swarm has no add-an-alias — so the
+    // environment-qualified alias a platform service now declares reaches a service that is ALREADY
+    // RUNNING by exactly one route. Measured on the estate before this landed: qits-platform-idp
+    // resolved and dev-qits-platform-idp did not, after two deployments carrying the declaration.
+    // Nothing may move to dialling the qualified name until this arm exists.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_qits-gateway", result(1, "no such service"));
+    cli.script("TaskTemplate.Networks", result(0, ""));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(
+            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service update").isEmpty(), "an update could never carry the alias");
+    assertEquals(List.of("docker", "service", "rm", "qits-gateway"), cli.matching("service rm"));
+    List<String> created = cli.matching("service create");
+    // The NAME is untouched — the bare address goes on answering — and the qualified one is created
+    // beside it, which is the whole of what slice B declared and this makes live.
+    assertTrue(created.containsAll(List.of("--name", "qits-gateway")), created.toString());
+    assertTrue(created.contains("name=qits-net,alias=dev-qits-gateway"), created.toString());
+    assertTrue(cli.count("ps --quiet") > 0, "the task is waited out before the successor starts");
+  }
+
+  @Test
+  void aDeclaredAliasTheLiveServiceAlreadyAnswersToIsAnOrdinaryUpdate() {
+    // What every platform service settles into after its one recreate: the declaration and the live
+    // attachment say the same thing, and a deployment is a deployment. This is what stops the arm
+    // above from recreating the same service on every deployment forever.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_qits-gateway", result(1, "no such service"));
+    cli.script("TaskTemplate.Networks", result(0, "dev-qits-gateway\n"));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(
+            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "it recreates once, not every time");
+    assertFalse(cli.matching("service update").isEmpty(), "the ordinary update path, untouched");
+  }
+
+  @Test
+  void aLiveServiceWithAliasesAndNoDeclarationsIsUPDATEDANDNOTRECREATED() {
+    // THIS IS THE TEST THAT PROTECTS THE ESTATE — do not delete it. It is the alias twin of
+    // aLiveServiceWithConfigMountsAndNoDeclarationsIsUPDATEDANDNOTRECREATED and it protects the
+    // same thing: the rule is one-directional. Only a DECLARED alias that is MISSING is a reason to
+    // recreate. An alias the live service carries that nothing declares is none, and a symmetric
+    // "the two sets differ" comparison would remove and recreate services across the platform on
+    // their next deployment, each losing its writable layer for nothing anybody asked for.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
+                "registry.dev.localhost"));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script(
+        "TaskTemplate.Networks",
+        result(0, "registry.dev.localhost\nan-alias-an-operator-added-by-hand\n"));
+
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
+
+    assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "nothing is ever recreated to REMOVE an alias");
+    assertFalse(cli.matching("service update").isEmpty());
+  }
+
+  @Test
+  void anApplicationThatDeclaresNoAliasIsNotEvenAskedAboutThem() {
+    // The other half of the estate protection, and it is what keeps this free: an environment
+    // service derives no alias and declares none in config, so the whole question costs no CLI call
+    // at all — the shape missingDeclaredVolume takes for the services that declare no volume.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+
+    driver.apply(spec());
+
+    assertEquals(0, cli.count(SwarmDeploymentDriver.SPEC_NETWORK_ALIASES_FORMAT));
+    assertTrue(cli.matching("service rm").isEmpty());
+    assertFalse(cli.matching("service update").isEmpty());
+  }
+
+  @Test
+  void anAliasInspectThatCannotAnswerRecreatesNothing() {
+    // The volume arm's stance, for the same reason: this risks destroying a running service over a
+    // CLI call that failed, where carrying the alias one deployment longer risks nothing at all.
+    // The next deployment asks again.
+    SwarmDeploymentDriver driver = driver();
+    cli.script("--format {{.ID}} qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_qits-gateway", result(1, "no such service"));
+    cli.script("TaskTemplate.Networks", result(1, "Error: No such service"));
+
+    driver.apply(
+        spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+
+    assertTrue(cli.matching("service rm").isEmpty(), "a failed inspect is never a reason to remove");
+    assertFalse(cli.matching("service update").isEmpty());
+  }
+
+  @Test
+  void theDeployersOwnServiceIsNeverRemovedToGiveItAnAlias() {
+    // The deployer is a platform service too, so it is exactly the fleet this arm is for — and it
+    // is the one member that must never take it. Removing the service this process answers on would
+    // leave nothing to create the successor; the alias waits for a hand that is not this one.
+    SwarmDeploymentDriver driver = driver();
+    driver.hostnameFile = hostnameFile("task-container-id");
+    cli.script("Config.Labels", result(0, "qits-gateway"));
+    cli.script("--format {{.ID}}", result(0, "svc123"));
+    cli.script("TaskTemplate.Networks", result(0, ""));
+
+    DeploymentDriver.ApplyResult applied =
+        driver.apply(
+            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+
+    assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
+    assertTrue(cli.matching("service rm").isEmpty(), "never its own service");
+    assertEquals(
+        0,
+        cli.count(SwarmDeploymentDriver.SPEC_NETWORK_ALIASES_FORMAT),
+        "a self-update does not even ask: no answer could make removing itself right");
+  }
+
+  @Test
   void theUpdateOrderIsTheRepositorysAndStopFirstIsTheOptOut() {
     List<String> argv =
         driver()
