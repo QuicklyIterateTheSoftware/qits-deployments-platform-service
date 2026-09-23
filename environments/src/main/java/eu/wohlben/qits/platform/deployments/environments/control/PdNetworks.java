@@ -1,6 +1,7 @@
 package eu.wohlben.qits.platform.deployments.environments.control;
 
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import java.util.List;
 
 /**
  * The docker network names this component derives, in one place — the topology is hub-and-spoke and
@@ -94,5 +95,45 @@ public final class PdNetworks {
    */
   public static String platformAlias(String applicationName) {
     return applicationName;
+  }
+
+  /**
+   * The addresses a service answers to <b>beyond its own name</b>, which under swarm is {@link
+   * #alias}.
+   *
+   * <p><b>This is the additive half of a staged cutover, and it takes nothing away.</b> The plane is
+   * being removed — every service becomes an ordinary environment service in the one tier, addressed
+   * {@code <env>-<app>} — and a swarm service's name IS its address, so flipping the derivation in
+   * one change would rename every platform service at once: a second service beside the one that was
+   * serving, with every peer still dialling a name nothing answers to. Instead the qualified name
+   * starts answering FIRST, as an extra network alias beside the bare one, so dialers can move to it
+   * while the bare name still works; the plane is deleted in a later change, once nothing dials bare.
+   *
+   * <ul>
+   *   <li><b>A platform service</b> is named {@code <app>} and gains {@code <env>-<app>}. Both
+   *       resolve.
+   *   <li><b>An environment service</b> is already named {@code <env>-<app>}, so it gains nothing —
+   *       the qualified name it would be given is the name it already has, and an alias equal to the
+   *       service's own name is a line swarm has no use for.
+   * </ul>
+   *
+   * <p>A service with no tier — a mid-bootstrap install with nothing designated — gains nothing
+   * either: there is no qualifier to compose one from, and an alias invented from a blank would be
+   * an address of the form {@code -qits-idp}.
+   *
+   * <p><b>An alias is not a rename and does not reach a LIVE service.</b> Swarm restates a network
+   * attachment whole or not at all, so this lands on a service's next <b>create</b> — see
+   * {@code SwarmDeploymentDriver.buildUpdateArgv}, which states no networks on purpose. That is the
+   * property that makes this change safe to release: no existing service is recreated by it.
+   */
+  public static List<String> additionalAliases(
+      PdDeploymentTarget target, String environmentName, String applicationName) {
+    if (environmentName == null || environmentName.isBlank()) {
+      return List.of();
+    }
+    String qualified = alias(environmentName, applicationName);
+    return qualified.equals(alias(target, environmentName, applicationName))
+        ? List.of()
+        : List.of(qualified);
   }
 }

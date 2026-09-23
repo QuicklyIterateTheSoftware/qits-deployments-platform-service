@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -181,5 +182,45 @@ class PdIdentifiersTest {
         ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "qits-ci"),
         ApplicationKeys.of(PdDeploymentTarget.PLATFORM, "env-dev", "qits-ci"),
         "so a row written before the tier and one written after it join to each other");
+  }
+
+  @Test
+  void aPlatformServiceGainsTheTierQualifiedAliasAndKEEPSTheBareOne() {
+    // The additive half of the staged plane removal. Every service is becoming an ordinary
+    // environment service addressed <env>-<app>; a swarm service's NAME is its address and swarm
+    // cannot rename one, so the qualified name has to start answering BEFORE the bare one stops —
+    // otherwise the flip creates a second service beside the one that is serving. So: the alias (the
+    // name) is untouched, and the qualified form is an ADDITION.
+    assertEquals(
+        "qits-platform-idp",
+        PdNetworks.alias(PdDeploymentTarget.PLATFORM, "dev", "qits-platform-idp"),
+        "the name this change must not move");
+    assertEquals(
+        List.of("dev-qits-platform-idp"),
+        PdNetworks.additionalAliases(PdDeploymentTarget.PLATFORM, "dev", "qits-platform-idp"),
+        "and the name that starts answering beside it");
+  }
+
+  @Test
+  void anEnvironmentServiceGainsNothingBecauseItIsAlreadyQualified() {
+    // The other half, and what keeps the change additive rather than a rename: a tier's service is
+    // NAMED dev-qits-gateway, so the alias it would be given is the name it already holds.
+    assertEquals(
+        "dev-qits-gateway", PdNetworks.alias(PdDeploymentTarget.ENVIRONMENT, "dev", "qits-gateway"));
+    assertEquals(
+        List.of(),
+        PdNetworks.additionalAliases(PdDeploymentTarget.ENVIRONMENT, "dev", "qits-gateway"));
+  }
+
+  @Test
+  void aServiceWithNoTierGainsNothingRatherThanAnAddressBeginningWithADash() {
+    // A mid-bootstrap install with nothing designated has no qualifier to compose one from, and an
+    // alias invented from a blank would be `-qits-idp`.
+    for (String tier : new String[] {null, "", " "}) {
+      assertEquals(
+          List.of(),
+          PdNetworks.additionalAliases(PdDeploymentTarget.PLATFORM, tier, "qits-platform-idp"),
+          String.valueOf(tier));
+    }
   }
 }

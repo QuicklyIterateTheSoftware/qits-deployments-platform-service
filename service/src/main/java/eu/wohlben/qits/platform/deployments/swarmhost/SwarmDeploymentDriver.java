@@ -1405,7 +1405,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 "--no-resolve-image"));
     registryAuthFlag(argv);
     // The FULL membership, here and nowhere else: every later --network-add recreates the task.
-    networkFlags(argv, networks, extras.aliases());
+    networkFlags(argv, networks, aliasesOf(spec, extras, networks));
     // A deployed application outlives the daemon's restart.
     argv.add("--restart-condition");
     argv.add("any");
@@ -1468,6 +1468,43 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       targets.add(target);
     }
     return targets;
+  }
+
+  /**
+   * Every alias this service's attachment carries: what deployment config declared, plus what the
+   * naming rule derives.
+   *
+   * <p><b>The derived half is the environment-qualified name of a PLATFORM service</b>, and it is
+   * purely additive — see {@link PdNetworks#additionalAliases}. The service keeps its bare name, so
+   * {@code qits-platform-idp} goes on resolving exactly as it did; {@code dev-qits-platform-idp}
+   * starts resolving beside it, which is what lets dialers move one at a time before the plane is
+   * deleted. An environment service is named by the qualified form already and gains nothing.
+   *
+   * <p><b>Config first, and duplicates dropped.</b> The declared aliases keep the order and the
+   * position they always had, so an application that declares none and is not on the plane produces
+   * the byte-identical short-form argv it always produced. A config entry that already spells the
+   * derived name is not emitted twice — swarm refuses a repeated alias on one attachment.
+   *
+   * <p><b>With no shared network to hold it, the derived alias is DROPPED rather than refused</b>,
+   * which is the one place it parts company with a declared one. A declared alias is a name somebody
+   * asked for, so registering none of it and saying nothing is the outage-hours-later failure {@link
+   * #networkFlags} refuses on. This one is nobody's request — it is a cutover convenience that the
+   * bare name already covers — so turning a platform deployment that works today into a refusal
+   * would be this change taking something away, which is exactly what it must not do.
+   */
+  private List<String> aliasesOf(ServiceSpec spec, ServiceExtras extras, List<String> networks) {
+    String shared = flatNetwork == null ? "" : flatNetwork.strip();
+    if (shared.isEmpty() || !networks.contains(shared)) {
+      return extras.aliases();
+    }
+    List<String> derived =
+        PdNetworks.additionalAliases(spec.target(), spec.environmentName(), spec.applicationName());
+    if (derived.isEmpty()) {
+      return extras.aliases();
+    }
+    LinkedHashSet<String> all = new LinkedHashSet<>(extras.aliases());
+    all.addAll(derived);
+    return List.copyOf(all);
   }
 
   /**
