@@ -2,6 +2,7 @@ package eu.wohlben.qits.platform.deployments.githost;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -13,7 +14,6 @@ import eu.wohlben.qits.platform.deployments.deployments.control.RepositoryRef;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecException;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -99,7 +99,7 @@ public class GitHostSpecSourceTest {
     DeploymentSpec spec =
         source().read(new RepositoryRef(UUID_ID, "qits", "qits-gateway"), SHA).spec();
 
-    assertEquals(PdDeploymentTarget.PLATFORM, spec.target());
+    assertNotNull(spec);
     assertEquals(
         "/git/qits/qits-gateway/blob/" + SHA + "/.config/qits/deployments.yml", onlyPath());
   }
@@ -266,7 +266,6 @@ public class GitHostSpecSourceTest {
         source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION));
 
     assertEquals(SHA, read.commitSha());
-    assertEquals(PdDeploymentTarget.PLATFORM, read.spec().target());
     assertEquals(1, paths.size(), "one request, not a read plus a resolution");
   }
 
@@ -280,7 +279,7 @@ public class GitHostSpecSourceTest {
         source().read(RepositoryRef.ofId("qits-gateway"), SpecSource.tagRev(VERSION));
 
     assertNull(read.commitSha());
-    assertEquals(PdDeploymentTarget.PLATFORM, read.spec().target());
+    assertNotNull(read.spec());
   }
 
   // --- the second blob: the configuration declaration ---------------------------------------------

@@ -154,20 +154,21 @@ public class PdRegistrationTest {
   }
 
   @Test
-  public void theRetiredSingletonSpellingStillRegistersAPlatformService() {
-    // The alias is not a parser curiosity: a repository still carrying the word must keep deploying
-    // across the cutover, and what it gets has to be the platform plane in every respect.
+  public void theRetiredSingletonSpellingStillDeploysAsAnOrdinaryService() {
+    // `deployment_target` is RETIRED and every one of its values is now read and dropped, the
+    // retired `singleton` alias included. What this pins is that such a file still DEPLOYS: a spec
+    // is fetched at the built sha, so a repository nobody has edited yet still presents the line,
+    // and an unknown key would fail its deployment outright. It registers as what every service is
+    // now — an ordinary service in the tier the release enters at.
     createEnvironment("reg-alias");
     specs.script(
         "repo-alias", DeploymentSpecParserAlias.parse("deployment_target: singleton\n"));
     postRelease("repo-alias", V_A);
     awaitApplied(1);
 
-    assertEquals("PLATFORM", service("repo-alias").get("target"));
-    // No environment segment in the derived name: the plane's names are unqualified even now that
-    // it has a tier, and the word that used to fill the gap is in the repository names.
+    assertEquals("ENVIRONMENT", service("repo-alias").get("target"));
     assertTrue(
-        driver.applied().get(0).deploymentName().startsWith("qits-pd-repo-alias-"),
+        driver.applied().get(0).deploymentName().startsWith("qits-pd-reg-alias-repo-alias-"),
         driver.applied().get(0).deploymentName());
   }
 

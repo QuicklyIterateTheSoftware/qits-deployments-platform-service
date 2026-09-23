@@ -9,7 +9,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.VolumeSpec;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -594,7 +593,6 @@ class DeploymentSpecParserTest {
             deploy_branches: "environment/prod"
             health_path: /idp/q/health/ready
             """);
-    assertEquals(PdDeploymentTarget.PLATFORM, spec.target());
     assertEquals(List.of("environment/prod"), spec.deployBranches());
     assertFalse(spec.availableOnEnv());
     assertEquals("/idp/q/health/ready", spec.healthPath());
@@ -644,21 +642,53 @@ class DeploymentSpecParserTest {
   }
 
   @Test
-  void singletonIsAnAcceptedAliasForPlatformAndParsesToTheSameThing() {
-    // The retired vocabulary. Repositories that carry the word were written against qits-cd and
-    // must keep deploying across the cutover without a commit each, so it is a tolerance rather
-    // than a second spelling: nothing downstream can tell the two apart.
-    assertEquals(parse("deployment_target: platform\n"), parse("deployment_target: singleton\n"));
-    assertEquals(PdDeploymentTarget.PLATFORM, parse("deployment_target: singleton\n").target());
+  void aFileThatNamesNoDeploymentTargetIsTheOrdinaryCase() {
+    // The key is retired, so saying nothing is what every rewritten file says. It is the whole of
+    // the defaults, exactly as it was before the key existed.
+    assertEquals(DeploymentSpec.DEFAULTS, parse(""));
+    assertEquals(List.of(), parse("health_path: /ci/q/health/ready\n").deployBranches());
   }
 
   @Test
-  void theErrorMessageNamesTheCanonicalWordAndNotTheAlias() {
-    // A repository being corrected is pointed at the word to use, not at the one it may keep using.
-    String message = messageOf("deployment_target: Platform\n");
-    assertTrue(message.contains("platform"), message);
-    assertFalse(message.contains("singleton"), message);
-    assertTrue(messageOf("deployment_target: everywhere\n").contains("environment"));
+  void theRetiredDeploymentTargetKeyIsAcceptedAndReachesNothing() {
+    // RETIRED, and the tolerance is permanent: a spec is fetched at the BUILT sha, so a rollback
+    // pin, a redeploy of an older commit and every repository that still carries the line present a
+    // file containing the key — and an unknown key fails a deployment. Making it unknown would turn
+    // all of those red for good. `deploy_branches` is the same lesson, learned the expensive way.
+    assertEquals(DeploymentSpec.DEFAULTS, parse("deployment_target: platform\n"));
+  }
+
+  @Test
+  void theRetiredEnvironmentSpellingIsAcceptedTheSameWay() {
+    // The other word the closed vocabulary used to have. It decides nothing now either, and it is
+    // what most unedited files at an older sha carry.
+    assertEquals(DeploymentSpec.DEFAULTS, parse("deployment_target: environment\n"));
+  }
+
+  @Test
+  void theRetiredSingletonAliasIsStillAccepted() {
+    // The alias of a vocabulary that is itself retired. A repository nobody has edited still carries
+    // the word, and its spec is read at the BUILT sha forever — so refusing it would fail a
+    // deployment over a value nothing reads.
+    assertEquals(DeploymentSpec.DEFAULTS, parse("deployment_target: singleton\n"));
+  }
+
+  @Test
+  void anyValueAtAllIsAcceptedBecauseNothingReadsTheKey() {
+    // Deliberately no enum lookup and no validation: an older sha may carry any word its author
+    // wrote, and a value acted on by nobody is not worth failing a deployment over.
+    assertEquals(DeploymentSpec.DEFAULTS, parse("deployment_target: anything-at-all\n"));
+    assertEquals(DeploymentSpec.DEFAULTS, parse("deployment_target: Platform\n"));
+    assertEquals(DeploymentSpec.DEFAULTS, parse("deployment_target:\n"));
+  }
+
+  @Test
+  void aRetiredTargetBesideAvailableOnEnvIsNoLongerAContradiction() {
+    // There is no platform service left for `available_on_env: true` to contradict — every service
+    // is an ordinary environment service in the one tier — so the cross-check is gone. The file
+    // still has to parse, because a commit built before the sweep carries exactly this pair.
+    assertTrue(parse("deployment_target: platform\navailable_on_env: true\n").availableOnEnv());
+    assertTrue(parse("deployment_target: singleton\navailable_on_env: true\n").availableOnEnv());
   }
 
   @Test
@@ -793,25 +823,25 @@ class DeploymentSpecParserTest {
   @Test
   void aDuplicateKeyIsAnError() {
     assertTrue(
+        messageOf("routes: /ci\nroutes: /cd\n").contains("duplicate key"));
+  }
+
+  @Test
+  void theRetiredTargetKeyStillCountsAsADuplicateWhenItIsWrittenTwice() {
+    // Accepting any value is not the same as accepting the key twice: the duplicate rule is about
+    // the FILE saying one thing once, and it is unchanged by a key being ignored. A spec at an
+    // older sha that states the key twice was always a mistake and still is.
+    assertTrue(
         messageOf("deployment_target: environment\ndeployment_target: platform\n")
+            .contains("duplicate key"));
+    assertTrue(
+        messageOf("deployment_target: platform\ndeployment_target: platform\n")
             .contains("duplicate key"));
   }
 
   @Test
   void aValueOutsideTheEnumIsAnError() {
     assertTrue(messageOf("available_on_env: yes\n").contains("true"));
-  }
-
-  @Test
-  void aPublicPlatformServiceIsAContradiction() {
-    // It already runs on every environment's networks, and the bundle is environment-scoped. The
-    // alias has to hit the same wall, or the retired spelling would be a way around the rule.
-    assertTrue(
-        messageOf("deployment_target: platform\navailable_on_env: true\n")
-            .contains("available_on_env"));
-    assertTrue(
-        messageOf("deployment_target: singleton\navailable_on_env: true\n")
-            .contains("available_on_env"));
   }
 
   @Test
@@ -822,11 +852,11 @@ class DeploymentSpecParserTest {
   }
 
   @Test
-  void deployBranchesIsReadForSomebodyElseAndAcceptedOnEitherPlane() {
-    // The key belongs to the release flow, which reads the same file for its promotion targets.
+  void deployBranchesIsReadForSomebodyElseAndSitsBesideTheOtherRetiredKey() {
+    // The key belonged to the release flow, which read the same file for its promotion targets.
     // This parser is strict, so a key another reader needs is a key this reader has to know —
-    // accepted-and-unused rather than a second file, and on both planes, since a strict parser that
-    // refused it on one would fail those deployments outright.
+    // accepted-and-unused rather than a second file. The two retired keys sit beside each other in
+    // a file at an older sha, and neither one's tolerance may depend on the other's value.
     assertEquals(
         List.of("environment/prod"),
         parse("deployment_target: environment\ndeploy_branches: environment/prod\n")

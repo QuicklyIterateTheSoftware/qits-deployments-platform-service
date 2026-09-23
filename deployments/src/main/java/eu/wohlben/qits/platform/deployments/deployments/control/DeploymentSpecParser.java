@@ -8,7 +8,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -18,7 +17,7 @@ import java.util.Set;
  *
  * <pre>
  * application: qits-ci                 # optional; the name this deploys as, when it is not the repo's
- * deployment_target: environment       # default when the key or the file is absent | platform
+ * deployment_target: environment       # RETIRED, accepted and ignored — see below
  * available_on_env: false              # default; true = public node (bundle + hub joins)
  * health_path: /q/health/ready         # default: /&lt;name without the qits- prefix&gt;/q/health/ready
  * health_cmd: pg_isready -U postgres   # instead of health_path: the probe runs in the container
@@ -187,7 +186,8 @@ import java.util.Set;
  * three at once. A release now lands on one entry branch, from that component's own configuration,
  * and no repository states it.
  *
- * <p>It stays accepted for the same reason {@code singleton} does, and the reason is sharper here.
+ * <p>It stays accepted for the reason every retired key here stays accepted, and the reason is
+ * sharper for this one.
  * <b>A spec is fetched at the BUILT sha</b>, so a rollback pin, a redeploy of an older commit or a
  * repository nobody has edited yet still presents a file carrying the key — and this parser fails a
  * deployment on an unknown one. Making it unknown would turn every such deployment red. Do not
@@ -200,18 +200,25 @@ import java.util.Set;
  * one thing that is <em>not</em> an error is the file's absence: no file means every default, which
  * is what every repository already behaves like.
  *
- * <p><b>{@code platform} is the canonical target and {@code singleton} is an accepted alias.</b>
- * Both parse to {@link PdDeploymentTarget#PLATFORM} and nothing downstream can tell them apart. The
- * alias exists because the repositories that carry the word were written against the retired
- * vocabulary and must keep deploying across the cutover without a commit each; documentation,
- * error messages and every new file say {@code platform}. It is a tolerance, not a second spelling
- * to maintain — and a value outside both still names only the canonical pair, so a typo is pointed
- * at the word to use.
+ * <p><b>{@code deployment_target} is RETIRED: accepted, ignored, and acted on by nobody.</b> There
+ * is no platform-service concept left for it to choose between — every service is an ordinary
+ * environment service in the one tier — so there is no target for this file to state and nothing
+ * downstream that would read one. The key is therefore not validated at all: {@code platform},
+ * {@code environment}, {@code singleton} and any word whatsoever are read and dropped, because a
+ * value nobody acts on is not a value worth refusing a deployment over.
+ *
+ * <p>The tolerance is permanent, for the reason {@code deploy_branches} above records. <b>A spec is
+ * fetched at the BUILT sha</b>, so a rollback pin, a redeploy of an older commit, or any of the
+ * repositories that still carry the line presents a file containing the key — and this parser fails
+ * a deployment on an unknown one. Making it unknown would turn every such deployment red
+ * permanently, not merely for the length of a sweep. Do not write it into a new file, and do not
+ * remove the tolerance.
  */
 public final class DeploymentSpecParser {
 
   private static final String APPLICATION = "application";
-  private static final String TARGET = "deployment_target";
+  /** Retired, accepted and ignored. Any value at all parses. See the class javadoc. */
+  private static final String RETIRED_TARGET = "deployment_target";
   private static final String AVAILABLE_ON_ENV = "available_on_env";
   private static final String DEPLOY_BRANCHES = "deploy_branches";
   private static final String HEALTH_PATH = "health_path";
@@ -310,9 +317,6 @@ public final class DeploymentSpecParser {
   /** The one option a mount may carry — {@link ServiceExtras.Mount}'s grammar, and no more. */
   private static final String READ_ONLY = "ro";
 
-  /** The retired vocabulary, still understood. See the class javadoc. */
-  private static final String PLATFORM_ALIAS = "singleton";
-
   private DeploymentSpecParser() {}
 
   /**
@@ -321,7 +325,6 @@ public final class DeploymentSpecParser {
    */
   public static DeploymentSpec parse(String yaml, String source) {
     String application = null;
-    PdDeploymentTarget target = PdDeploymentTarget.ENVIRONMENT;
     boolean availableOnEnv = false;
     List<String> deployBranches = List.of();
     String healthPath = null;
@@ -359,7 +362,9 @@ public final class DeploymentSpecParser {
       }
       switch (key) {
         case APPLICATION -> application = application(value, source, lineNumber);
-        case TARGET -> target = target(value, source, lineNumber);
+        // Retired: read, dropped, never validated. Any value at all is legal, because a file at an
+        // older sha carries whichever word its author wrote and nothing acts on any of them.
+        case RETIRED_TARGET -> {}
         case AVAILABLE_ON_ENV -> availableOnEnv = bool(key, value, source, lineNumber);
         case DEPLOY_BRANCHES -> deployBranches = deployBranches(value, source, lineNumber);
         case HEALTH_PATH -> healthPath = healthPath(value, source, lineNumber);
@@ -384,7 +389,7 @@ public final class DeploymentSpecParser {
                     + "` — this file knows "
                     + APPLICATION
                     + ", "
-                    + TARGET
+                    + RETIRED_TARGET
                     + ", "
                     + AVAILABLE_ON_ENV
                     + ", "
@@ -426,14 +431,6 @@ public final class DeploymentSpecParser {
               + "` are alternatives — the command replaces the HTTP probe rather than adjusting"
               + " it, so a file setting both says two things about one gate. Keep the one that"
               + " describes this image.");
-    }
-    if (availableOnEnv && target == PdDeploymentTarget.PLATFORM) {
-      throw new SpecException(
-          source
-              + ": `"
-              + AVAILABLE_ON_ENV
-              + ": true` is not something a platform service can be — it already runs on every"
-              + " environment's networks, and the bundle is environment-scoped");
     }
     if (seen.contains(NAVIGATION) && seen.contains(NAVIGATION_ENTRIES)) {
       throw new SpecException(
@@ -477,7 +474,9 @@ public final class DeploymentSpecParser {
               + (routes.isEmpty() ? "no routes at all" : String.join(",", routes)));
     }
     return new DeploymentSpec(
-        target,
+        // The component still carries a target and nothing derives one any more: the key that used
+        // to state it is retired, so every spec reads as the one tier there is.
+        PdDeploymentTarget.ENVIRONMENT,
         availableOnEnv,
         deployBranches,
         healthPath,
@@ -1124,22 +1123,6 @@ public final class DeploymentSpecParser {
         + ":<volume>:<target>[:"
         + READ_ONLY
         + "]`";
-  }
-
-  private static PdDeploymentTarget target(String value, String source, int line) {
-    // Lowercase in the file, uppercase in the enum: the yaml is written by a person and the column
-    // is read by a machine, and neither should have to spell the other's convention.
-    if (PLATFORM_ALIAS.equals(value)) {
-      return PdDeploymentTarget.PLATFORM;
-    }
-    for (PdDeploymentTarget candidate : PdDeploymentTarget.values()) {
-      if (candidate.name().toLowerCase(Locale.ROOT).equals(value)) {
-        return candidate;
-      }
-    }
-    // The alias is deliberately absent from this message: a repository being corrected should be
-    // pointed at the word to use, not at the one it may keep using.
-    throw error(source, line, "`" + TARGET + "` must be `environment` or `platform`, got: " + value);
   }
 
   private static boolean bool(String key, String value, String source, int line) {

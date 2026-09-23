@@ -805,4 +805,4 @@ paths:
         - qits:system
 info:
   title: qits-platform-deployments API
-  version: 2026.915.232733
+  version: 2026.922.203234
