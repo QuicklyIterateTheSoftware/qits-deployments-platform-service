@@ -1787,12 +1787,44 @@ remove the service the deployment just created. So the predecessors are an opera
 
     docker service rm <app>          # e.g. docker service rm qits-ci
 
-**The ORDER matters for anything that publishes a host port or holds a single-writer store.** Host-mode
-publishing binds the port from inside the task, so the successor's task sits `Pending` on a port the
-predecessor is still holding — and two tasks on one postgres volume is the WAL corruption this repo
-has already paid for twice. For those: remove the bare-named service **first**, then let the release
-deploy. That costs the seconds of downtime `update_order: stop-first` already costs them. For a
-stateless service with no published port the order is free and the predecessor can go afterwards.
+**The ORDER matters for anything that publishes a port — IN EITHER MODE — or holds a single-writer
+store.** Host-mode publishing binds the port from inside the task, so the successor's task sits
+`Pending` on a port the predecessor is still holding. **Ingress mode is NOT the exception it looks
+like:** the routing mesh holds the port for the whole service, and swarm refuses a *second* service
+that publishes the same one — `port '8080' is already in use by service ...` — at CREATE time, which
+is the path this rename takes. So an ingress publisher's predecessor has to go first as well; it
+merely fails differently, with a refused create instead of a Pending task. And two tasks on one
+postgres volume is the WAL corruption this repo has already paid for twice. For all of those: remove
+the bare-named service **first**, then let the release deploy. For a stateless service with no
+published port the order is free and the predecessor can go afterwards.
+
+**Which of the nine that is, measured 2026-09-24 off the live extras rather than guessed:**
+
+| service | why it must go first |
+|---|---|
+| `qits-platform-edge` | publishes `8080:8080` and `443:8443`, ingress; holds `qits-edge-letsencrypt` |
+| `qits-deployments` | holds `qits-deployments-config` and binds the docker socket |
+| `qits-platform-system` | holds `qits-platform-system-config` and binds the docker socket |
+
+The other six — idp, configuration, events, mirror, orchestrator, maintenance — publish nothing and
+mount nothing, so their predecessors may go afterwards, which is the order that keeps the bare name
+answering for as long as possible.
+
+**THE EDGE IS CIRCULAR AND NEEDS ITS IMAGE ON THE NODE FIRST.** It fronts the registry, so removing
+it takes away the very route a `docker service create` would pull the successor's image through —
+the same circularity `publish_mode: ingress` was adopted to escape for ordinary redeploys, and it
+comes back here because a rename is a create rather than an update. Pull the image BEFORE removing
+anything and create with `--no-resolve-image`, which is what the 2026-09-24 rollback of this service
+did for exactly this reason:
+
+    docker pull registry.dev.localhost:8080/qits/qits-platform-edge:<version>   # while the edge still serves
+    docker service rm qits-platform-edge
+    docker service create --name dev-qits-platform-edge --no-resolve-image \
+      <every flag from `docker service inspect qits-platform-edge --pretty`> \
+      registry.dev.localhost:8080/qits/qits-platform-edge:<version>
+
+Between those two lines the platform has no published listener at all. It is the one step of this
+rollout with a real outage window, and it wants a person watching rather than a script.
 
 **qits-deployments cannot do this to itself, and that is the one step that is not optional.**
 `SwarmDeploymentDriver.apply` exempts a self-update from the recreate path by comparing
