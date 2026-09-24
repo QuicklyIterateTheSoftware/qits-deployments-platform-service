@@ -20,12 +20,14 @@ import java.time.Instant;
  * orchestration asks which services are linked into an environment and reconciles the running
  * containers and networks against the answer.
  *
- * <p><b>Platform services have none.</b> No link means no particular environment, which the link
- * query reads as every environment — see {@link PdDeploymentTarget}. So an upsert that gives a
- * platform service links is refused rather than stored: the row would say the opposite of what it
- * means.
+ * <p><b>No link meant EVERY environment once, and it means none now.</b> That was the platform
+ * plane's whole mechanism — "present everywhere" spelled as "linked nowhere in particular", so the
+ * link query composed the tier's own services with every service carrying none — and an upsert that
+ * gave such a service links was refused rather than stored. The plane is deleted: a service is
+ * present exactly where it is linked, so a row with no link runs nowhere and there is nothing left to
+ * refuse.
  *
- * <p>The link set of an environment service is <b>replaced</b> on every upsert, never merged. The
+ * <p>The link set of a service is <b>replaced</b> on every upsert, never merged. The
  * writer knows the whole set (it read the repository's own spec); a merge would keep a link to an
  * environment the repository has stopped naming, and nothing would ever remove it.
  *

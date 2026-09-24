@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.eventstream.entity.OutboxEvent;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.hibernate.orm.PersistenceUnit;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -89,7 +88,7 @@ public class PdSwarmDeployFlowTest {
     assertEquals("swarm-green-repo-swarm-green", deployments.get(0).get("containerName"));
 
     assertEquals(
-        List.of("qits-platform-artifacts:8080/qits/repo-swarm-green:" + VERSION),
+        List.of("registry.dev.localhost:8080/qits/repo-swarm-green:" + VERSION),
         fake.pulled(),
         "the missing-image classification is ours, not the orchestrator's");
     assertEquals(1, fake.applied().size());
@@ -130,7 +129,6 @@ public class PdSwarmDeployFlowTest {
     specs.script(
         "repo-swarm-ingress",
         new SpecSource.DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT,
             false,
             null,
             null,

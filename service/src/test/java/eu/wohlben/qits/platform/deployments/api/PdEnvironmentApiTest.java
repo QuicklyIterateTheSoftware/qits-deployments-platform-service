@@ -33,7 +33,14 @@ import org.junit.jupiter.api.Test;
  * <p>Tests address the absolute {@code /platform-deployments/api} paths, which is what makes them
  * catch a prefix regression, and every test names its own environment: the suite shares one
  * in-memory database across classes (Flyway cleans at start, not between tests), so a shared name
- * is a test that passes alone and fails in a run.
+ * is a test that passes alone and fails in a run. Assert with {@code hasItem} and {@code find{}}
+ * wherever a foreign class's rows could appear, never with a size.
+ *
+ * <p><b>One reason that discipline used to be sharper here is gone.</b> A platform service carried
+ * no link and was therefore in <em>every</em> environment's link query — so a service another test
+ * class registered turned up in this class's answers, and a fresh tier came up already holding it.
+ * A service linked nowhere is now in no tier's answer at all, so a link query returns exactly what
+ * somebody linked into that tier and nothing reaches it by being absent from everything.
  */
 @QuarkusTest
 public class PdEnvironmentApiTest {
@@ -159,26 +166,35 @@ public class PdEnvironmentApiTest {
   // --- reads ------------------------------------------------------------------------------------
 
   @Test
-  public void theEnvironmentReadShowsTheTiersOwnServicesWithoutThePlatformOnes() {
+  public void theEnvironmentReadShowsTheTiersOwnServices() {
+    // Was `theEnvironmentReadShowsTheTiersOwnServicesWithoutThePlatformOnes`. The exclusion in that
+    // name described a second population — services that belonged to no tier and were reached
+    // through the links query and the flat listing instead — and there is no such population now.
+    // The aggregate is the tier's own services because that is all there is to be shown; it is not
+    // withholding anything.
+    //
+    // What survives from the old test is the other half, and it is worth keeping for its own sake:
+    // the FLAT listing still emits a row for a service the catalogue links nowhere, with a null
+    // tier on it. That shape used to be the plane's — one row, no environment, present everywhere —
+    // and it now reports honestly that the service runs nowhere. An operator goes looking for
+    // exactly that row, so the listing that hid it would be the one lying.
     String environmentId = create("env-read");
-    upsertEnvironmentService("envsuite-app-read", environmentId);
-    upsertPlatformService("envsuite-svc-read-platform");
+    upsertService("envsuite-app-read", environmentId);
+    upsertUnlinkedService("envsuite-svc-read-unlinked");
 
     given()
         .when()
         .get(ENVIRONMENTS + "/" + environmentId)
         .then()
         .statusCode(200)
-        // The environment aggregate is the tier's own services. Platform services belong to no tier
-        // and are reached through the links query and the flat listing, which both show them.
         .body("environment.applications", hasSize(1))
         .body("environment.applications[0].name", equalTo("envsuite-app-read"))
         .body("environment.applications[0].repoId", equalTo("envsuite-app-read"))
         .body("environment.applications[0].environmentId", equalTo(environmentId))
-        .body("environment.applications[0].environmentName", equalTo("env-read"))
-        .body("environment.applications[0].target", equalTo("ENVIRONMENT"));
+        .body("environment.applications[0].environmentName", equalTo("env-read"));
 
-    // ...and the id is the derived one a client joins a deployment row against.
+    // ...and the id is the derived one a client joins a deployment row against. There is no plane
+    // in it any more: both sides say `<environmentId>:<name>` and the `platform:` stand-in is gone.
     given()
         .when()
         .get(ENVIRONMENTS + "/" + environmentId)
@@ -195,8 +211,12 @@ public class PdEnvironmentApiTest {
             .jsonPath()
             .getList("applications");
     assertTrue(
-        flat.stream().anyMatch(a -> "envsuite-svc-read-platform".equals(a.get("name"))),
-        "the flat listing carries the platform service too: " + flat);
+        flat.stream()
+            .anyMatch(
+                a ->
+                    "envsuite-svc-read-unlinked".equals(a.get("name"))
+                        && a.get("environmentId") == null),
+        "the flat listing carries the service that runs nowhere, with no tier on it: " + flat);
   }
 
   @Test
@@ -219,14 +239,21 @@ public class PdEnvironmentApiTest {
   }
 
   @Test
-  public void theLinkQueryComposesTheTiersServicesWithEveryPlatformService() {
-    // The pull query, and the difference from the aggregate above: a reconciliation needs the
-    // platform plane too, or a fresh tier would come up without qits-idp in it.
+  public void theLinkQueryIsExactlyTheTiersOwnServices() {
+    // Was `theLinkQueryComposesTheTiersServicesWithEveryPlatformService`, and its comment read "a
+    // reconciliation needs the platform plane too, or a fresh tier would come up without qits-idp
+    // in it". That composition is deleted: the answer was this tier's links PLUS every service
+    // carrying no link at all, and the second half described the plane's way of being everywhere.
+    //
+    // One query now. The pull query and the aggregate above answer the same rows, and they are kept
+    // as two endpoints because their shapes and their readers differ — an aggregate carries the
+    // tier's name on each row, a reconciliation does not — not because one of them composes a
+    // second population into its answer.
     String mine = create("env-links-mine");
     String other = create("env-links-other");
-    upsertEnvironmentService("envsuite-svc-links-linked", mine);
-    upsertEnvironmentService("envsuite-svc-links-elsewhere", other);
-    upsertPlatformService("envsuite-svc-links-platform");
+    upsertService("envsuite-svc-links-linked", mine);
+    upsertService("envsuite-svc-links-elsewhere", other);
+    upsertUnlinkedService("envsuite-svc-links-nowhere");
 
     given()
         .when()
@@ -234,24 +261,34 @@ public class PdEnvironmentApiTest {
         .then()
         .statusCode(200)
         .body("services.name", hasItem("envsuite-svc-links-linked"))
-        .body("services.name", hasItem("envsuite-svc-links-platform"))
         .body("services.name", not(hasItem("envsuite-svc-links-elsewhere")))
-        .body("services.find { it.name == 'envsuite-svc-links-linked' }.target", equalTo("ENVIRONMENT"))
-        .body("services.find { it.name == 'envsuite-svc-links-platform' }.target", equalTo("PLATFORM"));
+        // The assertion that was a `hasItem` before: a service linked nowhere is in NO tier's
+        // answer, which is the property the composed half used to invert.
+        .body("services.name", not(hasItem("envsuite-svc-links-nowhere")))
+        .body(
+            "services.find { it.name == 'envsuite-svc-links-linked' }.availableOnEnv",
+            equalTo(false));
   }
 
   @Test
-  public void aBrandNewEnvironmentAlreadyHoldsEveryPlatformService() {
-    upsertPlatformService("envsuite-svc-preexisting-platform");
-    // Created after the platform service, linked to nothing, and it has it. That is the whole
-    // reason a platform service has no links.
+  public void aBrandNewEnvironmentHoldsNothingUntilSomethingIsLinkedIntoIt() {
+    // Was `aBrandNewEnvironmentAlreadyHoldsEveryPlatformService`, whose comment read "Created after
+    // the platform service, linked to nothing, and it has it. That is the whole reason a platform
+    // service has no links." This is the reversal at its sharpest: a tier used to come up already
+    // holding qits-idp and the rest of the plane, with nothing written and nobody having decided
+    // anything.
+    //
+    // A brand-new tier holds NOTHING. Presence is a link now, and a link is somebody's statement —
+    // which costs a fresh tier one registration per service and buys a link query with exactly one
+    // source.
+    upsertUnlinkedService("envsuite-svc-preexisting-unlinked");
     String fresh = create("env-fresh");
     given()
         .when()
         .get(ENVIRONMENTS + "/" + fresh + "/links")
         .then()
         .statusCode(200)
-        .body("services.name", hasItem("envsuite-svc-preexisting-platform"));
+        .body("services.name", not(hasItem("envsuite-svc-preexisting-unlinked")));
   }
 
   @Test
@@ -448,7 +485,7 @@ public class PdEnvironmentApiTest {
   public void deleteTakesTheLinksIntoItAndLeavesTheServiceItself() {
     String kept = create("env-delete-kept");
     String dropped = create("env-delete-dropped");
-    upsertEnvironmentService("envsuite-svc-survives-env-delete", kept, dropped);
+    upsertService("envsuite-svc-survives-env-delete", kept, dropped);
 
     given().when().delete(ENVIRONMENTS + "/" + dropped).then().statusCode(204);
 
@@ -479,16 +516,27 @@ public class PdEnvironmentApiTest {
   }
 
   @Test
-  public void thePlatformPlaneIsAValidFilterValueAndNotAMissingEnvironment() {
-    // `platform` goes where an environment id goes and names the plane instead — so it must answer
-    // 200 rather than the 404 every other non-id gets. Dropping the filter is still a 400: the
-    // plane is a named scope, not an escape from having one.
+  public void thePlatformFilterValueIsGoneAndIsNowAnUnknownTierLikeAnyOther() {
+    // Was `thePlatformPlaneIsAValidFilterValueAndNotAMissingEnvironment`, and the old claim was
+    // that `platform` goes where an environment id goes and names the plane instead — so it had to
+    // answer 200 where every other non-id got a 404. It reused the `platform:` stand-in from
+    // ApplicationKeys, so the word at the front of an application's id was the word a client
+    // filtered with, and the two sides agreed.
+    //
+    // Both are deleted. The stand-in is gone from the key and the plane is gone from the rows, so
+    // `platform` names no tier and gets the answer every unknown tier id gets. Nothing is lost by
+    // it: the plane's deployments already named the designated tier (V8), so that tier's own
+    // listing is where they are — which is the answer an operator asking "what is running in dev"
+    // was after all along, and is why the two filters overlapped.
     given()
         .when()
         .get("/platform-deployments/api/deployments?environmentId=platform")
         .then()
-        .statusCode(200)
-        .body("deployments", notNullValue());
+        .statusCode(404);
+
+    // Dropping the filter is still a 400, and that is untouched: a listing has to be scoped, and
+    // the retired value was never an escape from having a scope.
+    given().when().get("/platform-deployments/api/deployments").then().statusCode(400);
   }
 
   // --- the platform environment -----------------------------------------------------------------
@@ -614,24 +662,33 @@ public class PdEnvironmentApiTest {
         .path("environment.id");
   }
 
-  private void upsertEnvironmentService(String name, String... environmentIds) {
+  /**
+   * Register one service into the environments named — the only registration there is. It was
+   * {@code upsertEnvironmentService} while {@code upsertPlatformService} stood beside it registering
+   * the other shape of row; one shape needs no qualifier, and a name that still carried one would
+   * read as a choice the caller does not have.
+   */
+  private void upsertService(String name, String... environmentIds) {
     given()
         .contentType(ContentType.JSON)
-        .body(
-            Map.of(
-                "deploymentTarget", "ENVIRONMENT",
-                "availableOnEnv", false,
-                "environmentIds", List.of(environmentIds)))
+        .body(Map.of("availableOnEnv", false, "environmentIds", List.of(environmentIds)))
         .when()
         .put(SERVICES + "/" + name)
         .then()
         .statusCode(201);
   }
 
-  private void upsertPlatformService(String name) {
+  /**
+   * The same registration naming no environment — what {@code upsertPlatformService} used to be,
+   * with the meaning inverted. That body once registered a service present in every tier; it now
+   * registers one present in none, which is the only thing an empty link set can honestly mean.
+   * It is still worth a fixture of its own, because "the service that runs nowhere" is what several
+   * tests here have to have in the database in order to assert it does not turn up.
+   */
+  private void upsertUnlinkedService(String name) {
     given()
         .contentType(ContentType.JSON)
-        .body(Map.of("deploymentTarget", "PLATFORM", "branch", "main", "availableOnEnv", false))
+        .body(Map.of("branch", "main", "availableOnEnv", false, "environmentIds", List.of()))
         .when()
         .put(SERVICES + "/" + name)
         .then()

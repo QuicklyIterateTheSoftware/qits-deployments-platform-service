@@ -14,7 +14,6 @@ import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProv
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeIdpClientProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
@@ -69,7 +68,6 @@ public class PdRegistrationTest {
     awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg");
-    assertEquals("ENVIRONMENT", service.get("target"));
     assertNull(service.get("branch"), "an environment service takes its branch from its tier");
     assertEquals(List.of(entry), service.get("environmentIds"));
   }
@@ -98,7 +96,7 @@ public class PdRegistrationTest {
     String environmentId = createEnvironment("reg-hub");
     specs.script(
         "repo-reg-gw",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, true, null, null, null, null));
+        new SpecSource.DeploymentSpec(true, null, null, null, null));
     postRelease("repo-reg-gw", V_A);
     awaitApplied(1);
 
@@ -108,49 +106,57 @@ public class PdRegistrationTest {
   }
 
   @Test
-  public void aPlatformServiceIsRegisteredWithNoBranchAndNoLinks() {
-    // A platform service has NO links, and that absence is the model: it is implicitly present
-    // everywhere, which is what makes a new environment pick it up without anyone editing it. It
-    // carries no branch either, and that is the newer half: the plane has no deploy ref of its own,
-    // so there is nothing to write down.
-    createEnvironment("reg-platform");
-    specs.script(
-        "repo-reg-idp",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+  public void everyServiceIsRegisteredWithLinksAndNoBranchIncludingTheNineThatWereThePlane() {
+    // What replaced `aPlatformServiceIsRegisteredWithNoBranchAndNoLinks`. That test held the plane's
+    // whole mechanism: a platform service carries NO links, and that ABSENCE is what made it present
+    // everywhere — a tier created tomorrow picked it up with nobody editing a row. The plane is
+    // deleted, so the absence means what it says. A service is registered with a link to the
+    // environment it runs in, always, and the nine that were the plane are ordinary rows now (V13
+    // wrote the link each of them was owed).
+    //
+    // The branch half is untouched and still vestigial: a release names a tag, so there is no deploy
+    // ref to write down on either side of this change.
+    String environmentId = createEnvironment("reg-platform");
+    specs.script("repo-reg-idp", new SpecSource.DeploymentSpec(false, null, null, null, null));
     postRelease("repo-reg-idp", V_A);
     awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg-idp");
-    assertEquals("PLATFORM", service.get("target"));
-    assertNull(service.get("branch"), "the plane has no deploy ref of its own any more");
-    assertEquals(List.of(), service.get("environmentIds"));
+    assertNull(service.get("branch"), "a release names a tag, so there is no deploy ref");
+    assertEquals(
+        List.of(environmentId),
+        service.get("environmentIds"),
+        "linked into the tier it runs in, which is what 'where does it run' means now");
   }
 
   @Test
-  public void aPlatformServiceShipsIntoTheDesignatedEntryTier() {
-    // The entry tier is one question, asked the same way on both planes: is a platform environment
-    // designated. What it deploys is one instance with no LINKS — and, since V8, one instance IN
-    // that tier: the plane's deployments carry the environment on the row, in the labels, in
-    // QITS_ENVIRONMENT and on all four events, because "no environment" was a fact the plane could
-    // not state about itself rather than a fact about the plane.
+  public void aReleaseShipsIntoTheDesignatedEntryTierAndIsADDRESSEDByIt() {
+    // What replaced `aPlatformServiceShipsIntoTheDesignatedEntryTier`. The entry-tier question is
+    // unchanged — is a platform environment designated — and so is everything V8 bought: the row,
+    // the labels, QITS_ENVIRONMENT and all four events name that tier.
+    //
+    // WHAT CHANGED IS THE ADDRESS, and it is the one cutover in this whole change. That test
+    // asserted `spec.wireAlias()` is the BARE application name, because a peer in any tier reached
+    // qits-ci by writing `qits-ci` without knowing where the plane ran. The plane is deleted, so the
+    // alias carries the tier like every other service's — and a swarm service's name IS its address,
+    // so the first deployment of each of the nine creates `<env>-<app>` beside the bare-named service
+    // that was serving. What makes that survivable is that the qualified name was granted as an extra
+    // network alias one release earlier, on every one of them.
     String environmentId = createEnvironment("reg-trunk");
-    specs.script(
-        "repo-reg-trunk",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    specs.script("repo-reg-trunk", new SpecSource.DeploymentSpec(false, null, null, null, null));
     postRelease("repo-reg-trunk", V_A);
     awaitApplied(1);
 
     Map<String, Object> service = service("repo-reg-trunk");
-    assertEquals("PLATFORM", service.get("target"));
     assertEquals(
-        List.of(), service.get("environmentIds"), "still no link: it is present everywhere");
+        List.of(environmentId), service.get("environmentIds"), "linked, never linked-nowhere");
     DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
     assertEquals(environmentId, spec.environmentId(), "and deployed into the designated tier");
     assertEquals("reg-trunk", spec.environmentName());
-    assertEquals(PdDeploymentTarget.PLATFORM, spec.target(), "the plane is stated, not inferred");
-    // ...and the one thing that does NOT take the tier: the address.
-    assertEquals("repo-reg-trunk", spec.wireAlias(), "the bare alias is what makes it reachable"
-        + " from every tier without knowing which one the plane runs in");
+    assertEquals(
+        "reg-trunk-repo-reg-trunk",
+        spec.wireAlias(),
+        "the address carries the tier now, which is the rename this change performs once");
   }
 
   @Test
@@ -166,61 +172,54 @@ public class PdRegistrationTest {
     postRelease("repo-alias", V_A);
     awaitApplied(1);
 
-    assertEquals("ENVIRONMENT", service("repo-alias").get("target"));
+    assertFalse(
+        ((List<?>) service("repo-alias").get("environmentIds")).isEmpty(),
+        "it registers as what every service is: linked into the tier the release entered at");
     assertTrue(
         driver.applied().get(0).deploymentName().startsWith("qits-pd-reg-alias-repo-alias-"),
         driver.applied().get(0).deploymentName());
   }
 
   @Test
-  public void aPlatformDeploymentIsReadBackByAskingForThePlaneByName() {
-    // The gap this closes: the deployment listing's filter is required, so the plane could not be
-    // asked for at all — every platform row was recorded and then unreadable, and a client drawing
-    // "what is deployed" showed the tiers and nothing else. `platform` is the stand-in the
-    // application id already carries, reused as the filter value.
+  public void aFormerPlatformDeploymentIsReadBackOnTheTIERSOwnListing() {
+    // What replaced `aPlatformDeploymentIsReadBackByAskingForThePlaneByName` and
+    // `thePlatformPlaneCarriesNoTieredDeployment`. Those two held the `?environmentId=platform`
+    // filter: a plane question rather than a null scan, answering the plane's rows and deliberately
+    // not a tier's, with the id joining as `platform:<name>`.
     //
-    // IT IS A PLANE QUESTION AND NOT A NULL SCAN NOW. The rows carry the designated tier, so both
-    // the listing and the `platform:` id come off pd_deployment.deployment_target — the id most of
-    // all, since the catalogue side has no link to derive a tier from and the two have to join.
-    createEnvironment("reg-plane");
-    specs.script(
-        "repo-reg-plane",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    // The plane is deleted and the filter with it. The rows already named the designated tier (V8
+    // put them there), so the tier's own listing is where they are — and that is the answer an
+    // operator asking "what is running in dev" was always after, which is why the two listings
+    // overlapped in the first place.
+    String environmentId = createEnvironment("reg-plane");
+    specs.script("repo-reg-plane", new SpecSource.DeploymentSpec(false, null, null, null, null));
     postRelease("repo-reg-plane", V_A);
     awaitApplied(1);
     awaitWorkerIdle();
 
     Map<String, Object> deployment =
-        platformDeployments().stream()
+        tierDeployments(environmentId).stream()
             .filter(d -> "repo-reg-plane".equals(d.get("applicationName")))
             .findFirst()
-            .orElseGet(() -> fail("the platform listing did not carry the deployment"));
+            .orElseGet(() -> fail("the tier's listing did not carry the deployment"));
     assertEquals("ACTIVE", deployment.get("status"));
     assertEquals(
-        "platform:repo-reg-plane",
+        environmentId + ":repo-reg-plane",
         deployment.get("applicationId"),
-        "the id a client joins against the applications listing");
+        "the id a client joins against the applications listing — the tier's, not the word's");
   }
 
   @Test
-  public void thePlatformPlaneCarriesNoTieredDeployment() {
-    // The filter is a filter, not a widening: asking for the plane must not answer with the rows of
-    // every tier as well. An environment deployment and a platform one, and only the latter comes
-    // back — which is a sharper claim than it was, because both rows now name the same tier and
-    // only the plane column tells them apart.
-    createEnvironment("reg-planes");
-    postRelease("repo-reg-tiered", V_A);
-    awaitApplied(1);
-    specs.script(
-        "repo-reg-crossplane",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postRelease("repo-reg-crossplane", V_A);
-    awaitApplied(2);
-    awaitWorkerIdle();
-
-    List<String> names = platformDeployments().stream().map(d -> (String) d.get("applicationName")).toList();
-    assertTrue(names.contains("repo-reg-crossplane"), names.toString());
-    assertTrue(!names.contains("repo-reg-tiered"), "a tier's rows stayed out of the plane: " + names);
+  public void theRetiredPlatformFilterValueNamesNoTierAndIs404() {
+    // The other end of that cutover. `platform` was a named plane and could not be mistaken for a
+    // tier, because an environment id is a random UUID; it is now an ordinary unknown tier id, and
+    // the listing's own rule applies — a tier that does not exist is a 404 rather than an empty list,
+    // so a client still sending it learns that rather than reading "nothing is deployed".
+    given()
+        .when()
+        .get("/platform-deployments/api/deployments?environmentId=platform")
+        .then()
+        .statusCode(404);
   }
 
   @Test
@@ -245,7 +244,7 @@ public class PdRegistrationTest {
     specs.script(
         "qits-gateway",
         new SpecSource.DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT, true, null, "/q/health/ready", null, null));
+            true, null, "/q/health/ready", null, null));
     postRelease("qits-gateway", V_A);
     awaitApplied(1);
 
@@ -261,7 +260,6 @@ public class PdRegistrationTest {
     specs.script(
         "qits-db",
         new SpecSource.DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT,
             false,
             null,
             null,
@@ -301,13 +299,13 @@ public class PdRegistrationTest {
   }
 
   @Test
-  public void aPlatformServiceGetsTheSameHealthPathResolution() {
-    // The platform plane is not a different rule: the convention, the spec and an existing value
-    // rank the same way there.
+  public void anApplicationThatUsedToBeOnThePlaneGetsTheSameHealthPathResolution() {
+    // The plane was never a different rule here — the convention, the spec and an existing value
+    // ranked the same way on it — and there is no second rule left to be the same as.
     createEnvironment("reg-health-plane");
     specs.script(
         "qits-idp",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+        new SpecSource.DeploymentSpec(false, null, null, null, null));
     postRelease("qits-idp", V_A);
     awaitApplied(1);
 
@@ -338,7 +336,7 @@ public class PdRegistrationTest {
     String environmentId = createEnvironment("reg-named");
     specs.script(
         "repo-reg-named",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, true, null, null, null, null));
+        new SpecSource.DeploymentSpec(true, null, null, null, null));
 
     postRelease(STORAGE_UUID, "qits", "repo-reg-named", V_A);
     awaitApplied(1);
@@ -567,11 +565,11 @@ public class PdRegistrationTest {
     return fail("deployments of " + environmentId + " did not settle to " + count);
   }
 
-  /** The plane's own rows, asked for the way a client asks — by the word, not by a tier's id. */
-  private List<Map<String, Object>> platformDeployments() {
+  /** One tier's rows, asked for the way a client asks. */
+  private List<Map<String, Object>> tierDeployments(String environmentId) {
     return given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=platform")
+        .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
         .then()
         .statusCode(200)
         .extract()

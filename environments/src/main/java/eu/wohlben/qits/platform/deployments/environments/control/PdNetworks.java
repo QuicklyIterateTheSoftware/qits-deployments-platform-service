@@ -1,8 +1,5 @@
 package eu.wohlben.qits.platform.deployments.environments.control;
 
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
-import java.util.List;
-
 /**
  * The docker network names this component derives, in one place — the topology is hub-and-spoke and
  * the names are the whole of how it is addressed.
@@ -14,14 +11,16 @@ import java.util.List;
  *   <li><b>Per environment bundle</b> (the environment row's own {@code network}): the
  *       environment's public nodes. One member today (qits-gateway) — kept because "the public
  *       nodes of this environment" is a set worth having a name for.
- *   <li><b>Platform</b> ({@link #PLATFORM}): where platform services run. They join every
- *       environment's per-service networks on top, which is what makes them locally reachable
- *       everywhere.
  * </ul>
  *
+ * <p><b>There is no third network and no {@code qits-platform} overlay any more.</b> It was where
+ * the platform plane's services ran, and the plane is deleted: every service is an environment
+ * service in one tier, so a network whose whole meaning was "belongs to no environment" has nothing
+ * left to hold.
+ *
  * <p>Only the bundle name is ever stored — on the environment row, so a tier's public-node network
- * can be something other than the convention (dev's is {@code qits-net} by history). The other two
- * are computed at deploy time and read back from docker's labels. <b>Nothing here is persisted.</b>
+ * can be something other than the convention (dev's is {@code qits-net} by history). The other is
+ * computed at deploy time and read back from docker's labels. <b>Nothing here is persisted.</b>
  * A network's membership is docker's bookkeeping, never a row — a copy in this database would be a
  * second answer that goes stale the first time a container is replaced.
  *
@@ -30,9 +29,6 @@ import java.util.List;
  * deploy orchestration derives the rest.
  */
 public final class PdNetworks {
-
-  /** Where platform services run, created on demand. They belong to no environment. */
-  public static final String PLATFORM = "qits-platform";
 
   /** The bundle network an environment gets when its creator names none. */
   public static final String BUNDLE_PREFIX = "qits-env-";
@@ -54,86 +50,22 @@ public final class PdNetworks {
    * and under swarm the service's own NAME. It is derived here rather than at the argv, because
    * everything that has to agree about an address takes it from here.
    *
-   * <ul>
-   *   <li><b>An environment service</b> is {@code <environment>-<application>} — {@code
-   *       prod-qits-gateway}. The qualifier is what lets two tiers hold the same application's
-   *       address on one shared network (the flat overlay is shared by all of them) without one
-   *       resolving as the other.
-   *   <li><b>A platform service</b> keeps the bare {@code <application>} — see {@link
-   *       #platformAlias}.
-   * </ul>
+   * <p><b>It is {@code <environment>-<application>}, unconditionally, and the absence of a second
+   * arm is the point.</b> The qualifier is what lets two tiers hold the same application's address
+   * on one shared network (the flat overlay is shared by all of them) without one resolving as the
+   * other; every service has a tier now, so every address carries it. The bare spelling
+   * ({@code qits-ci}) was the platform plane's and went with the plane.
    *
-   * <p><b>The plane is a parameter now and used to be a null environment.</b> A platform service is
-   * deployed into the main environment since V8, so "no tier" no longer identifies one and an alias
-   * derived from the tier would have renamed every platform service on one deployment — which,
-   * swarm's service name being its address, is a second service beside the one that was serving.
-   *
-   * @param target which plane; {@link PdDeploymentTarget#PLATFORM} answers bare
-   */
-  public static String alias(
-      PdDeploymentTarget target, String environmentName, String applicationName) {
-    return target == PdDeploymentTarget.PLATFORM
-        ? platformAlias(applicationName)
-        : alias(environmentName, applicationName);
-  }
-
-  /**
-   * An environment service's alias, {@code <environment>-<application>}. The tier is required: a
-   * caller that has no tier is on the platform plane and says so with {@link #platformAlias}.
+   * <p><b>The rename this caused was a cutover, not a refactor, and it was paid for once.</b> A
+   * swarm service's name IS its address and swarm cannot rename one, so the deployment that first
+   * derived a qualified name for a former platform service created {@code <env>-<app>} beside the
+   * bare-named service that was serving. What made it survivable is that the qualified name was
+   * granted as an extra network alias first, one release earlier, so a peer that had already moved
+   * to it kept resolving across the gap. The bare-named predecessor is not found by any lookup here
+   * — it is a service of another name — and was removed by hand; see AGENTS.md, <i>Retiring the
+   * plane's bare-named services</i>.
    */
   public static String alias(String environmentName, String applicationName) {
     return environmentName + "-" + applicationName;
-  }
-
-  /**
-   * A platform service's alias: the bare application name, whichever tier it is deployed into.
-   *
-   * <p><b>This is what "platform" still means after V8.</b> The plane's deployments carry the main
-   * environment everywhere else — the row, the labels, {@code QITS_ENVIRONMENT}, the events — and
-   * the address is the one thing that deliberately does not, because a consumer in any tier reaches
-   * qits-ci by writing {@code qits-ci} and must not have to know where the platform's own tier is.
-   */
-  public static String platformAlias(String applicationName) {
-    return applicationName;
-  }
-
-  /**
-   * The addresses a service answers to <b>beyond its own name</b>, which under swarm is {@link
-   * #alias}.
-   *
-   * <p><b>This is the additive half of a staged cutover, and it takes nothing away.</b> The plane is
-   * being removed — every service becomes an ordinary environment service in the one tier, addressed
-   * {@code <env>-<app>} — and a swarm service's name IS its address, so flipping the derivation in
-   * one change would rename every platform service at once: a second service beside the one that was
-   * serving, with every peer still dialling a name nothing answers to. Instead the qualified name
-   * starts answering FIRST, as an extra network alias beside the bare one, so dialers can move to it
-   * while the bare name still works; the plane is deleted in a later change, once nothing dials bare.
-   *
-   * <ul>
-   *   <li><b>A platform service</b> is named {@code <app>} and gains {@code <env>-<app>}. Both
-   *       resolve.
-   *   <li><b>An environment service</b> is already named {@code <env>-<app>}, so it gains nothing —
-   *       the qualified name it would be given is the name it already has, and an alias equal to the
-   *       service's own name is a line swarm has no use for.
-   * </ul>
-   *
-   * <p>A service with no tier — a mid-bootstrap install with nothing designated — gains nothing
-   * either: there is no qualifier to compose one from, and an alias invented from a blank would be
-   * an address of the form {@code -qits-idp}.
-   *
-   * <p><b>An alias is not a rename and does not reach a LIVE service.</b> Swarm restates a network
-   * attachment whole or not at all, so this lands on a service's next <b>create</b> — see
-   * {@code SwarmDeploymentDriver.buildUpdateArgv}, which states no networks on purpose. That is the
-   * property that makes this change safe to release: no existing service is recreated by it.
-   */
-  public static List<String> additionalAliases(
-      PdDeploymentTarget target, String environmentName, String applicationName) {
-    if (environmentName == null || environmentName.isBlank()) {
-      return List.of();
-    }
-    String qualified = alias(environmentName, applicationName);
-    return qualified.equals(alias(target, environmentName, applicationName))
-        ? List.of()
-        : List.of(qualified);
   }
 }

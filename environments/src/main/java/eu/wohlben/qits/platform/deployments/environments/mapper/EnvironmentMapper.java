@@ -35,18 +35,17 @@ public class EnvironmentMapper {
   }
 
   /**
-   * The environment is flattened rather than nested: a platform service has none, and a listing
-   * that mixes both wants one shape.
+   * The environment is flattened rather than nested: a service the catalogue links nowhere has
+   * none, and a listing that carries both wants one shape.
    */
   public PdApplicationDto toDto(ApplicationView view) {
     PdService service = view.service();
     return new PdApplicationDto(
-        ApplicationKeys.of(service.deploymentTarget, view.environmentId(), service.name),
+        ApplicationKeys.of(view.environmentId(), service.name),
         service.name,
         service.name,
         view.environmentId(),
         view.environmentName(),
-        service.deploymentTarget,
         service.availableOnEnv,
         service.branch,
         service.healthPath,
@@ -58,7 +57,6 @@ public class EnvironmentMapper {
     return new PdServiceDto(
         service.id,
         service.name,
-        service.deploymentTarget,
         service.branch,
         service.availableOnEnv,
         service.healthPath,
@@ -71,7 +69,6 @@ public class EnvironmentMapper {
     return new PdLinkedServiceDto(
         service.id,
         service.name,
-        service.deploymentTarget,
         service.availableOnEnv,
         service.healthPath);
   }

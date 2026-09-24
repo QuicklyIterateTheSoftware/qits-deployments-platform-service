@@ -6,8 +6,6 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
@@ -23,6 +21,11 @@ import java.util.UUID;
  * runs in is said by its {@link PdServiceLink}s, and that is what lets a reader ask both questions
  * — "what is this service" and "where does it run" — without joining a name to itself across
  * environments.
+ *
+ * <p><b>A service is defined by its links and by nothing else.</b> {@code deployment_target} used to
+ * sit here and say which PLANE a service was on; the plane is deleted, so a service with no link
+ * runs nowhere rather than everywhere, and the registration that writes this row always states the
+ * tier it registered into.
  *
  * <p>Rows here are <b>derived</b>: a green build carries the deploy orchestration to the
  * repository's {@code .config/qits/deployments.yml} at that sha, and the row is created or brought
@@ -65,11 +68,6 @@ public class PdService extends PanacheEntityBase implements CausedRow {
   /** dns-safe and unique: the network alias, the image path segment, part of a container name. */
   @Column(nullable = false, unique = true, length = 64)
   public String name;
-
-  /** Environment-tiered or platform-plane. Never null; {@code ENVIRONMENT} is the default shape. */
-  @Enumerated(EnumType.STRING)
-  @Column(name = "deployment_target", nullable = false, length = 32)
-  public PdDeploymentTarget deploymentTarget = PdDeploymentTarget.ENVIRONMENT;
 
   /**
    * <b>Vestigial.</b> It held a platform service's own deploy branch, back when the platform plane

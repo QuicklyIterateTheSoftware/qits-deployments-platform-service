@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
@@ -166,7 +165,6 @@ public class PdHeldSpecSweepTest {
               row.applicationName = applicationName;
               row.environmentId = environmentId;
               // V8 made the plane a not-null column; these rows are tier rows.
-              row.deploymentTarget = PdDeploymentTarget.ENVIRONMENT;
               row.version = version;
               row.status = status;
               row.createdAt = Instant.now();

@@ -2,7 +2,6 @@ package eu.wohlben.qits.platform.deployments.confighost;
 
 import eu.wohlben.qits.platform.deployments.deployments.control.DeclarationRefused;
 import eu.wohlben.qits.platform.deployments.deployments.control.DeclarationSeed;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -22,7 +21,7 @@ import org.jboss.logging.Logger;
  * that carries it is scheduled.
  *
  * <pre>
- * POST &lt;extras-url&gt;/configuration/api/applications/&lt;app&gt;/declarations/&lt;version&gt;?deploymentTarget=&lt;target&gt;
+ * POST &lt;extras-url&gt;/configuration/api/applications/&lt;app&gt;/declarations/&lt;version&gt;?deploymentTarget=environment
  *   Content-Type: application/yaml
  *   &lt;the file, verbatim&gt;
  * </pre>
@@ -85,6 +84,9 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
    * qits-configuration, or nothing — <b>the extras read's key, not one of this seam's own</b>. See
    * the class javadoc for why a second key would be a way to write and read different stores.
    */
+  /** What the store is told about the plane, which is the only thing there is to tell it. */
+  private static final String DEPLOYMENT_TARGET = "environment";
+
   @ConfigProperty(name = "qits.platform.deployments.extras-url")
   Optional<String> extrasUrl;
 
@@ -121,9 +123,15 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
     return existing;
   }
 
+  /**
+   * <p><b>{@code deploymentTarget=environment} is a constant now, and it stays on the wire.</b> The
+   * plane is deleted here, so this component has nothing left to state — but the query parameter is
+   * qits-configuration's route and its own vocabulary, and dropping it would be a change to a peer's
+   * contract made from the wrong repository. Every application is an environment application, so the
+   * honest value is the constant; retiring the parameter is qits-configuration's to lead.
+   */
   @Override
-  public void seed(
-      String applicationName, String version, PdDeploymentTarget target, String rawYaml) {
+  public void seed(String applicationName, String version, String rawYaml) {
     String base = extrasUrl.map(String::trim).filter(url -> !url.isEmpty()).orElse(null);
     if (base == null) {
       // No store named, so there is nothing to seed and nothing to refuse. Every file-mode platform
@@ -141,7 +149,7 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
             + "/declarations/"
             + versionSegment(version)
             + "?deploymentTarget="
-            + target.name().toLowerCase(Locale.ROOT);
+            + DEPLOYMENT_TARGET;
     post(url, applicationName, version, rawYaml);
   }
 

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.platform.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.ResourceException;
-import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -23,9 +22,20 @@ import org.jboss.logging.Logger;
  * secret — {@code ConfigHostDeclarationSeed}'s shape, over the JDK's own {@link HttpClient}, for the
  * same reason: no REST client generated against a peer's contract, no second HTTP library.
  *
- * <p><b>The address is derived, like the postgres host.</b> {@code
- * PdNetworks.platformAlias("qits-platform-idp")} plus the container port — there is one idp per
- * platform, so there is nothing to configure. No caller of this class supplies it.
+ * <p><b>The address is derived, like the postgres host</b> — the application name plus the container
+ * port. There is one idp per platform, so there is nothing to configure, and no caller of this class
+ * supplies it.
+ *
+ * <p><b>It is the ONE bare, un-tiered address left in this component, and it is a known debt rather
+ * than a convention.</b> Every other derived address carries the tier now that the platform plane is
+ * deleted ({@code PdNetworks.alias}), including the {@code QITS_RESOURCE_IDP_URL} this component
+ * injects into the containers it starts ({@code ResourceProvisioning.idpUrl}). This one cannot: the
+ * {@link IdpClientProvisioner} seam is a courier of three requests and carries no tier, so
+ * qualifying the address means widening all three verbs. Until that happens the value here resolves
+ * only while qits-platform-idp's bare-named swarm service is still up — which it is, because
+ * retiring those services is a hand step (AGENTS.md, <i>Retiring the plane's bare-named
+ * services</i>). <b>Widen the seam before removing {@code qits-platform-idp} by hand</b>, or
+ * provisioning an {@code idp:client} resource starts failing with an unresolvable host.
  *
  * <p><b>The credential is this component's own, never the target application's.</b> qits-idp's
  * service-client API takes Basic auth from a caller that must itself be a service client holding
@@ -59,7 +69,7 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
    * class javadoc), so a test override is the only override there is.
    */
   String baseUrl =
-      "http://" + PdNetworks.platformAlias(IDP_APPLICATION) + ":" + IDP_PORT + "/idp/api/service-clients";
+      "http://" + IDP_APPLICATION + ":" + IDP_PORT + "/idp/api/service-clients";
 
   @ConfigProperty(name = "qits.platform.deployments.idp-timeout-seconds")
   long timeoutSeconds;

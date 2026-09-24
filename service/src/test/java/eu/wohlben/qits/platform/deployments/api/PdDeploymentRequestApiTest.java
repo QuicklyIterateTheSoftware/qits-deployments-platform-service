@@ -10,7 +10,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeDeploymentDriver;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
@@ -105,7 +104,7 @@ public class PdDeploymentRequestApiTest {
     String environmentId = createEnvironment("req-plane");
     specs.script(
         "repo-req-plane",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+        new SpecSource.DeploymentSpec(false, null, null, null, null));
     release("repo-req-plane", V_A, environmentId, 1);
 
     Map<String, Object> request = onlyRequestOf(environmentId, "repo-req-plane");

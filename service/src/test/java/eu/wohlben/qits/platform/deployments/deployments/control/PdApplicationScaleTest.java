@@ -11,7 +11,8 @@ import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
 import eu.wohlben.qits.platform.deployments.environments.control.ApplicationKeys;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdEnvironment;
+import eu.wohlben.qits.platform.deployments.environments.persistence.PdEnvironmentRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
@@ -42,7 +43,38 @@ public class PdApplicationScaleTest {
 
   private static final String APPLICATIONS = "/platform-deployments/api/applications/";
 
+  /**
+   * The tier the fixtures below name, as a REAL environment row.
+   *
+   * <p>It did not have to exist while these fixtures stood for the platform plane: their rows carried
+   * no tier, they were addressed {@code platform:<name>}, and the deployment listing's {@code
+   * ?environmentId=platform} arm skipped the tier check because the plane was not a row and so could
+   * not be missing. The plane is deleted, so a place is a tier — and the listing's own rule is that a
+   * tier which does not exist is a 404 rather than an empty list. The deployment ROWS still need no
+   * environment row (V1: no FK, so history outlives the topology); the LISTING does.
+   */
+  @BeforeEach
+  void theTierExists() {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              if (environments.findByIdOptional(TIER).isEmpty()) {
+                PdEnvironment tier = new PdEnvironment();
+                tier.id = TIER;
+                tier.name = TIER;
+                tier.network = "qits-env-" + TIER;
+                // Never the designated one: designation is moved by creating a tier through the
+                // door, and a fixture that took it would decide where every other class's release
+                // lands.
+                tier.platform = false;
+                tier.createdAt = Instant.now();
+                environments.persist(tier);
+              }
+            });
+  }
+
   @Inject FakeDeploymentDriver driver;
+  @Inject PdEnvironmentRepository environments;
   @Inject FakeSpecSource specs;
   @Inject FakeResourceProvisioner provisioner;
   @Inject FakeIdpClientProvisioner idpProvisioner;
@@ -61,29 +93,21 @@ public class PdApplicationScaleTest {
   /**
    * One settled deployment of one application in one place, as the world it acts on.
    *
-   * <p>The plane is derived from the tier the way {@link PdDeploymentObservationTest}'s twin does —
-   * a fixture with no tier is a platform row, which is the pre-V8 shape V8's backfill leaves on an
-   * install with nothing designated. {@link #deployment(String, String, PdDeploymentTarget,
-   * PdDeploymentStatus, String)} is the arm that states the two independently, and the plane test
-   * below uses it to write the shape a designated install actually has.
+   * <p><b>There was a second arm that stated the PLANE independently of the tier</b>, because a
+   * fixture with no tier was a platform row and a designated install had rows carrying both. The
+   * plane is deleted, so a place is a tier and one arm says everything.
    */
-  private String deployment(
-      String applicationName,
-      String environmentId,
-      PdDeploymentStatus status,
-      String containerName) {
-    return deployment(
-        applicationName,
-        environmentId,
-        environmentId == null ? PdDeploymentTarget.PLATFORM : PdDeploymentTarget.ENVIRONMENT,
-        status,
-        containerName);
-  }
+  /**
+   * The tier every fixture here uses unless it names its own. It was {@code null} on the rows that
+   * stood for the platform plane, addressed {@code platform:<name>}; the plane is deleted, so a row
+   * names a tier and the id is that tier's. A literal rather than a created environment, because a
+   * deployment row has no FK to one (V1's rule) and this door reads the rows.
+   */
+  private static final String TIER = "env-scale-tier";
 
   private String deployment(
       String applicationName,
       String environmentId,
-      PdDeploymentTarget target,
       PdDeploymentStatus status,
       String containerName) {
     String id = UUID.randomUUID().toString();
@@ -94,7 +118,6 @@ public class PdApplicationScaleTest {
               row.id = id;
               row.applicationName = applicationName;
               row.environmentId = environmentId;
-              row.deploymentTarget = target;
               row.commitSha = SHA;
               row.status = status;
               row.containerName = containerName;
@@ -139,10 +162,12 @@ public class PdApplicationScaleTest {
 
   @Test
   public void scalingToZeroStopsTheWorkloadAndTheReadSurfaceSaysSo() {
-    // The platform plane, because the deployment listing this asserts against reaches it without a
-    // tier row to create first — `?environmentId=platform` is the stand-in the client already uses.
+    // The listing this asserts against used to be reached as `?environmentId=platform` — the plane,
+    // which needed no tier row created first. That filter value is gone with the plane, so the row is
+    // written into a literal tier id and read back by it; a deployment row has no FK to an
+    // environment (V1's rule), so there is still nothing to create.
     String service = "scale-down";
-    String id = deployment("scale-down", null, PdDeploymentStatus.ACTIVE, service);
+    String id = deployment("scale-down", TIER, PdDeploymentStatus.ACTIVE, service);
 
     given()
         .contentType(ContentType.JSON)
@@ -150,7 +175,7 @@ public class PdApplicationScaleTest {
         .when()
         .post(
             APPLICATIONS
-                + ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "scale-down")
+                + ApplicationKeys.of(TIER, "scale-down")
                 + "/scale")
         .then()
         .statusCode(202)
@@ -173,7 +198,7 @@ public class PdApplicationScaleTest {
     // ...and the listing a client reads says so rather than claiming the place is serving.
     given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=platform")
+        .get("/platform-deployments/api/deployments?environmentId=" + TIER)
         .then()
         .statusCode(200)
         .body("deployments.find { it.id == '" + id + "' }.status", org.hamcrest.Matchers.equalTo("SCALED_TO_ZERO"));
@@ -185,7 +210,7 @@ public class PdApplicationScaleTest {
     // exactly one place, and it is the observation. A scale that wrote ACTIVE would be claiming a
     // gate it never ran.
     String service = "scale-up";
-    String id = deployment("scale-up", null, PdDeploymentStatus.SCALED_TO_ZERO, service);
+    String id = deployment("scale-up", TIER, PdDeploymentStatus.SCALED_TO_ZERO, service);
     driver.scriptDeclaredReplicas(service, 0);
 
     given()
@@ -194,7 +219,7 @@ public class PdApplicationScaleTest {
         .when()
         .post(
             APPLICATIONS
-                + ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "scale-up")
+                + ApplicationKeys.of(TIER, "scale-up")
                 + "/scale")
         .then()
         .statusCode(202);
@@ -231,8 +256,7 @@ public class PdApplicationScaleTest {
         .when()
         .post(
             APPLICATIONS
-                + ApplicationKeys.of(
-                    PdDeploymentTarget.ENVIRONMENT, "env-scale-refused", "scale-refused")
+                + ApplicationKeys.of("env-scale-refused", "scale-refused")
                 + "/scale")
         .then()
         .statusCode(202);
@@ -257,7 +281,7 @@ public class PdApplicationScaleTest {
         .when()
         .post(
             APPLICATIONS
-                + ApplicationKeys.of(PdDeploymentTarget.ENVIRONMENT, "env-bounce", "bounce")
+                + ApplicationKeys.of("env-bounce", "bounce")
                 + "/restart")
         .then()
         .statusCode(202)
@@ -317,7 +341,7 @@ public class PdApplicationScaleTest {
         .when()
         .post(
             APPLICATIONS
-                + ApplicationKeys.of(PdDeploymentTarget.ENVIRONMENT, "env-too-many", "too-many")
+                + ApplicationKeys.of("env-too-many", "too-many")
                 + "/scale")
         .then()
         .statusCode(400)
@@ -330,7 +354,7 @@ public class PdApplicationScaleTest {
         .contentType(ContentType.JSON)
         .body("{}")
         .when()
-        .post(APPLICATIONS + "platform:no-count/scale")
+        .post(APPLICATIONS + TIER + ":no-count/scale")
         .then()
         .statusCode(400)
         .body("message", org.hamcrest.Matchers.containsString("replicas is required"));
@@ -342,12 +366,12 @@ public class PdApplicationScaleTest {
         .contentType(ContentType.JSON)
         .body("{\"replicas\":0}")
         .when()
-        .post(APPLICATIONS + "platform:never-deployed-anywhere/scale")
+        .post(APPLICATIONS + TIER + ":never-deployed-anywhere/scale")
         .then()
         .statusCode(404);
     given()
         .when()
-        .post(APPLICATIONS + "platform:never-deployed-anywhere/restart")
+        .post(APPLICATIONS + TIER + ":never-deployed-anywhere/restart")
         .then()
         .statusCode(404);
   }
@@ -357,13 +381,13 @@ public class PdApplicationScaleTest {
     // IMAGE_MISSING is the everyday shape of this: the row exists, the pull failed, and there is no
     // service anywhere carrying the application. A 409 rather than a 404 — the application is
     // known, the state is wrong.
-    deployment("never-ran", null, PdDeploymentStatus.IMAGE_MISSING, null);
+    deployment("never-ran", TIER, PdDeploymentStatus.IMAGE_MISSING, null);
 
     given()
         .when()
         .post(
             APPLICATIONS
-                + ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "never-ran")
+                + ApplicationKeys.of(TIER, "never-ran")
                 + "/restart")
         .then()
         .statusCode(409)
@@ -371,18 +395,20 @@ public class PdApplicationScaleTest {
   }
 
   @Test
-  public void aPlatformApplicationIsAddressedByTheSameKeyItIsListedUnder() {
-    // `platform:<name>` is the stand-in an application on the plane already carries in the listing,
-    // so the lever takes the id a client is holding rather than a second spelling.
+  public void anApplicationIsAddressedByTheSameKeyItIsListedUnder() {
+    // The lever takes the id a client is already holding rather than a second spelling. It was
+    // `aPlatformApplicationIsAddressedByTheSameKeyItIsListedUnder` and the key was `platform:<name>`,
+    // the stand-in the plane's applications carried; the stand-in is gone with the plane and the key
+    // is the tier's, on both sides of the join.
     String service = "platform-lever";
-    String id = deployment("platform-lever", null, PdDeploymentStatus.ACTIVE, service);
+    String id = deployment("platform-lever", TIER, PdDeploymentStatus.ACTIVE, service);
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:platform-lever/restart")
+        .post(APPLICATIONS + ApplicationKeys.of(TIER, "platform-lever") + "/restart")
         .then()
         .statusCode(202)
-        .body("environmentId", org.hamcrest.Matchers.nullValue())
+        .body("environmentId", org.hamcrest.Matchers.equalTo(TIER))
         .body("deploymentId", org.hamcrest.Matchers.equalTo(id));
     awaitWorker();
 
@@ -391,26 +417,20 @@ public class PdApplicationScaleTest {
 
   @Test
   public void aPlatformApplicationIsFOUNDBYITSPLANEEvenThoughItNamesTheDesignatedTier() {
-    // The regression this pins is V8's, and it is silent: a platform deployment carries the
-    // designated tier now, so `newestForPlace` reading `platform:` as "the rows with no tier" would
-    // find the pre-V8 rows alone — an operator's lever acting on a deployment years old, or 404 on
-    // an application that is plainly serving. The plane is the column, so the plane is the query.
-    String service = "planed-lever";
-    String id =
-        deployment(
-            "planed-lever",
-            "env-designated",
-            PdDeploymentTarget.PLATFORM,
-            PdDeploymentStatus.ACTIVE,
-            service);
+    // The regression this pins was V8's and is now one question shorter. It held that an operator's
+    // lever on a platform application has to find the row by PLANE, because the rows carried the
+    // designated tier while the id said `platform:` — so a tier-shaped read would have found the
+    // pre-V8 rows alone and acted on a deployment years old, or 404'd an application that was plainly
+    // serving. The plane is deleted, the id is the tier's, and the rows already name that tier: one
+    // question, asked once, and this is the claim that the lever still reaches the live row.
+    String service = "dev-planed-lever";
+    String id = deployment("planed-lever", "env-designated", PdDeploymentStatus.ACTIVE, service);
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:planed-lever/restart")
+        .post(APPLICATIONS + "env-designated:planed-lever/restart")
         .then()
         .statusCode(202)
-        // The tier the plane is deployed INTO comes back, because that is what the row says. The
-        // key is still `platform:` — the plane is what a reader of the id is being told.
         .body("environmentId", org.hamcrest.Matchers.equalTo("env-designated"))
         .body("deploymentId", org.hamcrest.Matchers.equalTo(id));
     awaitWorker();

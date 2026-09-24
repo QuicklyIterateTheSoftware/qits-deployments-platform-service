@@ -533,11 +533,14 @@ never for how.
 `desiredReplicas`, `scale` and `restart(serviceName)`; see *Scale and restart* below. The test the
 removed verbs failed is the one to keep applying: none of these three is a step somebody sequences
 to perform a deployment. Each states an outcome a person asked for, and nothing calls two of them in
-a row. **A fourth, `removeService(name)`, is the plane conversion's** (see *A plane conversion
-retires its tier services*), and it passes the same test: by the time it runs the deployment is
-applied, converged, recorded and announced, and calling it or not changes none of that. It removes
-exactly the one named service — the targeted opposite of `removeEnvironmentContainers`' label sweep
-— is idempotent, and must never throw.
+a row. **A fourth, `removeService(name)`, has NO CALLER LEFT and is kept for what it says.** It was
+the plane conversion's, and the conversion went with the plane; what the verb states — "this one
+service, named by a row, has been left behind and should not exist" — is exactly the sentence the
+plane's own deletion leaves nine times over on the estate, and that is an operator's hand step
+because nothing here can name those services (see *Retiring the plane's bare-named services*). It
+passes the same test the other three do: by the time it would run the deployment is applied,
+converged, recorded and announced. It removes exactly the one named service — the targeted opposite of
+`removeEnvironmentContainers`' label sweep — is idempotent, and must never throw.
 
 **So `DeployService.execute` has no branches in it**: resolve → provision → pull (for the
 `IMAGE_MISSING` classification) → `apply` → `awaitConverged` → record. What stayed with it is the
@@ -561,9 +564,9 @@ Three things about the shape, each easy to undo by accident:
 **Under swarm the topology is flat and that is a decision, not a simplification**: every
 `--network-add` recreates the task, so a service declares its whole membership at create time —
 `qits.platform.deployments.swarm.flat-network` (an *attachable* overlay, which is what keeps CI
-step, workspace and agent containers working on it) plus `qits-platform` for the plane. The
-per-application networks the state machine still computes are dropped by the swarm driver, out
-loud. A service update keeps the mounts, networks and ports it was created with: changing the shape
+step, workspace and agent containers working on it) — and that overlay alone. `qits-platform` was the
+second and went with the plane whose services ran on it. The per-application networks the state
+machine still computes are dropped by the swarm driver, out loud. A service update keeps the mounts, networks and ports it was created with: changing the shape
 of a service is a `service rm` and a redeploy, not a deployment.
 
 ### Network aliases: the vhost names docker's DNS cannot make up
@@ -594,12 +597,15 @@ Four things about the rendering, each easy to undo by accident:
   redeploy. A declared alias reaches a service only on its next **create**.
 - **…which is why a declared alias MISSING from the live service forces that create**, the declared
   volume's arm applied to the second shape change a deployment performs for itself
-  (`missingDeclaredAlias`). Without it the environment-qualified alias above would reach only
-  services created after it shipped — measured on the estate: `qits-platform-idp` resolved and
-  `dev-qits-platform-idp` did not, after two deployments carrying the declaration. It is the lever
-  that makes the plane cutover **staggered**: nobody here has host access to run `service rm` by
-  hand, and each platform service recreates once on its own next deployment, as its own release, and
-  never again. Everything the volume arm says holds here word for word — one-directional (an alias
+  (`missingDeclaredAlias`). Without it a declared alias would reach only services created after it
+  shipped — measured on the estate: `qits-platform-idp` resolved and `dev-qits-platform-idp` did not,
+  after two deployments carrying the declaration. **That measurement was the plane cutover's**, and
+  the lever did its job: it made the cutover staggered, each of the nine recreating once on its own
+  next deployment to be granted the qualified name, which is what let the plane be deleted a release
+  later without a single peer losing an address. **What is declared is deployment config's aliases
+  alone now** — the derived half (`PdNetworks.additionalAliases`) went with the plane, because the
+  qualified name IS the service's name and an alias equal to a service's own name is a line swarm has
+  no use for. Everything the volume arm says holds here word for word — one-directional (an alias
   the service carries that nothing declares is not a reason to recreate, and an application
   declaring none spends no CLI call), an inspect that cannot answer recreates **nothing**, a WARN
   names the service and the alias first, and a self-update never recreates.
@@ -769,18 +775,19 @@ deployment there either.
 `HealthGate.await`, the polling loop itself, **has no caller left** and says so in its own javadoc.
 It was the docker cutover's; swarm reaches its own verdict through `UpdateStatus`.
 
-## The vocabulary rename, and the alias
+## The vocabulary rename, and what is left of it
 
-`singleton` → `platform`, everywhere: `PdDeploymentTarget.PLATFORM`, label
-`qits.platform.deployments.target=platform`, network `qits-platform` (unchanged name), key stand-in
-`platform:<name>` in `ApplicationKeys`.
+`singleton` → `platform` was a rename of a word that has since been deleted outright. `PdDeploymentTarget`,
+the label `qits.platform.deployments.target`, the network `qits-platform` and the `platform:<name>`
+key stand-in are all gone — see *The platform plane is deleted* below.
 
-**`deployment_target: singleton` remains an accepted alias in the spec parser and nowhere else.** It
-parses to `PLATFORM` and nothing downstream can tell the two apart; the error message for an
-unrecognised value names only `environment` and `platform`, so a repository being corrected is
-pointed at the word to use. Do not add the alias to the API, the enum or the labels — it exists so a
-repository that has not been edited yet keeps deploying across the cutover, not as a second spelling
-to maintain.
+**What survives is a tolerance in the parser, and it is permanent.** `deployment_target` is accepted,
+unvalidated and acted on by nobody: `platform`, `environment`, `singleton` and any word whatsoever are
+read and dropped. Not because any of them means something, but because **a spec is fetched at the
+BUILT sha** — a rollback pin, a redeploy of an older commit and every repository that still carries
+the line all present a file containing the key, and this parser fails a deployment on an unknown one.
+Making it unknown would turn every such deployment red permanently rather than for the length of a
+sweep. Do not write it into a new file, and **do not remove the tolerance**.
 
 **The config namespace is `qits.platform.deployments.*`** — `platform` qualifies `deployments`, it
 is not half of one word. It was `qits.cd.*` in the ancestor and `qits.pd.*` for one release here; a
@@ -812,32 +819,30 @@ the alias). Wrapper and component changes land together.
 
 Two derived shapes, and only one of them resolves:
 
-| | environment | platform |
-| --- | --- | --- |
-| container name (`ContainerNames`) | `qits-pd-<env>-<app>-<id8>` | `qits-pd-<app>-<id8>` |
-| wire alias (`PdNetworks.alias`) | `<env>-<app>` | `<app>` |
+| | every service |
+| --- | --- |
+| container name (`ContainerNames`) | `qits-pd-<env>-<app>-<id8>` |
+| wire alias (`PdNetworks.alias`) | `<env>-<app>` |
 
-**Both are asked which PLANE they are on, and neither reads it off a missing tier any more.** Both
-take a `PdDeploymentTarget`, because a platform service is deployed INTO the designated environment
-and therefore has an environment name to be qualified by — one that must not reach either shape.
-The regression is not cosmetic: a swarm service's NAME is the wire alias, and swarm cannot rename a
-service, so an alias that started carrying `dev-` would create `dev-qits-ci` **beside**
-`qits-ci` and leave every peer dialling a name nothing answers to.
+**There was a second column and it was the platform plane's** — `qits-pd-<app>-<id8>` and the bare
+`<app>`, both of them unqualified because the plane served every tier and a consumer had to reach it
+without knowing which one it ran in. Both took a `PdDeploymentTarget` to say which. The plane is
+deleted, so each shape is one derivation with no branch in it, and every name carries the tier.
 
 **The wire alias is the address, and it is derived in one place because everything that has to
 agree about an address takes it from here** — swarm's service name first of all, which is also what
 makes a replace an update rather than a second service.
 
 The environment qualifier exists because the flat overlay is shared by every tier: without it two
-tiers' copies of one application hold the same address there. A platform service keeps the bare
-name — it serves every tier, so a consumer must be able to reach it without knowing which one the
-plane runs in — and the platform applications carry the plane in their own names
-(`qits-platform-idp`), which is also why the platform container name **drops** the segment rather
-than filling it with the word.
+tiers' copies of one application hold the same address there.
 
-**This is the one fact about the plane that survived "a platform service is deployed to the main
-environment".** The row, the labels, `QITS_ENVIRONMENT` and all four events name the designated
-tier now; the address does not, and `PdNetworks.platformAlias` is where that is spelled.
+**Deleting the second column RENAMED nine live services, and that is the one cutover in the whole
+change.** A swarm service's NAME is its wire alias and swarm cannot rename one, so the first
+deployment of each of the nine under this code creates `<env>-<app>` beside the bare-named service
+that was serving. What made it survivable was staged a release earlier: every one of the nine already
+answers on both names, because the qualified form was declared as an extra network alias and each
+service was recreated once to be granted it. The bare-named predecessor is **not** retired by
+anything here — see the hand step below.
 
 ## Networks are docker's bookkeeping, never a row
 
@@ -1698,8 +1703,8 @@ rows written before that.)
 version enters is a property of the platform: `DeployService.entryTiers()` answers with the
 **designated platform environment** (`pd_environment.platform`, of which there is exactly one), and
 that is the whole of what replaced `tiersOnBranch`. Empty is a real answer — a mid-bootstrap install
-registers nothing and deploys nothing rather than picking a tier at random, which is the answer
-`registerPlatform` always gave. The link set written is still the **union** of what the catalogue
+registers nothing and deploys nothing rather than picking a tier at random, which is the answer both
+retired register arms always gave. The link set written is still the **union** of what the catalogue
 holds and the entry tier, so a tier a promotion already reached is never unlinked.
 
 **`pd_environment.branch` is GONE** — the column (V8), `EnvironmentService.BRANCH_PREFIX`,
@@ -1711,147 +1716,176 @@ tolerance are its callers. A promotion ladder is the follow-up this shape waits 
 promoted to the next tier is a deployment request of its own against another environment, which is
 the row that now exists. **What must not come back is a branch.**
 
-### …and the PLATFORM PLANE lands there too (2026-09-03)
+### The platform plane is DELETED (2026-09-24)
 
-**A platform service is deployed TO the designated environment, and "platform" stopped being
-spelled as an absence.** It used to deploy with no tier at all: null `environmentId`/
-`environmentName` on the four lifecycle events, no environment label, no `QITS_ENVIRONMENT`. That
-read well — it serves every tier, so naming one would be untrue — and cost the plane the ability to
-state anything about its own install: no tier in its telemetry, no tier on the events consumers
-project a route table per environment from, and a resource registry keyed by a null. So the plane
-deploys into `entryTiers()`' answer like everything else, and **both register arms now build a
-`Target` from the same environment**.
+**Three sections lived here and they are one.** They were *…and the PLATFORM PLANE lands there too*
+(2026-09-03, the plane gaining a tier), *A plane conversion retires its tier services* (2026-09-07,
+the `dev-qits-configuration` orphan) and *The plane is the catalogue's answer, not the file's*
+(2026-09-23, the incident where the deployer refused to deploy its own fix). Each was a correction to
+a distinction that no longer exists, so this is what replaced all three.
 
-**What the plane still decides is three things, and every one of them is asked of the SPEC's
-`deployment_target: platform` rather than of a missing tier:**
+**There was one plane too many and now there is one.** `PdDeploymentTarget` is gone — the enum, both
+columns (`pd_service.deployment_target` and `pd_deployment.deployment_target`, V13), and every branch
+that read either. A service is defined by its **links**: the environments it is registered into. It
+used to be possible for a service to carry NO link and mean "present in every environment", and that
+absence was the whole mechanism of the plane — an environment created tomorrow picked up
+qits-platform-idp with nobody editing a row. It now means what it says: a service linked nowhere runs
+nowhere.
 
-- **the bare wire alias** (`PdNetworks.alias(target, env, app)` / `platformAlias`) — the address,
-  and under swarm the service NAME. This is the one that would have been a silent outage: swarm
-  cannot rename a service, so `dev-qits-ci` would be created beside the `qits-ci` that was serving.
-  It is also what makes the existing fleet's platform services be updated in place by the first
-  deployment under the new code;
-- **the membership** — the `qits-platform` overlay on top of the flat one (`collapse`), which is the
-  swarm spelling of "on every environment's networks";
-- **the read-surface key** `platform:<name>` (`ApplicationKeys.of(target, …)`), which both sides of
-  the client's join have to agree on — the catalogue side still carries no link, so a key taken from
-  the tier would have broken the join one application at a time as each was redeployed.
-
-**Everything that inferred the plane from an absent environment was converted, and the list is the
-audit:**
+What that deleted, in one list, because each entry is a thing somebody might reasonably try to
+re-add:
 
 | was | is |
 | --- | --- |
-| `pd_deployment.environment_id is null` = the plane | `pd_deployment.deployment_target`, a not-null column (V8) |
-| `ApplicationKeys.of(environmentId, name)` | `of(target, environmentId, name)` |
-| `PdNetworks.alias(null, app)` = bare | `alias(PLATFORM, env, app)` / `platformAlias(app)` |
-| `ContainerNames.of(null, …)` = unqualified | `of(target, env, …)` |
-| `listPlatformNewestFirst` = `environment_id is null` | `deployment_target = PLATFORM` |
-| `listEnvironmentScoped` = `environment_id is not null` | `deployment_target = ENVIRONMENT` |
-| `newestInPlaces(…, includePlatform)`'s `or environment_id is null` | deleted with the method — BuildTips' last caller went with the build trigger |
-| `ResourceProvisioning`'s null lookup key | the tier's name, which for the plane is the designated one |
-| `postgresHost(null)` → the designated tier's postgres | the tier arrives on the `Target`; null is a refusal |
-| boot self-registration's null environment name | resolved from `pd_environment.platform` |
-| swarm: no environment label for the plane | the label, plus a **`target=environment` filter on the teardown's reap** |
-| swarm: no `QITS_ENVIRONMENT` for the plane | written for every service |
+| `PdNetworks.alias(target, env, app)` — bare on the plane | `alias(env, app)`, `<env>-<app>`, unconditionally |
+| `PdNetworks.platformAlias(app)` | deleted |
+| `PdNetworks.additionalAliases(...)` | deleted — it granted the qualified name beside the bare one, which was the staged first half of exactly this change |
+| `PdNetworks.PLATFORM` (`qits-platform`), `NetworkKind.PLATFORM` | deleted; the swarm topology is ONE overlay, the flat one |
+| `ContainerNames.of(target, ...)` — segment dropped on the plane | `of(env, app, id)`, always qualified |
+| `ApplicationKeys.PLATFORM` / `isPlatform` / `of(target, ...)` | `of(env, name)`, keys `<env>:<name>` |
+| `GET /deployments?environmentId=platform` | gone; `platform` names no tier and answers 404 |
+| docker label `qits.platform.deployments.target=platform` | written by nothing, read by nothing |
+| the teardown's `target=environment` filter | the environment label alone — it existed only to stop a tier's teardown taking the plane with it |
+| `ServiceCatalog`'s "a platform service carries no links" 400 | nothing; links are stored |
+| `ServiceCatalog`'s platform→environment 409 and the environment→platform conversion | nothing; an upsert replaces the link set, in both directions |
+| `DeployService.registerPlatform`, `retireConvertedTierServices`, `owedTierRetirements` | deleted; `register` has one arm |
+| `PdServiceRepository.listPlatformServices`, `PdDeploymentRepository.listPlatformNewestFirst`/`listEnvironmentScoped` | deleted |
+| `DeclarationSeed.seed(app, version, target, yaml)` | `seed(app, version, yaml)`; the wire parameter is the constant `environment` |
 
-**The teardown filter is the one that had to move with the label.** `removeEnvironmentContainers`
-reaps every service carrying a tier's environment label, and a platform service carries one now — so
-it demands `qits.platform.deployments.target=environment` beside it, or tearing down the designated
-tier would take the whole plane with it. (Deleting the designated tier is a 409 anyway; the two
-guards are independent on purpose, because a designation moved a minute earlier would otherwise make
-a teardown reap the plane.)
+**`pd_environment.platform` STAYS, under that name.** It is not the plane — it is the designation of
+the tier a release ENTERS at, which is still a real question with exactly one answer
+(`DeployService.entryTiers()`). It is renamed in a later feature; do not touch it here.
 
-**V8 backfills, and it is the one backfill in this lineage.** A null `environment_id` meant the
-platform plane and nothing else — V1's own header says so — so the translation is decidable: the
-plane column is written from exactly that, and those rows are then moved onto the designated tier so
-the successor's cutover finds them (two ACTIVE rows for one place is the invariant
-`listActiveByApplication`, the pins and the observation pass are all written around). `pd_resource`
-follows for the same reason one step further on: a lookup that missed would rotate a live password.
-`PdSchemaTest` migrates to V7, writes the rows the old code wrote and migrates the rest of the way —
-both the designated and the undesignated case.
+**`pd_deployment.deployment_target` had to be DROPPED rather than left behind**, and that is not
+tidiness. V8 made it `not null` with no default, on the rule that every writer states the plane; the
+writer is deleted, so a column left in place would fail every INSERT of a deployment row from the
+first release onwards.
 
-### A plane conversion retires its tier services (2026-09-07)
+**V13 converts the nine, and a migration that only dropped the column would have lost them.** Those
+rows say `PLATFORM` and carry no `pd_service_link` at all, because carrying none WAS how the plane
+spelled itself — so dropping the column alone leaves exactly the nine services the platform is built
+out of linked nowhere, which after this change reads as "runs nowhere": out of the link query, out of
+the tier's aggregate, and out of the deployer's management. V13 links each of them into
+`pd_environment.platform`, the tier the plane already deployed into since V8, which is why the
+translation is decidable rather than a guess. `PdSchemaTest` holds both halves — the conversion, and
+the undesignated install where the cross join answers no rows and nothing moves.
 
-**`registerPlatform` moved the rows and left the runtime alone, and that is the
-`dev-qits-configuration` incident.** A repository whose `deployments.yml` flips to
-`deployment_target: platform` had its env-scoped `ACTIVE` rows decommissioned and moved onto the
-plane — while the old `<env>-<app>` swarm service kept running with its alias, ports and volumes,
-managed by nobody: the plane deploys under the bare alias and never addresses the qualified name
-again. `dev-qits-configuration` half-failed as exactly that orphan for hours after
-qits-configuration's flip on 2026-09-07 and was removed by hand from an admin workspace. (The
-reverse direction used to be guarded — `registerInEnvironments` refused it on the record — and only
-the forward teardown was never written. **That guard is gone since 2026-09-23**, because the reverse
-direction stopped being something a repository can ask for: `deployment_target` is retired in the
-parser, so the catalogue registration is the authority on which plane a registered service is on and
-`register` routes a catalogue-`PLATFORM` service to the platform arm whatever the spec says. See *The
-plane is the catalogue's answer* below — refusing it on the spec's word is what stopped all nine
-platform services deploying that day.) Now the conversion owes the runtime a retirement, and five
-things hold it up:
+### Retiring the plane's bare-named services — the rollout's hand steps
 
-- **The retirement waits for a HEALTHY successor.** `registerPlatform` collects the decommissioned
-  rows' `container_name`s into `DeployService.owedTierRetirements` (in memory, keyed by
-  application); `execute` settles the debt via `retireConvertedTierServices` only after the platform
-  deployment's cutover wrote `ACTIVE`. Torn down at conversion time, a failed first platform deploy
-  would leave the application with NOTHING serving; deferred, a failed attempt costs nothing and the
-  owed entry survives for the next deployment that succeeds.
-  `aFailedFirstPlatformDeployKeepsTheTierServiceAndTheNextSuccessRetiresIt` holds both halves.
-- **One service per tier the application served in, and the names come off the ROWS** — the same
-  source and rule as `DeploymentObserver` and `ApplicationScaling`: only the service a row named may
-  be acted on for that row. A docker-era row names a `qits-pd-…` container rather than a service;
-  the driver answers "already absent" and that is the honest outcome.
-- **Nothing about it can fail the deployment.** The seam says `removeService` must not throw, the
-  swarm driver WARNs and returns, and `DeployService` catches the belt anyway — the deployment is
-  live and announced, so an orphan is an operator's one-line cleanup while a `FAILED` row would be a
-  lie about a healthy platform. Volumes are untouched throughout: the plane serves out of the same
-  stores, and `service rm` removes the service object alone.
-- **In memory is the `specRetries` trade, stated rather than hidden.** A process that dies between
-  the conversion and the first healthy platform deployment leaves the old services running — the
-  pre-fix state — for the admin-workspace fallback; the INFO at conversion and the WARN on a refusal
-  are what make it findable. Durability was not worth a table for a one-time transition per
-  application.
-- **The deployer's own flip is not this path's and cannot be**: that deployment is `HANDED_OFF` and
-  settled by the successor's sweep, whose map is empty. README's hand step for the plane flip
-  (`docker service rm <env>-qits-deployments` once the successor is healthy) stays.
+**Read this before releasing the change, not after.** A swarm service's name IS its wire alias, the
+nine that were the plane are running under their BARE names, and this build derives `<env>-<app>` for
+them. So the first deployment of each finds no service of that name, **creates** one, and leaves the
+bare-named predecessor running.
 
-### The plane is the catalogue's answer, not the file's (2026-09-23)
+**Nothing in this component retires it, and the reason is worth knowing rather than working around.**
+A predecessor is found by name (`SwarmDeploymentDriver.apply` → `serviceExists(spec.wireAlias())`) and
+the name is what changed; the cutover's reap cannot help either, because `reap` is a **no-op** under
+swarm — a replace is ordinarily an update of the same service, so there is nothing to remove. And the
+retirement machinery a plane conversion used (`owedTierRetirements` → `removeService`) read the names
+off the deployment rows, which already record the address that is moving: driving it from here would
+remove the service the deployment just created. So the predecessors are an operator's, one line each:
 
-**The deployer refused to deploy its own fix, and that is the worst shape this component can take.**
-`deployment_target` was retired in `DeploymentSpecParser` — the key is accepted and ignored, and every
-spec a parse produces carries `ENVIRONMENT` — while `DeployService.register` still chose its arm off
-`spec.target()` and `registerInEnvironments` still refused an application the catalogue held as
-`PLATFORM`. So from release `2026.923.142928`, live at 14:42, **every** deployment of **all nine**
-platform services came back `[refused: <app> is a platform service and this commit asks for
-deployment_target: environment …]`, qits-deployments' own next version included — ten refusals, with
-ordinary environment-tier applications deploying green throughout, which is what made it read as a
-per-application problem rather than the one routing line it was.
+    docker service rm <app>          # e.g. docker service rm qits-ci
 
-**The rule that replaced it: a registration is the authority on which plane an already-registered
-service is on**, until the plane itself is deleted. `register` asks the catalogue first and routes a
-`PdDeploymentTarget.PLATFORM` row to `registerPlatform` whatever the spec says. Three things about it,
-each easy to undo by accident:
+**The ORDER matters for anything that publishes a port — IN EITHER MODE — or holds a single-writer
+store.** Host-mode publishing binds the port from inside the task, so the successor's task sits
+`Pending` on a port the predecessor is still holding. **Ingress mode is NOT the exception it looks
+like:** the routing mesh holds the port for the whole service, and swarm refuses a *second* service
+that publishes the same one — `port '8080' is already in use by service ...` — at CREATE time, which
+is the path this rename takes. So an ingress publisher's predecessor has to go first as well; it
+merely fails differently, with a refused create instead of a Pending task. And two tasks on one
+postgres volume is the WAL corruption this repo has already paid for twice. For all of those: remove
+the bare-named service **first**, then let the release deploy. For a stateless service with no
+published port the order is free and the predecessor can go afterwards.
 
-- **The spec's own `PLATFORM` stays an ADDITIONAL trigger and is not dead code.** It is no longer
-  producible from a file, but it is the CONVERSION's trigger — an environment application becoming a
-  platform service — and that is the one direction with something to decide, since there is no
-  catalogue row saying `PLATFORM` yet for nothing but the spec to ask on behalf of. It is reachable
-  in-process and from the suite: the four conversion tests construct a `SpecSource.DeploymentSpec(
-  PLATFORM, …)` directly. Deleting the arm deletes the conversion.
-- **The refusal is gone because it became UNEXPRESSIBLE, not because it became wrong.** Going back is
-  still not a conversion and every reason is still true (see *A plane conversion retires its tier
-  services*); what changed is that no repository can ask for it, so a spec saying `ENVIRONMENT` about a
-  platform service is the parser's only possible answer rather than anybody's statement. **Do not
-  restore the branch** — if going back is ever wanted it is a deliberate door (retire the platform
-  service, then deploy), never a value read out of a file that no longer carries one.
-- **`recordRejection` is kept and has no caller left**, and its javadoc says so — the
-  `HealthGate.await` stance. It was that branch's, and what it is worth keeping for is the shape: the
-  intake is fire-and-forget, so a `FAILED` row on the plane is the only surface a registration that
-  queued nothing can surface on.
+**Which of the nine that is, measured 2026-09-24 off the live extras rather than guessed:**
 
-`PdDeploymentFlowTest.aServiceTheCatalogueHoldsAsPlatformKeepsThePlaneWhateverTheSpecSays` is the
-incident's regression test — it replaced the test that asserted the refusal — and what it pins is the
-wire alias as much as the plane: swarm cannot rename a service, so the environment arm would have
-created `<env>-<app>` beside the bare-named service that is serving and left every peer dialling a
-name nothing answers to.
+| service | why it must go first |
+|---|---|
+| `qits-platform-edge` | publishes `8080:8080` and `443:8443`, ingress; holds `qits-edge-letsencrypt` |
+| `qits-deployments` | holds `qits-deployments-config` and binds the docker socket |
+| `qits-platform-system` | holds `qits-platform-system-config` and binds the docker socket |
+
+The other six — idp, configuration, events, mirror, orchestrator, maintenance — publish nothing and
+mount nothing, so nothing forces their predecessors to go first.
+
+**But consider removing all nine first anyway, and check this before deciding.** The reason to leave
+a predecessor running was that the bare name still had callers. After qits-350 it should have none:
+every dialer derives `<env>-<application>` from `QITS_ENVIRONMENT`, and the `iss` claim — the last
+thing spelled with a bare alias — is a string that is COMPARED, never resolved. If that holds, a
+predecessor left running serves nobody, and leaving it costs something real: **it carries the
+`<env>-<application>` network alias too**, so for as long as both exist that name round-robins
+between the old image and the new one. Two live instances of a service is a state to enter
+deliberately, not as a side effect of an ordering rule.
+
+It is survivable where the work is claim-guarded — `GcSchedule` refuses a second run through the
+store's active-run check, not merely through per-JVM `ConcurrentExecution.SKIP` — but that is one
+component's guarantee and not a property of the six.
+
+Verify the premise rather than trusting it — and **do not verify it by diffing env KEYS against
+config**, which is the obvious check and the wrong one. A container's environment is frozen at
+creation, so a service that deployed BEFORE the entries were corrected holds the old VALUE under a
+key that config now states correctly: the key diff comes back clean while the container still dials
+the bare alias. The system API exposes env keys and never values, so nothing about the live spec can
+tell those two apart.
+
+**The reliable signal is time, not shape: every consumer must have DEPLOYED since the entries were
+corrected.** The qits-350 entries were corrected on 2026-09-24 at roughly 15:30 UTC (qits-configuration
+revisions ~424-451). So:
+
+    GET qits-deployments:8080/platform-deployments/api/deployments?environmentId=<id>
+    # for each applicationName, the newest ACTIVE row's createdAt must be AFTER the correction
+
+Any application whose newest deployment predates it is still carrying bare addresses and must be
+redeployed before the bare-named services are retired. Known to be in that state at the time of
+writing: **qits-artifacts**, which deployed at 14:42:37 and whose entries were corrected afterwards.
+
+The direct reading, if you have a shell on the node, settles it for a single container and is worth
+it for the ones you are about to strand:
+
+    docker exec <container> env | grep -E 'qits-(platform-)?(idp|mirror|events|configuration|maintenance|orchestrator|system|deployments)'
+
+Anything printing a BARE alias is a container that breaks the moment its predecessor goes.
+
+**THE EDGE IS CIRCULAR AND NEEDS ITS IMAGE ON THE NODE FIRST.** It fronts the registry, so removing
+it takes away the very route a `docker service create` would pull the successor's image through —
+the same circularity `publish_mode: ingress` was adopted to escape for ordinary redeploys, and it
+comes back here because a rename is a create rather than an update. Pull the image BEFORE removing
+anything and create with `--no-resolve-image`, which is what the 2026-09-24 rollback of this service
+did for exactly this reason:
+
+    docker pull registry.dev.localhost:8080/qits/qits-platform-edge:<version>   # while the edge still serves
+    docker service rm qits-platform-edge
+    docker service create --name dev-qits-platform-edge --no-resolve-image \
+      <every flag from `docker service inspect qits-platform-edge --pretty`> \
+      registry.dev.localhost:8080/qits/qits-platform-edge:<version>
+
+Between those two lines the platform has no published listener at all. It is the one step of this
+rollout with a real outage window, and it wants a person watching rather than a script.
+
+**qits-deployments cannot do this to itself, and that is the one step that is not optional.**
+`SwarmDeploymentDriver.apply` exempts a self-update from the recreate path by comparing
+`ownServiceName()` against the wire alias — and after this change those two strings differ
+(`qits-deployments` against `dev-qits-deployments`), so the exemption does not fire: the deployer
+would create a second service beside itself. It therefore moves by hand, from an admin workspace,
+after the release is published and before it is announced to this component:
+
+    # 1. read what the running service was created with, and keep it
+    docker service inspect qits-deployments --pretty
+
+    # 2. rename it, which under swarm is a remove and a create — there is no rename
+    docker service rm qits-deployments
+    docker service create --name dev-qits-deployments \
+      <every flag from step 1: --network, --mount, --publish, --env, --label, --update-order, --health-*> \
+      qits-artifacts:8080/qits/qits-deployments:<the released version>
+
+    # 3. confirm it answers on the new name before anything dials it
+    docker run --rm --network qits-net curlimages/curl -sf \
+      http://dev-qits-deployments:8080/platform-deployments/q/health/ready
+
+Everything that dials the deployer moves with it — the `QITS_PLATFORM_DEPLOYMENTS_*` addresses in
+qits-bootstrap-cli's `ComposeTemplate` and in qits-configuration's entries — and those are the wrapper's
+to land, not this repository's.
 
 ### The application name is the repository's NAME, never its storage id (2026-08-21)
 
@@ -2240,11 +2274,11 @@ backfills it, moves the plane's rows onto the designated tier, and drops `pd_env
 see *…and the PLATFORM PLANE lands there too* for what changed above the file and why the backfill
 is the decidable kind. Three things worth carrying:
 
-- **`deployment_target` is not null and has no default**, `pd_service.deployment_target`'s rule
+- **`deployment_target` was not null and had no default**, `pd_service.deployment_target`'s rule
   applied to the execution row: every writer states the plane, and a row that could not say would be
-  the inference the file exists to remove. A test fixture that builds a `PdDeployment` by hand sets
-  it (`PdSchemaTest`, `PdSweepAdoptionTest`, `PdDeploymentObservationTest`, `PdDeploymentOrderingTest`,
-  `PdSweepAdoptionPublishTest` all do).
+  the inference the file existed to remove. **That rule is what forced V13 to DROP the column rather
+  than leave it behind** — the writer is deleted, so an orphan `not null` column with no default
+  would fail every INSERT of a deployment row.
 - **The backfill reads exactly one statement**: `environment_id is null` meant the platform plane,
   by V1's header, so it becomes `PLATFORM` plus the designated tier. On an install with no
   designation the subselect answers null and nothing moves — which is every database the suite
@@ -2269,13 +2303,29 @@ the id is a random UUID, so that tiebreak swapped two rows recorded in the same 
 which is what the deployments of one build-succeeded event are, and what a client reads "the current
 one per application" off.
 
-**Nulls are distinct to `=`, and the queries still test for one.** A platform deployment's
-`environment_id` was null until V8 and is the designated tier now, so the null-testing arms of
+**`V13__the_platform_plane_is_deleted.sql` is the lineage's second backfill, and it CONVERTS before
+it drops** — see *The platform plane is DELETED* for the whole argument. Three things worth carrying:
+
+- **The insert comes first and the drops come last**, because the insert reads the column. Each
+  `pd_service` row saying `PLATFORM` is linked into `pd_environment.platform` — the tier the plane had
+  deployed into since V8, which is why the translation is decidable rather than a guess — and only
+  then do `deployment_target` and its two indexes go, from `pd_service` and `pd_deployment` alike.
+- **`not exists` rather than `on conflict`.** `uq_pd_service_link` is `(service_id, environment_id)`,
+  and a service already linked into the designated tier is an environment service that needs nothing,
+  not a collision to swallow.
+- **An install with no designation is left alone**: the cross join answers no rows, so nothing is
+  linked and the columns still go. That is every database the suite migrates, which is why
+  `PdSchemaTest` pins it rather than assuming it — a fresh install must not end up with a link to
+  nowhere.
+
+**Nulls are distinct to `=`, and the queries still test for one.** A deployment's `environment_id` was
+null until V8 and is the designated tier now, so the null-testing arms of
 `listActiveByApplication`/`listByApplication` are there for rows written before it on an install
 that had designated nothing. Keep them: `= ?` matches nothing against a null, and the startup
 sweep's adoption hangs on it — get it wrong and a self-updating instance comes back having failed
 its own deployment while a second row still claims to be ACTIVE. **What must not come back is a
-query that reads the null as a PLANE**; that question is `deployment_target` now.
+query that reads the null as a PLANE**; there is no plane, and V13 dropped the column that was the
+last place the question could be asked.
 
 ## Dependencies
 
@@ -2381,10 +2431,10 @@ against.
   `PdSweepAdoptionTest` drive the package-private `sweepInFlight()`.
 - Flow tests poll the read surface to a deadline rather than reaching into the service — the same way
   a caller experiences the API, and immune to the worker's timing. Platform deployments used to be
-  the one thing that surface could not show; they name the designated tier now, so
-  `/deployments?environmentId=<tier>` carries them and `?environmentId=platform` asks the same rows
-  by plane. `awaitApplied` (wait on the driver) survives because it is still the shortest way to
-  synchronise on a deployment the worker has finished, not because the listing is blind.
+  the one thing that surface could not show, then they could be asked for two ways at once
+  (`?environmentId=<tier>` and `?environmentId=platform`); there is one tier listing now and the
+  second spelling 404s. `awaitApplied` (wait on the driver) survives because it is still the shortest
+  way to synchronise on a deployment the worker has finished, not because the listing is blind.
 - `OpenApiSchemaExportTest` writes `docs/openapi.yml`. Regenerate and commit when the surface
   changes: `./mvnw -pl service -am test -Dtest=OpenApiSchemaExportTest
   -Dsurefire.failIfNoSpecifiedTests=false`. The intake is `@Operation(hidden = true)` (a wire API);
@@ -2537,47 +2587,48 @@ tarballs by the absolute URL in the lockfile and ignores the configured registry
 `--replace-registry-host` is broken for a registry mounted under a path prefix. The committed
 lockfile keeps the developer-host origin, which is correct locally.
 
-**This repo is its own deployer**, and it is a **platform service** again — one instance for the
-whole platform, deploying every environment. Its `.config/qits/deployments.yml` spells
-`deployment_target: platform` out and names no branch at all: a push to the branch the *platform*
-environment listens to is a deployment. A green run announces this component to itself, and **under
-swarm** it deploys itself: the manager arbitrates the succession, the `/platform-deployments`
-surface blips mid-cutover (this repo's spec says `update_order: stop-first`), and a successor that
-misses its health gate leaves the predecessor serving.
+**This repo is its own deployer**, and it is an ordinary service in the one tier like everything
+else. Its `.config/qits/deployments.yml` still carries `deployment_target: platform`, which is read
+and dropped — the key is retired and the tolerance is permanent; the line is swept by a task of its
+own. A release announces this component to itself, and **under swarm** it deploys itself: the manager
+arbitrates the succession, the `/platform-deployments` surface blips mid-cutover (this repo's spec
+says `update_order: stop-first`), and a successor that misses its health gate leaves the predecessor
+serving.
 
-**The flip itself is the exception, and it takes a hand step** — a service name is its address under
-swarm and swarm cannot rename one, so the deploy that moves this component from
-`<env>-qits-deployments` to bare `qits-deployments` creates the successor beside the predecessor and
-removes nothing. `docker service rm <env>-qits-deployments` once the new one is healthy. README's
-*The plane flip is one deploy, and it needs one hand step* has the whole sequence, including the
-one-time password rotation that comes with it.
+**Its own move is the exception, and it takes a hand step — in BOTH directions.** A service name is
+its address under swarm and swarm cannot rename one. The move onto the plane was
+`<env>-qits-deployments` → bare `qits-deployments` and needed `docker service rm
+<env>-qits-deployments` afterwards; deleting the plane moves it back, `qits-deployments` →
+`dev-qits-deployments`, and needs more than that — the driver's self-update exemption compares
+`ownServiceName()` against the wire alias, and after this change those two strings differ, so the
+exemption does not fire and the deployer would create a second service beside itself. The exact
+commands are in *Retiring the plane's bare-named services* above.
 
-**There is no deploy ref any more, on either plane.** A RELEASE deploys — see *The event side* —
+**There is no deploy ref any more.** A RELEASE deploys — see *The event side* —
 and it lands in the platform's entry tier. `platform/main`, `SpecSource.DEFAULT_PLATFORM_BRANCH`,
 the spec's `branch:` key and, now, `environment/<name>` as a trigger are all gone. `main` stays the
 integration trunk, and a push to it still builds and ships nothing; so does a push to anything else.
 
 **Which environment is the entry one is the same column it always was** — `pd_environment.platform`,
-true on exactly one row. What it decides has widened rather than moved: it used to say which
-tier's branch may roll the platform plane, and it now says which tier a release ENTERS at, on both
-planes. `DeployService.entryTiers()` is the one reader.
+true on exactly one row. What it decides has narrowed to one sentence: which tier a release ENTERS
+at. `DeployService.entryTiers()` is the one reader. **It STAYS under that name** — "where releases
+land" survived the plane's deletion, and the rename is a later feature's.
 
-The flag is a designation, not a link. A platform service still belongs to no tier, still keeps the
-bare wire alias, and is still reachable from every environment. **`EnvironmentService.designate`
+The flag is a designation, not a link. **`EnvironmentService.designate`
 moves it** — clearing the old holder and setting the new one in one transaction — because that is
 where the invariant belongs. Postgres does have a partial unique index and V1 deliberately declines
 it: an index would also forbid the intermediate state of the very two statements that move the flag.
 Clearing the flag outright is a 409, and so is deleting the environment holding it; both would leave
 the platform with nowhere for a release to land. `PdEnvironmentApiTest` holds those claims, and
-`PdDeploymentFlowTest.thePlatformPlaneIsRolledOnceByTheTierTheReleaseEntersAt` holds the gate.
+`PdDeploymentFlowTest.aReleaseIsRolledOnceByTheTierItEntersAt` holds the gate.
 
 **`deploy_branches:` is retired: accepted, validated, acted on by nobody.** Its one reader was
 qits-workspaces' release flow, which pushed a release onto *every* branch the list named — a
 fan-out rather than a ladder, and with three tiers it would have shipped into all three at once.
 That flow is gone with the door: a release is a VERSION now, published against a tag, and where it
 lands is a Deployment Request against an environment — never a branch a repository names. The
-parser still tolerates the key, and the reason is sharper than the `singleton`
-alias's: **a spec is fetched at the RELEASED tag**, so a redeploy of an older version still presents
+parser still tolerates the key, for the reason `deployment_target`'s own tolerance is permanent:
+**a spec is fetched at the RELEASED tag**, so a redeploy of an older version still presents
 a file carrying it, and an unknown key fails a deployment. Do not write it into a new file; do not
 remove the tolerance.
 

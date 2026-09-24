@@ -39,7 +39,7 @@ partition of the **code**, which is where the partition was always useful.
 topology, the topology knows nothing about execution. Neither domain module carries JAX-RS, an HTTP
 client or a process shell-out.
 
-## The model: tiers, planes, and derived rows
+## The model: tiers and derived rows
 
 An **environment is a tier** — today just dev. It is created deliberately, over REST, with the
 bundle network's convention filled in (`qits-env-<name>`). It has **no branch**: a tier listened to
@@ -47,34 +47,25 @@ bundle network's convention filled in (`qits-env-<name>`). It has **no branch**:
 where a version lands is a property of the platform rather than of the thing being deployed.
 
 **One tier is designated the platform environment** (`pd_environment.platform`, true on exactly one
-row), and it decides two things: it is where a release ENTERS the platform, and it is where the
-platform plane itself is deployed.
+row), and it decides one thing: it is where a release ENTERS the platform.
 
 A **service** has one row for the whole platform, not one per tier, and says where it runs by
-carrying a **link** to each environment. Two planes:
+carrying a **link** to each environment. There is one kind of service: one instance per linked tier,
+on that tier's networks, deployed into the tier the release entered at.
 
-- **environment** — one instance per tier, on that tier's networks.
-- **platform** — one instance for the whole platform, on every environment's networks, deployed
-  into the designated environment. It carries **no links at all**, and that absence is the
-  mechanism: "present everywhere" is spelled as "linked nowhere in particular", which is what makes
-  an environment created tomorrow pick up qits-platform-idp without anyone editing a row.
+**There used to be a second, and deleting it is the change this model is shaped by.** A `platform`
+service was one instance for the whole platform, on every environment's networks, reached under its
+BARE name (`qits-ci`, not `dev-qits-ci`) from every tier — and it carried **no links at all**, which
+was the mechanism rather than an omission: "present everywhere" was spelled as "linked nowhere in
+particular", so an environment created tomorrow picked up qits-platform-idp with nobody editing a
+row. It is gone: `deployment_target` is a retired spec key that is read and dropped, the enum and both
+columns are deleted, and a service linked nowhere runs nowhere. The nine services that were the plane
+are ordinary rows in the designated tier, linked into it by the migration that deleted the plane.
 
-**A platform service is deployed TO a tier and reached without one.** Its deployment row, its
-labels, the `QITS_ENVIRONMENT` it boots with and all four of its lifecycle events name the
-designated environment — the plane used to carry none of them, which left it unable to tell its own
-telemetry, its own resource rows or its own consumers which install it belonged to. What stays the
-plane's own is stated rather than inferred from a missing tier: the **bare wire alias**
-(`qits-ci`, not `dev-qits-ci`, so a peer in any tier reaches it without knowing where the plane
-runs), the membership in every environment's networks, and the `platform:<name>` id the read
-surface joins on. An environment teardown still cannot take it down — the reap demands the
-`qits.platform.deployments.target=environment` label beside the environment one, and tearing down
-the designated tier is a 409 anyway.
-
-The word used to be `singleton`. It named a cardinality where the thing being said is which plane a
-service lives on — and it made this very component, cross-environment from its first commit, look
-like an environment citizen. Everything says `platform` now: the enum, the container name, the
-labels, the network. `deployment_target: singleton` is still accepted in a repository's spec as an
-alias, so a repository that has not been edited yet keeps deploying.
+The one thing that cost something is the **address**: a swarm service's name IS its wire alias and
+swarm cannot rename one, so the nine were renamed once, by being granted the qualified name as an
+extra alias one release before the derivation flipped. Their bare-named predecessors are retired by
+hand — `AGENTS.md`, *Retiring the plane's bare-named services*.
 
 **Nothing declares a service.** Rows are **derived**: a green build sends this component to the
 repository's `.config/qits/deployments.yml` at that sha, and the service row is created or brought
@@ -82,7 +73,7 @@ up to date from what it found there.
 
 ```yaml
 application: qits-ci                 # optional; what this deploys AS, when it is not the repo's name
-deployment_target: environment       # default when the key or the file is absent | platform
+deployment_target: environment       # RETIRED; still parsed for old tags, acted on by nobody
 available_on_env: false              # default; true = public node (bundle + hub joins)
 deploy_branches: environment/prod    # RETIRED; still parsed for old tags, acted on by nobody
 health_path: /q/health/ready         # default: /<name without the qits- prefix>/q/health/ready
@@ -258,21 +249,20 @@ served for hours. The connections are retried now; the row needed reading back t
   every container also joins, while the platform still holds direct cross-application URLs. **Emptying it is the
   enforcement flip** — a later phase, after the last direct URL has moved to a gateway route.
 
-**The wire alias — the address peers dial — is `<env>-<app>` for an environment application and the
-bare `<app>` for a platform service.** The qualifier is what lets two tiers hold one application's
-address on the legacy network, which they all share, without either resolving as the other; a
-platform service is one instance for the whole platform, so there is nothing to qualify it against
-and its application name carries the plane already (`qits-platform-idp`). Container names follow the
-same shape: `qits-pd-<env>-<app>-<id8>`, and `qits-pd-<app>-<id8>` on the platform plane.
+**The wire alias — the address peers dial — is `<env>-<app>`, for every application there is.** The
+qualifier is what lets two tiers hold one application's address on the legacy network, which they all
+share, without either resolving as the other. It had a second spelling, the bare `<app>` of a platform
+service, and that went with the plane. Container names follow the same shape:
+`qits-pd-<env>-<app>-<id8>`.
 
-**Under swarm that model collapses to two overlays**, and deliberately: every `--network-add`
+**Under swarm that model collapses to ONE overlay**, and deliberately: every `--network-add`
 recreates the task, so a membership joined after the fact would turn one deployment into a restart
-storm. A service declares its whole membership when it is created — the flat attachable overlay
-plus `qits-platform` for the plane — and the per-application networks the state machine still
-computes are dropped, out loud. **No membership is ever stored in the database.** It is written as
-labels under one namespace — `qits.platform.deployments.` + `environment`, `application`,
-`deployment`, `target`, `available-on-env`, `app-name`; networks carry
-`qits.platform.deployments.network=bundle|application|platform` — and read back with
+storm. A service declares its whole membership when it is created — the flat attachable overlay —
+and the per-application networks the state machine still computes are dropped, out loud.
+`qits-platform` was a second overlay and went with the plane's services that ran on it. **No
+membership is ever stored in the database.** It is written as labels under one namespace —
+`qits.platform.deployments.` + `environment`, `application`, `deployment`, `available-on-env`,
+`app-name`; networks carry `qits.platform.deployments.network=bundle|application` — and read back with
 `--filter label=`. One record of the truth, and it is the runtime's. Containers carrying an earlier
 spelling (`qits.cd.*`, `qits.pd.*`) count as unlabelled: adoptable, never protected.
 
@@ -295,40 +285,36 @@ it launched a detached referee container, then refused the deployment outright o
 retired — and it is deleted. `qits.platform.deployments.orchestrator` must say `swarm` or the boot
 fails.
 
-### The plane flip is one deploy, and it needs one hand step
+### Renaming this component is one deploy and one hand step, in both directions
 
-This component became a **platform** service (`deployment_target: platform`), and that changes its
-own name: a service name IS its address under swarm, so the deployer moves from
-`<env>-qits-deployments` to bare `qits-deployments`. **Swarm cannot rename a service**, and the
-self-update path matches on the name — so the flip deploy is not a self-update at all. It creates
-the bare-named service beside the env-named one, health-gates it, records the row `ACTIVE`, and
-stops there: `reap` removes nothing under swarm, because a replace is normally in place.
+A service name IS its address under swarm and **swarm cannot rename a service**, so a change to the
+derivation moves this component's own name — and the self-update path matches on that name, which
+means the deploy that moves it is not a self-update at all. It creates the new service beside the old
+one, health-gates it, records the row `ACTIVE`, and stops there: `reap` removes nothing under swarm,
+because a replace is normally in place.
 
-Two deployers are then running on one registry and one config volume. Remove the predecessor by
-hand, once, after the new one is healthy:
+It has happened twice. Moving ONTO the plane took `<env>-qits-deployments` to bare
+`qits-deployments`; deleting the plane takes it back, to `dev-qits-deployments`. Either way two
+deployers are then running on one registry and one config volume, and the predecessor goes by hand
+once the successor is healthy. `AGENTS.md`'s *Retiring the plane's bare-named services* has the exact
+commands for the second move — it is more than a `service rm`, because this time the deployer must not
+be allowed to create the successor itself.
 
-```sh
-docker service ps qits-deployments          # the successor is Running/healthy
-docker service rm dev-qits-deployments      # <env>-qits-deployments, the predecessor
-```
+Two more things such a move does once, neither of them an error:
 
-Two more things the flip does once, neither of them an error:
-
-- **Both resource passwords rotate.** The registry rows move from the tier key to the platform
-  plane's null one, so the deploy finds no row, takes the reconcile arm and hands fresh credentials
-  to the successor — which records them at its first boot. The databases do not move: a platform
-  service provisions on the platform environment's postgres, which is where they already are.
-- **The old rows stay.** `('qits-deployments', '<env>', …)` is a leftover an operator may delete;
-  it collides with nothing.
+- **Both resource passwords rotate.** The registry rows are keyed by `(application, environment,
+  resource)`, so a move that changes the key finds no row, takes the reconcile arm and hands fresh
+  credentials to the successor — which records them at its first boot. The databases do not move.
+- **The old rows stay.** They are leftovers an operator may delete; they collide with nothing.
 
 ## What it answers
 
 | Route | Who asks |
 | --- | --- |
 | `POST/GET/PATCH/DELETE /environments` | the bootstrap, a person through the client |
-| `GET /environments/{id}/links` | a reconciliation: this tier's services, plus every platform service |
+| `GET /environments/{id}/links` | a reconciliation: this tier's services |
 | `PUT/GET/DELETE /services/{name}` | derived registration (in-process); an operator, for the deliberate acts |
-| `GET /applications` | the client — one entry per (service, tier), both planes flat |
+| `GET /applications` | the client — one entry per (service, tier), flat |
 | `GET /deployments?environmentId=` | the client — one tier's history, newest first |
 | `GET /pins` | qits-platform-artifacts' OCI garbage collector, fail-closed |
 | `POST /events/build-succeeded` | qits-ci, fire-and-forget; the manual and bootstrap door |

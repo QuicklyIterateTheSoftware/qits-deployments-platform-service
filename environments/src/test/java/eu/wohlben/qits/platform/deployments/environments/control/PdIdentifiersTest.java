@@ -1,9 +1,9 @@
 package eu.wohlben.qits.platform.deployments.environments.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -158,69 +158,54 @@ class PdIdentifiersTest {
   @Test
   void anApplicationKeyIsJoinableFromBothSides() {
     // The client joins the applications listing against a deployment's applicationId, and neither
-    // side has a row to take an id from — so both derive it from (plane, tier, name) through this
-    // one definition. `platform` is where an environment id would be, and no environment can take
-    // that place: the name is not a dns label, so PdIdentifiers refuses it.
-    assertEquals(
-        "env-1:qits-workspaces",
-        ApplicationKeys.of(PdDeploymentTarget.ENVIRONMENT, "env-1", "qits-workspaces"));
-    assertEquals(
-        "platform:qits-idp", ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "qits-idp"));
+    // side has a row to take an id from — so both derive it from (tier, name) through this one
+    // definition.
+    assertEquals("env-1:qits-workspaces", ApplicationKeys.of("env-1", "qits-workspaces"));
+    assertEquals("env-dev:qits-ci", ApplicationKeys.of("env-dev", "qits-ci"));
   }
 
   @Test
-  void aPlatformServiceKeepsItsKeyAfterItGainsATier() {
-    // The one claim V8 added, and the regression it exists against. A platform service is deployed
-    // into the designated environment now, so its deployment rows carry that tier — while the
-    // catalogue side still has no link and would go on saying `platform:`. A key taken from the
-    // tier would therefore have broken the join one application at a time, as each was redeployed.
+  void theKeyOfAFormerPlatformServiceIsTheTIERAndNoLongerTheWord() {
+    // What replaced `aPlatformServiceKeepsItsKeyAfterItGainsATier`. That test held the opposite
+    // claim — the PLANE decides the key, whatever tier the plane is deployed into — because the
+    // catalogue side of the join carried no link and went on saying `platform:`. Both sides read the
+    // tier off the same link now, so the key is the tier's and `platform:` is not a key this
+    // component can produce at all. A client that cached one fails to join; that is the cutover.
+    assertEquals("env-dev:qits-ci", ApplicationKeys.of("env-dev", "qits-ci"));
     assertEquals(
-        "platform:qits-ci",
-        ApplicationKeys.of(PdDeploymentTarget.PLATFORM, "env-dev", "qits-ci"),
-        "the PLANE decides the key, whatever tier the plane is deployed into");
+        ApplicationKeys.Key.class,
+        ApplicationKeys.parse("env-dev:qits-ci").orElseThrow().getClass());
     assertEquals(
-        ApplicationKeys.of(PdDeploymentTarget.PLATFORM, null, "qits-ci"),
-        ApplicationKeys.of(PdDeploymentTarget.PLATFORM, "env-dev", "qits-ci"),
-        "so a row written before the tier and one written after it join to each other");
+        "env-dev",
+        ApplicationKeys.parse("env-dev:qits-ci").orElseThrow().environmentId(),
+        "and the inverse answers the tier rather than null");
+    assertEquals(
+        "platform",
+        ApplicationKeys.parse("platform:qits-ci").orElseThrow().environmentId(),
+        "a cached `platform:` id parses as a tier named `platform`, which names no tier — a 404 on"
+            + " the listing rather than a silent match");
   }
 
   @Test
-  void aPlatformServiceGainsTheTierQualifiedAliasAndKEEPSTheBareOne() {
-    // The additive half of the staged plane removal. Every service is becoming an ordinary
-    // environment service addressed <env>-<app>; a swarm service's NAME is its address and swarm
-    // cannot rename one, so the qualified name has to start answering BEFORE the bare one stops —
-    // otherwise the flip creates a second service beside the one that is serving. So: the alias (the
-    // name) is untouched, and the qualified form is an ADDITION.
-    assertEquals(
-        "qits-platform-idp",
-        PdNetworks.alias(PdDeploymentTarget.PLATFORM, "dev", "qits-platform-idp"),
-        "the name this change must not move");
-    assertEquals(
-        List.of("dev-qits-platform-idp"),
-        PdNetworks.additionalAliases(PdDeploymentTarget.PLATFORM, "dev", "qits-platform-idp"),
-        "and the name that starts answering beside it");
+  void theWireAliasIsTierQualifiedForEVERYService() {
+    // What replaced the pair of staged-cutover tests
+    // (`aPlatformServiceGainsTheTierQualifiedAliasAndKEEPSTheBareOne` and
+    // `anEnvironmentServiceGainsNothingBecauseItIsAlreadyQualified`). Those held that the alias of a
+    // platform service must NOT move, because a swarm service's name IS its address and swarm cannot
+    // rename one — so the qualified name was granted as an extra alias first. It has been granted,
+    // on every one of the nine, and this is the other end of that staging: the derivation now
+    // answers the qualified name for everything, which is the name each of those services already
+    // answers to.
+    assertEquals("dev-qits-platform-idp", PdNetworks.alias("dev", "qits-platform-idp"));
+    assertEquals("dev-qits-gateway", PdNetworks.alias("dev", "qits-gateway"));
+    assertEquals("prod-qits-gateway", PdNetworks.alias("prod", "qits-gateway"));
   }
 
   @Test
-  void anEnvironmentServiceGainsNothingBecauseItIsAlreadyQualified() {
-    // The other half, and what keeps the change additive rather than a rename: a tier's service is
-    // NAMED dev-qits-gateway, so the alias it would be given is the name it already holds.
-    assertEquals(
-        "dev-qits-gateway", PdNetworks.alias(PdDeploymentTarget.ENVIRONMENT, "dev", "qits-gateway"));
-    assertEquals(
-        List.of(),
-        PdNetworks.additionalAliases(PdDeploymentTarget.ENVIRONMENT, "dev", "qits-gateway"));
-  }
-
-  @Test
-  void aServiceWithNoTierGainsNothingRatherThanAnAddressBeginningWithADash() {
-    // A mid-bootstrap install with nothing designated has no qualifier to compose one from, and an
-    // alias invented from a blank would be `-qits-idp`.
-    for (String tier : new String[] {null, "", " "}) {
-      assertEquals(
-          List.of(),
-          PdNetworks.additionalAliases(PdDeploymentTarget.PLATFORM, tier, "qits-platform-idp"),
-          String.valueOf(tier));
-    }
+  void twoTiersCopiesOfOneApplicationDoNotShareAnAddress() {
+    // Why the qualifier exists at all, and the claim the bare spelling could never make: the flat
+    // overlay is shared by every tier, so without it one tier's copy resolves as another's.
+    assertNotEquals(
+        PdNetworks.alias("dev", "qits-gateway"), PdNetworks.alias("prod", "qits-gateway"));
   }
 }
