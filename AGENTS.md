@@ -1807,8 +1807,32 @@ published port the order is free and the predecessor can go afterwards.
 | `qits-platform-system` | holds `qits-platform-system-config` and binds the docker socket |
 
 The other six — idp, configuration, events, mirror, orchestrator, maintenance — publish nothing and
-mount nothing, so their predecessors may go afterwards, which is the order that keeps the bare name
-answering for as long as possible.
+mount nothing, so nothing forces their predecessors to go first.
+
+**But consider removing all nine first anyway, and check this before deciding.** The reason to leave
+a predecessor running was that the bare name still had callers. After qits-350 it should have none:
+every dialer derives `<env>-<application>` from `QITS_ENVIRONMENT`, and the `iss` claim — the last
+thing spelled with a bare alias — is a string that is COMPARED, never resolved. If that holds, a
+predecessor left running serves nobody, and leaving it costs something real: **it carries the
+`<env>-<application>` network alias too**, so for as long as both exist that name round-robins
+between the old image and the new one. Two live instances of a service is a state to enter
+deliberately, not as a side effect of an ordering rule.
+
+It is survivable where the work is claim-guarded — `GcSchedule` refuses a second run through the
+store's active-run check, not merely through per-JVM `ConcurrentExecution.SKIP` — but that is one
+component's guarantee and not a property of the six.
+
+Verify the premise rather than trusting it. After the qits-350 releases have all deployed, read what
+the running containers actually hold:
+
+    docker ps --format '{{.Names}}' | while read c; do
+      docker exec "$c" env 2>/dev/null | grep -E '=(https?://)?qits-(platform-)?(idp|mirror|events|configuration|maintenance|orchestrator|system|deployments)[:/]' \
+        | sed "s|^|$c |"
+    done
+
+Anything it prints is a container still dialling a bare alias, and that one's predecessor has to stay
+until it is redeployed. An empty answer means the bare names serve nothing and all nine predecessors
+can go first.
 
 **THE EDGE IS CIRCULAR AND NEEDS ITS IMAGE ON THE NODE FIRST.** It fronts the registry, so removing
 it takes away the very route a `docker service create` would pull the successor's image through —
