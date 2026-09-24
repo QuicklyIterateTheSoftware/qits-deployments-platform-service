@@ -754,24 +754,51 @@ public class PdDeploymentFlowTest {
   }
 
   @Test
-  public void flippingAPlatformServiceBackToAnEnvironmentIsRefusedOnTheRecord() {
-    // The conversion runs one way only. Coming back has no answer to "which environment inherits
-    // the history", and the environment deployment would find the running platform container
-    // through the legacy network and remove it — leaving a row saying ACTIVE about nothing. So it
-    // is refused, and the refusal is written where an operator looks: a FAILED row on the plane.
-    String environmentId = createEnvironment("flow-unflip");
+  public void aServiceTheCatalogueHoldsAsPlatformKeepsThePlaneWhateverTheSpecSays() {
+    // THE 2026-09-23 INCIDENT, and it is the worst shape this component can take: the deployer
+    // refusing to deploy its own fix. `deployment_target` retired that day — the parser stopped
+    // reading the key and hardcoded every spec's target to ENVIRONMENT — while `register` still
+    // routed on the SPEC's target and `registerInEnvironments` still refused an application the
+    // catalogue held as PLATFORM. From release 2026.923.142928, live at 14:42, every deployment of
+    // all nine platform services came back "[refused: <app> is a platform service and this commit
+    // asks for deployment_target: environment...]", qits-deployments' own next version included, so
+    // the running deployer refused the very release that would have fixed it. Ten refusals, and
+    // environment-tier applications deployed fine throughout, which is what made it look like a
+    // per-application problem rather than the routing decision it was.
+    //
+    // The property that replaced the refusal: the file no longer STATES a plane, so the catalogue
+    // registration is the only authority on which plane an already-registered service is on. A
+    // spec saying ENVIRONMENT about a PLATFORM row is not a flip to refuse — it is the parser's
+    // only possible answer — and it takes the platform arm.
+    String environmentId = createEnvironment("flow-plane-keeps");
     specs.script(
-        "repo-unflip", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postRelease("repo-unflip", V_A);
+        "repo-plane-keeps",
+        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    postRelease("repo-plane-keeps", V_A);
     awaitApplied(1);
-
-    // The file goes back to saying `environment`, on the tier's own branch this time.
-    specs.script(
-        "repo-unflip", new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, false, null, null, null, null));
-    postRelease("repo-unflip", V_B);
     awaitWorkerIdle();
 
-    // Nothing was registered into the environment and nothing new was deployed.
+    // The next release, read by a parser that no longer reads the key: ENVIRONMENT, which is what
+    // every spec on the platform says now.
+    specs.script(
+        "repo-plane-keeps",
+        new SpecSource.DeploymentSpec(
+            PdDeploymentTarget.ENVIRONMENT, false, null, null, null, null));
+    postRelease("run-2", "repo-plane-keeps", V_B);
+    awaitApplied(2);
+    awaitWorkerIdle();
+
+    // It deployed, and it deployed as the PLANE. The wire alias is the assertion that matters most:
+    // a swarm service's name IS its address and swarm cannot rename one, so an environment arm here
+    // would have created `flow-plane-keeps-repo-plane-keeps` beside the bare-named service that is
+    // serving and left every peer dialling a name nothing answers to.
+    DeploymentDriver.ServiceSpec second = driver.applied().get(1);
+    assertEquals(
+        PdDeploymentTarget.PLATFORM, second.target(), "the catalogue decided the plane: " + second);
+    assertEquals(
+        "repo-plane-keeps", second.wireAlias(), "and the plane's alias is bare: " + second);
+
+    // The catalogue row is untouched — still the plane, still linked into no tier.
     List<Map<String, Object>> rows =
         given()
             .when()
@@ -782,23 +809,23 @@ public class PdDeploymentFlowTest {
             .jsonPath()
             .<Map<String, Object>>getList("applications")
             .stream()
-            .filter(a -> "repo-unflip".equals(a.get("repoId")))
+            .filter(a -> "repo-plane-keeps".equals(a.get("repoId")))
             .toList();
-    assertEquals(1, rows.size(), "still one row, still the platform service: " + rows);
+    assertEquals(1, rows.size(), "one row, not two: " + rows);
     assertEquals("PLATFORM", rows.get(0).get("target"));
-    assertEquals(1, driver.applied().size(), "the refused build deployed nothing");
+    assertNull(rows.get(0).get("environmentId"), "a platform service still carries no link");
 
-    // ...and the refusal is on the record, naming the flip. It is written where the deployment it
-    // refuses would have gone: on the plane, in the tier the plane deploys into.
-    PdDeployment refused = deploymentOf("repo-unflip", environmentId, V_B);
-    assertEquals(PdDeploymentTarget.PLATFORM, refused.deploymentTarget);
-    assertEquals("FAILED", refused.status.name());
+    // ...and nothing was written down as a refusal. This is the incident's own signature: a FAILED
+    // row here means the branch that produced ten of them is back.
+    PdDeployment deployed = deploymentOf("repo-plane-keeps", environmentId, V_B);
+    assertEquals(PdDeploymentTarget.PLATFORM, deployed.deploymentTarget);
+    assertEquals("ACTIVE", deployed.status.name(), "detail: " + deployed.detail);
+    List<PdDeployment> all =
+        QuarkusTransaction.requiringNew()
+            .call(() -> deployments.listByApplication("repo-plane-keeps", environmentId));
     assertTrue(
-        refused.detail.contains("deployment_target: environment"),
-        "the detail names the flip: " + refused.detail);
-    assertTrue(
-        refused.detail.contains("Retire the platform service deliberately"),
-        "and says what to do about it: " + refused.detail);
+        all.stream().noneMatch(d -> "FAILED".equals(d.status.name())),
+        "no refusal was recorded: " + all.stream().map(d -> d.version + "=" + d.status).toList());
   }
 
   @Test

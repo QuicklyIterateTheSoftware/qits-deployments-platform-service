@@ -1412,7 +1412,7 @@ public class DeployService implements ReleaseAnnouncements {
 
     List<Target> targets;
     try {
-      targets = register(runId, applicationName, version, spec, causationId);
+      targets = register(applicationName, spec, causationId);
     } catch (RuntimeException e) {
       // Registration is a local transaction, so this is a bug rather than an outage — and a bug
       // here is exactly the shape that once cost an hour of silence: a fire-and-forget sender,
@@ -1885,13 +1885,29 @@ public class DeployService implements ReleaseAnnouncements {
   /**
    * Bring the catalogue up to date with what the repository declares, and answer where to deploy.
    * The whole of derived registration.
+   *
+   * <p><b>The plane is asked of the CATALOGUE first, and that is the 2026-09-23 incident's fix.</b>
+   * A registration is now the only authority left on which plane an already-registered service is
+   * on, because the FILE can no longer state one: {@code deployment_target} is retired — accepted
+   * and ignored — so every spec a parse produces says {@code ENVIRONMENT}, the plane's own services
+   * included. While this routed on the spec alone, the environment arm was handed all nine platform
+   * services and refused each of them for asking to go back; from release 2026.923.142928 nothing on
+   * the plane could deploy, including this component's own next version, so the running deployer
+   * refused the release that fixed it. A service the catalogue holds as {@link
+   * PdDeploymentTarget#PLATFORM} therefore takes the platform arm whatever the spec says, and it
+   * will keep taking it until the plane itself is deleted.
+   *
+   * <p><b>The spec's own {@code PLATFORM} stays an additional trigger, and it is not dead code.</b>
+   * It is no longer producible from a file, but it is the CONVERSION's trigger — an environment
+   * application becoming a platform service — and that is the one direction with something to
+   * decide: there is no catalogue row saying {@code PLATFORM} yet, so nothing but the spec can ask
+   * for the move. It is reachable in-process and from the suite (the conversion tests construct a
+   * {@code DeploymentSpec(PLATFORM, …)} directly), and dropping it would delete the conversion
+   * rather than tidy up an unused arm. The plane is what goes, later and deliberately; nothing here
+   * goes with it early.
    */
   private List<Target> register(
-      String runId,
-      String applicationName,
-      String version,
-      DeploymentSpec spec,
-      UUID causationId) {
+      String applicationName, DeploymentSpec spec, UUID causationId) {
     if (!isDeployableName(applicationName)) {
       // The application name is the image path segment and the network alias, so it has to be a
       // dns label. A repository whose name is not one cannot be deployed by convention at all, and
@@ -1900,26 +1916,35 @@ public class DeployService implements ReleaseAnnouncements {
       return List.of();
     }
     Optional<LinkedService> known = findService(applicationName);
-    return spec.target() == PdDeploymentTarget.PLATFORM
+    boolean registeredAsPlatform =
+        known.filter(s -> s.service().deploymentTarget == PdDeploymentTarget.PLATFORM).isPresent();
+    return registeredAsPlatform || spec.target() == PdDeploymentTarget.PLATFORM
         ? registerPlatform(applicationName, spec, known, causationId)
-        : registerInEnvironments(runId, applicationName, version, spec, known, causationId);
+        : registerInEnvironments(applicationName, spec, known, causationId);
   }
 
   /**
-   * The environment half. A repository that is <b>already a platform service</b> is refused here
-   * rather than registered: the two planes are not symmetric, and going back is not a conversion.
+   * The environment half, and it is now reached only by applications that ARE on this plane —
+   * {@link #register} routes a catalogue-{@code PLATFORM} service to the other arm before this is
+   * called.
    *
-   * <p>Coming the other way, environment links become the platform plane because there is exactly
-   * one destination to move the history to — and the conversion also RETIRES the tier services
-   * those rows named, once the plane is serving ({@link #registerPlatform}, {@link
-   * #retireConvertedTierServices}), so nothing is left running that no row manages. Going back has
-   * as many destinations as there are tiers the service is linked into, no answer to which of them
-   * inherits the deployment history, and a running service under the plane's BARE name that the
-   * environment deployment would not even find — it would create {@code <env>-<app>} beside it and
-   * leave a row saying {@code ACTIVE} about a container nothing replaced. There is no symmetric
-   * retirement to offer either: the plane's service is the one thing that IS serving, and removing
-   * it is what the refused deployment would be replacing it with. So this refuses, loudly and on
-   * the record.
+   * <p><b>This used to refuse such a service on the record, and the refusal is gone because it
+   * became unexpressible rather than because it became wrong.</b> Going back is still not a
+   * conversion, and every reason it was not is untouched: the forward direction has exactly one
+   * destination to move the history to and retires the tier services those rows named once the
+   * plane is serving ({@link #registerPlatform}, {@link #retireConvertedTierServices}), while
+   * backwards has as many destinations as there are tiers the service is linked into, no answer to
+   * which of them inherits the deployment history, a running service under the plane's BARE name
+   * that an environment deployment would not even find — it would create {@code <env>-<app>} beside
+   * it and leave a row saying {@code ACTIVE} about a container nothing replaced — and no symmetric
+   * retirement to offer, since the plane's service is the one thing that IS serving. What changed is
+   * that a repository can no longer ASK for it: {@code deployment_target} is retired in the parser,
+   * so a spec saying {@code ENVIRONMENT} about a platform service is the parser's only possible
+   * answer rather than a statement anybody made. The catalogue decides the plane, so there is
+   * nothing left here to refuse — and refusing it anyway is precisely what stopped all nine platform
+   * services deploying on 2026-09-23. <b>Do not restore the branch.</b> If going back is ever wanted
+   * it is a deliberate door of its own (retire the platform service, then deploy), not a spec value
+   * read out of a file that no longer carries one.
    *
    * <p>The link set written is the <b>union</b> of what the catalogue already holds and the entry
    * tier this release lands in. A release entering dev says nothing about whether the service also
@@ -1927,33 +1952,10 @@ public class DeployService implements ReleaseAnnouncements {
    * would silently unlink every other tier a promotion has already reached.
    */
   private List<Target> registerInEnvironments(
-      String runId,
       String applicationName,
-      String version,
       DeploymentSpec spec,
       Optional<LinkedService> known,
       UUID causationId) {
-    if (known.filter(s -> s.service().deploymentTarget == PdDeploymentTarget.PLATFORM).isPresent()) {
-      LOG.errorf(
-          "%s is registered as a platform service and its deployments.yml now asks for"
-              + " deployment_target: environment. Going back is not a conversion and was refused —"
-              + " remediate deliberately (retire the platform service, then push again).",
-          applicationName);
-      recordRejection(
-          applicationName,
-          runId,
-          version,
-          "[refused: "
-              + applicationName
-              + " is a platform service and this commit asks for deployment_target: environment."
-              + " An environment application converts into a platform service, never the reverse —"
-              + " there is no one environment to inherit the history and the running platform"
-              + " container would be removed by the first environment deployment. Retire the"
-              + " platform service deliberately, then push again.]",
-          causationId);
-      return List.of();
-    }
-
     List<PdEnvironment> matching = entryTiers();
     if (matching.isEmpty()) {
       // No tier is designated as the platform's entry tier — a mid-bootstrap install. Nothing to
@@ -2224,12 +2226,20 @@ public class DeployService implements ReleaseAnnouncements {
    * deployment on the platform plane. A log line alone would say the same thing to nobody — the
    * intake is fire-and-forget, so the row is the only surface a refusal can surface on.
    *
-   * <p>The only caller is the environment arm refusing a repository that is already a platform
-   * service, so the row is the plane's and names the tier the plane deploys into — the same place
-   * the deployment it is refusing would have gone. A mid-bootstrap install with no designated tier
-   * records the refusal with none; a row with no tier and no successor is a worse answer than a
+   * <p><b>It has NO CALLER LEFT</b>, and knowing why saves the next reader a search — the {@link
+   * HealthGate#await} situation, and the same answer. Its one caller was the environment arm
+   * refusing a repository the catalogue already held as a platform service, and that refusal went
+   * on 2026-09-23: the plane is no longer stated by a file, so {@link #register} routes such a
+   * service to the platform arm and there is nothing left to refuse (see {@link
+   * #registerInEnvironments}). What is kept is the SHAPE of recording a refusal where an operator
+   * looks — the intake is fire-and-forget, so a row is the only surface a registration that refused
+   * to queue anything can surface on, and the next such refusal wants exactly this and not a second
+   * spelling of it. The row is the plane's and names the tier the plane deploys into — the same
+   * place the deployment being refused would have gone; a mid-bootstrap install with no designated
+   * tier records it with none, because a row with no tier and no successor is a worse answer than a
    * refusal nobody can see, and it is the one place a null environment survives.
    */
+  @SuppressWarnings("unused")
   private void recordRejection(
       String applicationName, String runId, String version, String detail, UUID causationId) {
     String environmentId =
