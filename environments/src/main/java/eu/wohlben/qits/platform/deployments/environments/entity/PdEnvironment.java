@@ -73,14 +73,15 @@ public class PdEnvironment extends PanacheEntityBase implements CausedRow {
 
   /**
    * <b>The platform environment</b>, of which there is exactly one: the tier a release ENTERS the
-   * platform at, and — since V8 — the tier the platform plane itself is deployed into.
+   * platform at.
    *
-   * <p>It is not a link, and a {@link PdDeploymentTarget#PLATFORM} service still carries none. What
-   * it now decides is a real place: a platform deployment's row, labels, injected {@code
-   * QITS_ENVIRONMENT} and lifecycle events all name this environment. What stays different about
-   * the plane is stated rather than inferred from a missing tier — the <b>bare</b> wire alias
-   * ({@code qits-ci}, so a peer in any tier reaches it without knowing which one it lives in) and a
-   * membership in every environment's networks.
+   * <p>It named two things until the platform plane was deleted — where a release enters, and where
+   * the plane itself was deployed — and the second went with the plane. <b>The name STAYS</b>: "where
+   * releases land" is still a real question with exactly one answer, and renaming this column is a
+   * later feature's rather than a tidy-up to fold into the plane's deletion.
+   *
+   * <p>It is not a link. A service is present in an environment by carrying a {@link PdServiceLink}
+   * to it and by nothing else, this designation included.
    *
    * <p><b>At most one row is true, and the schema does not enforce it</b> — H2 has no partial unique
    * index, so {@link

@@ -1,6 +1,5 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -76,19 +75,16 @@ public interface DeploymentDriver {
    */
   String EXTRAS_PREFIX = "qits.platform.deployments.extras.";
 
-  /** The environment a service belongs to. Absent on platform services: they belong to no tier. */
+  /** The environment a service belongs to. Every service has one. */
   String ENVIRONMENT_LABEL = "qits.platform.deployments.environment";
 
   String APPLICATION_LABEL = "qits.platform.deployments.application";
   String DEPLOYMENT_LABEL = "qits.platform.deployments.deployment";
 
-  /** {@code environment} or {@code platform} — what a reconciliation looks a container up by. */
-  String TARGET_LABEL = "qits.platform.deployments.target";
-
   /** {@code true} on an environment's public nodes — the other half of the reconciliation lookup. */
   String AVAILABLE_ON_ENV_LABEL = "qits.platform.deployments.available-on-env";
 
-  /** On networks: {@code bundle}, {@code application} or {@code platform}. */
+  /** On networks: {@code bundle} or {@code application}. */
   String NETWORK_LABEL = "qits.platform.deployments.network";
 
   /** On containers and on per-application networks: whose it is. */
@@ -99,12 +95,14 @@ public interface DeploymentDriver {
     /** An environment's public nodes ({@code availableOnEnv}). */
     BUNDLE,
     /** One application of one environment — its own containers and its joined hub. */
-    APPLICATION,
-    /** Where platform services run. Belongs to no environment. */
-    PLATFORM
+    APPLICATION
   }
 
-  /** A network this component made, as its labels describe it. {@code environmentId} is null on PLATFORM. */
+  // PLATFORM was a third kind and went with the plane: it was the `qits-platform` overlay, the one
+  // network that belonged to no environment. A live network still carrying `network=platform` reads
+  // back as an unknown kind, which `networks()` already tolerates by answering null.
+
+  /** A network this component made, as its labels describe it. */
   record Network(String name, String environmentId, NetworkKind kind, String applicationName) {}
 
   /**
@@ -128,14 +126,13 @@ public interface DeploymentDriver {
   List<Network> networks();
 
   /**
-   * Release whatever the <b>platform plane</b> holds on these networks, so a teardown can remove
-   * them.
+   * Release whatever still holds these networks, so a teardown can remove them.
    *
-   * <p>It is one call rather than the {@code platformContainers} + {@code disconnect} pair it
-   * replaces, because the pair was one orchestrator's answer and not the question. The question is
-   * "these networks are about to go; the platform plane is on them and does not belong to the tier
-   * that owns them". A swarm service declares its networks when it is created and a teardown does
-   * not reshape one, so the honest answer today is to do nothing and let the removal's own retry
+   * <p>The question it asks used to be the platform plane's — "these networks are about to go, and
+   * the plane is on them without belonging to the tier that owns them" — and the plane is deleted.
+   * What survives is the question a teardown still has: a network cannot be removed while anything
+   * holds an endpoint on it. A swarm service declares its networks when it is created and a teardown
+   * does not reshape one, so the honest answer today is to do nothing and let the removal's own retry
    * loop wait for the tasks to go. It stays a verb because the question outlives the answer.
    */
   void detachPlatformPlane(List<String> networks);
@@ -305,12 +302,16 @@ public interface DeploymentDriver {
    *
    * <p><b>It is not a cutover mechanic and must not become one.</b> Nothing sequences this to
    * perform a deployment: by the time it is called the deployment is applied, converged, recorded
-   * and announced, and calling it or not calling it changes nothing about that. Its caller is the
-   * PLANE CONVERSION — a repository whose {@code deployments.yml} flipped to {@code
-   * deployment_target: platform} keeps one {@code <env>-<app>} service per tier it used to serve
-   * in, and those services go on holding their alias, their ports and their volumes with no row
-   * managing them any more. {@code DeployService.registerPlatform} moves the rows; this is how the
-   * services follow.
+   * and announced, and calling it or not calling it changes nothing about that.
+   *
+   * <p><b>It has no caller in this build, and it is kept for the thing it says.</b> Its caller was
+   * the plane conversion, which moved an application's rows onto the platform plane and owed the
+   * {@code <env>-<app>} services those rows named a retirement; the plane is deleted, so there is no
+   * conversion left to owe one. What the verb states — "this one service, named by a row, has been
+   * left behind and should not exist" — is exactly what the plane's own deletion leaves nine times
+   * over on the live estate, and that is an operator's hand step rather than a deployment's (see
+   * AGENTS.md, <i>Retiring the plane's bare-named services</i>): the bare-named predecessor is not
+   * named by any row this build writes, so nothing here could address it.
    *
    * <p><b>Exactly the one named service, never a label sweep.</b> The name comes off the deployment
    * row that was decommissioned ({@code container_name}, which under swarm IS the service's name),
@@ -391,12 +392,12 @@ public interface DeploymentDriver {
    * ({@code PdNetworks}) so nothing that has to agree about an address can disagree.
    *
    * <p>{@code environmentId} and {@code environmentName} are the tier this is deployed into, and
-   * <b>a platform service has one</b>: it is deployed into the designated platform environment, so
-   * it carries the environment label and boots with {@code QITS_ENVIRONMENT} like everything else.
-   * The plane is {@code target}, and it is what an implementation asks when it needs to know —
-   * never a missing tier. (An environment teardown reaps by the environment label, so it demands
-   * the target label too; a platform-plane service must never go down with a tier it merely serves.)
-   * Null is a mid-bootstrap install with no tier designated.
+   * <b>every service has one</b>: it carries the environment label and boots with {@code
+   * QITS_ENVIRONMENT}. There is no {@code target} beside them any more — an implementation that
+   * needed to know which plane a service was on is asking a question with one answer. (An
+   * environment teardown therefore reaps by the environment label alone: the second half of that
+   * filter existed to keep the plane from going down with a tier it merely served.) Null is a
+   * mid-bootstrap install with no tier designated.
    *
    * <p>{@code healthCmd} is the repository's own readiness probe and, when present, <b>replaces</b>
    * the health path rather than adding to it: an image with no HTTP surface has no path to fetch.
@@ -441,7 +442,6 @@ public interface DeploymentDriver {
       String imageRef,
       String healthPath,
       String healthCmd,
-      PdDeploymentTarget target,
       boolean availableOnEnv,
       UpdateOrder updateOrder,
       PublishMode publishMode,
@@ -460,11 +460,6 @@ public interface DeploymentDriver {
     /** The one network {@code docker run} can take, and the first one a service declares. */
     public String primaryNetwork() {
       return networks.isEmpty() ? null : networks.get(0);
-    }
-
-    /** Whether this is the platform plane — one instance, no tier, the bare wire alias. */
-    public boolean platform() {
-      return target == PdDeploymentTarget.PLATFORM;
     }
   }
 

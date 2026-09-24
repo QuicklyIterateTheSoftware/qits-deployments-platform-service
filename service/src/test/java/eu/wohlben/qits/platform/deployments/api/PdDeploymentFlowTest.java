@@ -19,7 +19,6 @@ import eu.wohlben.qits.platform.deployments.deployments.control.DeploymentDriver
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
@@ -213,7 +212,6 @@ public class PdDeploymentFlowTest {
     // application is a spoke, and only its own services are on it.
     assertEquals("qits-env-flow-green-repo-green", spec.primaryNetwork());
     assertEquals("repo-green", spec.applicationName());
-    assertEquals(PdDeploymentTarget.ENVIRONMENT, spec.target());
     // ...and the legacy network is declared with it, which is the transition membership that keeps
     // today's direct cross-application URLs resolving. It is in the SAME list as the primary one:
     // an orchestrator that cannot join after the fact has to be told the whole membership at once.
@@ -369,7 +367,6 @@ public class PdDeploymentFlowTest {
     specs.script(
         "qits-storing",
         new SpecSource.DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT,
             false,
             null,
             null,
@@ -406,7 +403,6 @@ public class PdDeploymentFlowTest {
     specs.script(
         "qits-refused",
         new SpecSource.DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT,
             false,
             null,
             null,
@@ -462,7 +458,6 @@ public class PdDeploymentFlowTest {
             .filter(a -> "repo-derived".equals(a.get("repoId")))
             .findFirst()
             .orElseThrow();
-    assertEquals("ENVIRONMENT", registered.get("target"));
     assertEquals(false, registered.get("availableOnEnv"));
     assertEquals("flow-derive", registered.get("environmentName"));
     assertNull(registered.get("branch"), "an environment application takes its tier's branch");
@@ -479,7 +474,7 @@ public class PdDeploymentFlowTest {
             DeploymentDriver.NetworkKind.APPLICATION,
             "app-hub-seed"));
     specs.script(
-        "repo-gw", new SpecSource.DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, true, null, null, null, null));
+        "repo-gw", new SpecSource.DeploymentSpec(true, null, null, null, null));
     postRelease("repo-gw", V_A);
 
     awaitDeployments(environmentId, 1);
@@ -497,7 +492,21 @@ public class PdDeploymentFlowTest {
   }
 
   @Test
-  public void aPlatformServiceRunsOnThePlatformNetworkAndDeclaresEveryApplicationNetwork() {
+  public void aFormerPlatformApplicationIsAnORDINARYSPOKEInTheTierItRunsIn() {
+    // What replaced `aPlatformServiceRunsOnThePlatformNetworkAndDeclaresEveryApplicationNetwork`.
+    // That test held the three things the PLANE decided — the `qits-platform` overlay as the primary
+    // network, a membership in every application network of every environment, the BARE wire alias
+    // and an unqualified container name — plus the one thing V8 had already made ordinary, the tier
+    // on the row and in the labels.
+    //
+    // All three plane facts are deleted. qits-platform-idp is a spoke in the designated tier like
+    // anything else: its own per-application network, the legacy network while the transition lasts,
+    // and NOT another application's network. "Locally reachable everywhere" is not a property
+    // anything has any more — a service another tier needs is reached through the gateway.
+    //
+    // THE ALIAS IS THE CUTOVER and is asserted here because it is the one thing that cannot be
+    // undone by a redeploy: a swarm service's name IS its address and swarm cannot rename one, so
+    // this deployment creates `flow-single-repo-idp` beside the bare-named service that was serving.
     String environmentId = createEnvironment("flow-single");
     driver.scriptExistingNetwork(
         new DeploymentDriver.Network(
@@ -505,38 +514,28 @@ public class PdDeploymentFlowTest {
             environmentId,
             DeploymentDriver.NetworkKind.APPLICATION,
             "app-single-seed"));
-    specs.script(
-        "repo-idp", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+    specs.script("repo-idp", new SpecSource.DeploymentSpec(false, null, null, null, null));
     postRelease("repo-idp", V_A);
 
     awaitApplied(1);
     DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
-    assertEquals("qits-platform", spec.primaryNetwork());
-    assertEquals(PdDeploymentTarget.PLATFORM, spec.target(), "the plane is stated on the spec");
-    // IT IS DEPLOYED INTO THE MAIN ENVIRONMENT. Everything an application is told about where it
-    // runs — the label an operator greps the host by, the QITS_ENVIRONMENT it boots with, the tier
-    // on all four lifecycle events — comes off these two, and a platform service used to be told
-    // nothing at all.
-    assertEquals(environmentId, spec.environmentId(), "a platform service is deployed into a tier");
+    assertEquals("qits-env-flow-single-repo-idp", spec.primaryNetwork(), "its own, as a spoke");
+    assertEquals(environmentId, spec.environmentId());
     assertEquals("flow-single", spec.environmentName());
-    // ...and the three things the PLANE still decides, none of them read off a missing tier.
     assertTrue(
-        spec.deploymentName().startsWith("qits-pd-repo-idp-"),
-        "the plane's names stay unqualified: " + spec.deploymentName());
+        spec.deploymentName().startsWith("qits-pd-flow-single-repo-idp-"),
+        "the container name carries the tier now: " + spec.deploymentName());
     assertEquals(
-        "repo-idp",
+        "flow-single-repo-idp",
         spec.wireAlias(),
-        "and the address most of all — a peer in any tier reaches it by writing its bare name");
-    assertTrue(
+        "and so does the address, which is the rename this change performs once");
+    assertFalse(
         spec.networks().contains("qits-env-flow-single-app-single-seed"),
-        "a platform service is on every application network of every environment: "
-            + spec.networks());
+        "it is not on another application's network: " + spec.networks());
     assertTrue(
         spec.networks().contains("qits-net"),
-        "and the legacy network while the transition lasts: " + spec.networks());
+        "the legacy network while the transition lasts: " + spec.networks());
 
-    // The tier it deploys into shows it, which it could not before: `?environmentId=` was a query
-    // no platform row could answer.
     List<Map<String, Object>> inTier =
         given()
             .when()
@@ -546,24 +545,26 @@ public class PdDeploymentFlowTest {
             .extract()
             .jsonPath()
             .getList("deployments");
-    assertEquals(1, inTier.size(), "the plane's deployment is in the tier's listing: " + inTier);
+    assertEquals(1, inTier.size(), "the deployment is in the tier's listing: " + inTier);
     assertEquals(
-        "platform:repo-idp",
+        environmentId + ":repo-idp",
         inTier.get(0).get("applicationId"),
-        "and it is still keyed by its PLANE, so a client's join against /applications holds");
+        "and it is keyed by the TIER, which is what both sides of the client's join read now");
   }
 
   @Test
-  public void thePlatformPlaneIsRolledOnceByTheTierTheReleaseEntersAt() {
-    // The claim that survived branch matching, restated. There is one designated platform
-    // environment; it decides that the plane may be rolled at all, and — since V8 — where. Two
-    // tiers exist and only the designated one is named: a second instance in the other would be
-    // the fan-out this plane has never had.
+  public void aReleaseIsRolledOnceByTheTierItEntersAt() {
+    // The claim that survived branch matching, and then the plane. There is one designated platform
+    // environment and it decides where a release lands. Two tiers exist and only the designated one
+    // is named: a second instance in the other would be a fan-out nothing has ever asked for. It was
+    // `thePlatformPlaneIsRolledOnceByTheTierTheReleaseEntersAt`, and the sentence is the same one
+    // with the plane taken out of it — which is the point, because the entry-tier question never was
+    // the plane's.
     createEnvironment("flow-otherplane");
     String designated = createEnvironment("flow-thisplane");
     specs.script(
         "repo-planegate",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+        new SpecSource.DeploymentSpec(false, null, null, null, null));
 
     postRelease("repo-planegate", V_B);
     awaitApplied(1);
@@ -575,257 +576,113 @@ public class PdDeploymentFlowTest {
         "one instance, in the tier the release entered at — not in the other one, and not nowhere");
   }
 
-  @Test
-  public void declaringItselfPlatformConvertsTheEnvironmentRowsItHad() {
-    // The conversion, in one test: a repository that is an environment application today can
-    // become a platform service with the commit that adds its deployments.yml. The old rows must
-    // not sit beside the new one — one repository deploys to one place.
-    String environmentId = createEnvironment("flow-convert");
-    postRelease("repo-convert", V_A);
-    awaitDeployments(environmentId, 1);
-
-    specs.script(
-        "repo-convert", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postRelease("repo-convert", V_B);
-    awaitApplied(2);
-    awaitWorkerIdle();
-
-    List<Map<String, Object>> registered =
-        given()
-            .when()
-            .get("/platform-deployments/api/applications")
-            .then()
-            .statusCode(200)
-            .extract()
-            .jsonPath()
-            .<Map<String, Object>>getList("applications")
-            .stream()
-            .filter(a -> "repo-convert".equals(a.get("repoId")))
-            .toList();
-    assertEquals(1, registered.size(), "one row, not two: " + registered);
-    assertEquals("PLATFORM", registered.get(0).get("target"));
-    assertNull(registered.get(0).get("environmentId"), "a platform service still carries no link");
-    assertNull(registered.get(0).get("branch"), "the plane has no deploy ref of its own");
-
-    // The history moved onto the PLANE, which is a column now rather than a missing tier — so the
-    // plane's listing has both rows and the one that was serving as an environment application is
-    // decommissioned rather than deleted.
-    List<Map<String, Object>> onThePlane =
-        given()
-            .when()
-            .get("/platform-deployments/api/deployments?environmentId=platform")
-            .then()
-            .statusCode(200)
-            .extract()
-            .jsonPath()
-            .<Map<String, Object>>getList("deployments")
-            .stream()
-            .filter(d -> "repo-convert".equals(d.get("applicationName")))
-            .toList();
-    assertEquals(2, onThePlane.size(), "both rows are the plane's now: " + onThePlane);
-    assertEquals("ACTIVE", onThePlane.get(0).get("status"), "the newest is serving");
-    assertEquals(
-        "DECOMMISSIONED",
-        onThePlane.get(1).get("status"),
-        "and the environment row it converted is decommissioned rather than dropped");
-    assertTrue(
-        onThePlane.stream().allMatch(d -> "platform:repo-convert".equals(d.get("applicationId"))),
-        "one history, one key — the conversion must not split it: " + onThePlane);
-
-    // AND THE RUNTIME FOLLOWED THE ROWS. The tier service the decommissioned row named is holding
-    // that tier's alias and ports with nothing managing it any more — the plane deploys under the
-    // bare name and never addresses it again. That orphan is the 2026-09-07 dev-qits-configuration
-    // incident, and it is retired here rather than by hand.
-    assertTrue(
-        driver.removedServices().contains("flow-convert-repo-convert"),
-        "the tier service is retired: " + driver.removedServices());
-    assertFalse(
-        driver.removedServices().contains("repo-convert"),
-        "and never the bare-named service that is now serving: " + driver.removedServices());
-    // ...after the platform deployment converged, never before it. A retirement that ran at
-    // conversion time would leave the application with nothing serving if that deployment failed.
-    assertTrue(
-        driver.calls().indexOf("removeService:flow-convert-repo-convert")
-            > driver.calls().indexOf("await:repo-convert"),
-        "the retirement follows the plane's own convergence: " + driver.calls());
-  }
+  // --- THE FOUR CONVERSION TESTS WENT WITH THE CONVERSION --------------------------------------
+  //
+  // `declaringItselfPlatformConvertsTheEnvironmentRowsItHad`,
+  // `theConversionRetiresOneTierServicePerEnvironmentItServedIn`,
+  // `aFailedFirstPlatformDeployKeepsTheTierServiceAndTheNextSuccessRetiresIt` and
+  // `aRetirementTheRuntimeRefusesDoesNotFailTheDeployment` all held one feature: a repository whose
+  // `deployments.yml` flipped to `deployment_target: platform` had its environment rows moved onto
+  // the plane, and the `<env>-<app>` services those rows named were retired once the first platform
+  // deployment reported healthy (the 2026-09-07 `dev-qits-configuration` incident).
+  //
+  // They are not moved to a one-tier claim because there is no one-tier claim to move them to: the
+  // plane is deleted, `registerPlatform` and `retireConvertedTierServices` are deleted, and a flip
+  // between planes is not a thing a repository can ask for or a catalogue can record. Keeping them
+  // as tests of `removeService` would be testing a seam with no caller through a door that no longer
+  // exists.
+  //
+  // WHAT THEY WERE ABOUT IS NOT GONE, THOUGH, AND IT IS OWED TO A PERSON RATHER THAN TO A TEST.
+  // Deleting the plane renames the nine the other way (`qits-ci` -> `dev-qits-ci`), so each of them
+  // leaves a bare-named predecessor behind exactly as a conversion did — and this time the deployer
+  // cannot retire it, because the rows it would read the name off already record the address that is
+  // changing. `theTierQualifiedNameIsWhatIsCreatedAndTheBareOneIsLeftBehind` below is what pins that
+  // it is a CREATE beside the old service rather than an update of it, which is the fact the hand
+  // step in AGENTS.md ("Retiring the plane's bare-named services") exists to finish.
 
   @Test
-  public void theConversionRetiresOneTierServicePerEnvironmentItServedIn() {
-    // An application that was serving in two tiers has two stranded services, not one. The names
-    // come off the ROWS — one per tier, each carrying that tier's qualified alias — which is why
-    // this cannot be derived from the application name and the entry tier alone.
-    String envA = createEnvironment("flow-conv-a");
-    postRelease("repo-convmulti", V_A);
-    awaitDeployments(envA, 1);
-
-    // Creating a tier MOVES the designation, so the next release enters the new one — and the row
-    // in the first tier stays ACTIVE, which is exactly the two-tier state under test.
-    String envB = createEnvironment("flow-conv-b");
-    postRelease("repo-convmulti", V_B);
-    awaitDeployments(envB, 1);
-
-    specs.script(
-        "repo-convmulti",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postRelease("repo-convmulti", V_C);
-    awaitApplied(3);
-    awaitWorkerIdle();
-
-    assertTrue(
-        driver.removedServices().containsAll(
-            List.of("flow-conv-a-repo-convmulti", "flow-conv-b-repo-convmulti")),
-        "both tiers' services are retired, one per row the conversion decommissioned: "
-            + driver.removedServices());
-  }
-
-  @Test
-  public void aFailedFirstPlatformDeployKeepsTheTierServiceAndTheNextSuccessRetiresIt() {
-    // The whole reason the retirement is deferred rather than written where the rows move. A
-    // conversion whose first platform deployment fails must leave the application exactly as it
-    // was — the tier service still serving — and must not forget what it owes.
-    String environmentId = createEnvironment("flow-convfail");
-    postRelease("repo-convfail", V_A);
-    awaitDeployments(environmentId, 1);
-
-    specs.script(
-        "repo-convfail",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    driver.scriptConvergence(
-        DeploymentDriver.Convergence.rolledBack("the plane's first task never went healthy"));
-    postRelease("repo-convfail", V_B);
-    awaitApplied(2);
-    awaitWorkerIdle();
-
-    assertEquals(
-        List.of(),
-        driver.removedServices(),
-        "a failed platform deployment tears nothing down — the tier service is what serves");
-
-    // The next release that does go healthy is what settles it: the owed entry survived the failed
-    // attempt rather than being consumed by it.
-    driver.scriptConvergence(DeploymentDriver.Convergence.converged(List.of()));
-    postRelease("repo-convfail", V_C);
-    awaitApplied(3);
-    awaitWorkerIdle();
-
-    assertTrue(
-        driver.removedServices().contains("flow-convfail-repo-convfail"),
-        "the retirement outlived the attempt that failed: " + driver.removedServices());
-  }
-
-  @Test
-  public void aRetirementTheRuntimeRefusesDoesNotFailTheDeployment() {
-    // The container is live, the cutover is recorded and the event is announced. An orphaned old
-    // service is an operator's one-line cleanup; a deployment recorded FAILED for it would be a lie
-    // about a healthy platform. So the WARN is the whole cost.
-    String environmentId = createEnvironment("flow-convwarn");
-    postRelease("repo-convwarn", V_A);
-    awaitDeployments(environmentId, 1);
-
-    specs.script(
-        "repo-convwarn",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    driver.scriptRemoveServiceFailure(new RuntimeException("the daemon is busy"));
-    postRelease("repo-convwarn", V_B);
-    awaitApplied(2);
-    awaitWorkerIdle();
-
-    List<Map<String, Object>> onThePlane =
-        given()
-            .when()
-            .get("/platform-deployments/api/deployments?environmentId=platform")
-            .then()
-            .statusCode(200)
-            .extract()
-            .jsonPath()
-            .<Map<String, Object>>getList("deployments")
-            .stream()
-            .filter(d -> "repo-convwarn".equals(d.get("applicationName")))
-            .toList();
-    assertEquals("ACTIVE", onThePlane.get(0).get("status"), "the deployment stands: " + onThePlane);
-    assertEquals(
-        List.of(),
-        driver.removedServices(),
-        "and nothing was retired, which is what the WARN is about");
-    assertTrue(
-        driver.calls().contains("removeService:flow-convwarn-repo-convwarn"),
-        "it was attempted: " + driver.calls());
-  }
-
-  @Test
-  public void aServiceTheCatalogueHoldsAsPlatformKeepsThePlaneWhateverTheSpecSays() {
-    // THE 2026-09-23 INCIDENT, and it is the worst shape this component can take: the deployer
-    // refusing to deploy its own fix. `deployment_target` retired that day — the parser stopped
-    // reading the key and hardcoded every spec's target to ENVIRONMENT — while `register` still
-    // routed on the SPEC's target and `registerInEnvironments` still refused an application the
-    // catalogue held as PLATFORM. From release 2026.923.142928, live at 14:42, every deployment of
-    // all nine platform services came back "[refused: <app> is a platform service and this commit
-    // asks for deployment_target: environment...]", qits-deployments' own next version included, so
-    // the running deployer refused the very release that would have fixed it. Ten refusals, and
-    // environment-tier applications deployed fine throughout, which is what made it look like a
-    // per-application problem rather than the routing decision it was.
+  public void aSecondReleaseOfARegisteredApplicationIsNEVERRefusedAndKeepsItsAddress() {
+    // WHAT REPLACED `aServiceTheCatalogueHoldsAsPlatformKeepsThePlaneWhateverTheSpecSays`, the
+    // 2026-09-23 incident's regression test. That incident was the worst shape this component can
+    // take: the deployer refusing to deploy its own fix. `deployment_target` had been retired in the
+    // parser — every spec read as ENVIRONMENT — while `register` still routed on the SPEC's target
+    // and `registerInEnvironments` refused an application the catalogue held as PLATFORM. From
+    // release 2026.923.142928 every deployment of all nine platform services came back
+    // "[refused: <app> is a platform service and this commit asks for deployment_target:
+    // environment...]", qits-deployments' own next version included. Ten refusals, with
+    // environment-tier applications deploying green throughout.
     //
-    // The property that replaced the refusal: the file no longer STATES a plane, so the catalogue
-    // registration is the only authority on which plane an already-registered service is on. A
-    // spec saying ENVIRONMENT about a PLATFORM row is not a flip to refuse — it is the parser's
-    // only possible answer — and it takes the platform arm.
-    String environmentId = createEnvironment("flow-plane-keeps");
-    specs.script(
-        "repo-plane-keeps",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
-    postRelease("repo-plane-keeps", V_A);
+    // The old test pinned the fix: the CATALOGUE decides the plane, so a spec saying ENVIRONMENT
+    // about a PLATFORM row takes the platform arm. That claim is meaningless now — there is no plane
+    // to keep and one register arm to take — so what is pinned here is the incident's two actual
+    // signatures, both of which outlive the plane:
+    //
+    //   * A RE-RELEASE OF AN ALREADY-REGISTERED APPLICATION IS NEVER REFUSED. A `FAILED` row written
+    //     by registration, for an application that deployed perfectly well the release before, is
+    //     the incident's exact fingerprint whatever the reason. `register` has one arm and
+    //     `recordRejection` has no caller, so there is nothing left that can write one — and this is
+    //     what would go red if a routing decision or a refusal came back.
+    //   * ITS ADDRESS DOES NOT MOVE BETWEEN RELEASES. A swarm service's name IS its address and
+    //     swarm cannot rename one, so an alias that differed from one deployment of an application
+    //     to the next would create a second service beside the one that is serving and leave every
+    //     peer dialling a name nothing answers to. That is the hazard the old test's alias assertion
+    //     was really about, and it is the one this change PAYS ONCE deliberately (see
+    //     `theTierQualifiedNameIsWhatIsCreatedAndTheBareOneIsLeftBehind`) and must never pay again.
+    String environmentId = createEnvironment("flow-reregister");
+    postRelease("repo-reregister", V_A);
     awaitApplied(1);
     awaitWorkerIdle();
 
-    // The next release, read by a parser that no longer reads the key: ENVIRONMENT, which is what
-    // every spec on the platform says now.
-    specs.script(
-        "repo-plane-keeps",
-        new SpecSource.DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT, false, null, null, null, null));
-    postRelease("run-2", "repo-plane-keeps", V_B);
+    postRelease("run-2", "repo-reregister", V_B);
     awaitApplied(2);
     awaitWorkerIdle();
 
-    // It deployed, and it deployed as the PLANE. The wire alias is the assertion that matters most:
-    // a swarm service's name IS its address and swarm cannot rename one, so an environment arm here
-    // would have created `flow-plane-keeps-repo-plane-keeps` beside the bare-named service that is
-    // serving and left every peer dialling a name nothing answers to.
-    DeploymentDriver.ServiceSpec second = driver.applied().get(1);
     assertEquals(
-        PdDeploymentTarget.PLATFORM, second.target(), "the catalogue decided the plane: " + second);
-    assertEquals(
-        "repo-plane-keeps", second.wireAlias(), "and the plane's alias is bare: " + second);
+        driver.applied().get(0).wireAlias(),
+        driver.applied().get(1).wireAlias(),
+        "the address is the same string on both releases, so the second is an UPDATE of the first");
+    assertEquals("flow-reregister-repo-reregister", driver.applied().get(1).wireAlias());
 
-    // The catalogue row is untouched — still the plane, still linked into no tier.
-    List<Map<String, Object>> rows =
-        given()
-            .when()
-            .get("/platform-deployments/api/applications")
-            .then()
-            .statusCode(200)
-            .extract()
-            .jsonPath()
-            .<Map<String, Object>>getList("applications")
-            .stream()
-            .filter(a -> "repo-plane-keeps".equals(a.get("repoId")))
-            .toList();
-    assertEquals(1, rows.size(), "one row, not two: " + rows);
-    assertEquals("PLATFORM", rows.get(0).get("target"));
-    assertNull(rows.get(0).get("environmentId"), "a platform service still carries no link");
-
-    // ...and nothing was written down as a refusal. This is the incident's own signature: a FAILED
-    // row here means the branch that produced ten of them is back.
-    PdDeployment deployed = deploymentOf("repo-plane-keeps", environmentId, V_B);
-    assertEquals(PdDeploymentTarget.PLATFORM, deployed.deploymentTarget);
+    PdDeployment deployed = deploymentOf("repo-reregister", environmentId, V_B);
     assertEquals("ACTIVE", deployed.status.name(), "detail: " + deployed.detail);
     List<PdDeployment> all =
         QuarkusTransaction.requiringNew()
-            .call(() -> deployments.listByApplication("repo-plane-keeps", environmentId));
+            .call(() -> deployments.listByApplication("repo-reregister", environmentId));
     assertTrue(
         all.stream().noneMatch(d -> "FAILED".equals(d.status.name())),
         "no refusal was recorded: " + all.stream().map(d -> d.version + "=" + d.status).toList());
+  }
+
+  @Test
+  public void theTierQualifiedNameIsWhatIsCreatedAndTheBareOneIsLeftBehind() {
+    // The one cutover this change performs, pinned where a reader will look for it. The nine
+    // applications that were the platform plane are running as swarm services named after their BARE
+    // application name, because that was the plane's wire alias. This build derives `<env>-<app>` for
+    // them — so what the orchestrator is asked for is a service of a name nothing is running under,
+    // and a service is found by name.
+    //
+    // WHAT THAT MEANS ON THE ESTATE, stated here because nothing in the code can state it: the
+    // deployment CREATES `<env>-<app>` and the bare-named predecessor is left running. It is not
+    // found by the predecessor lookup (that is the name, and the name changed), and it is not reaped
+    // by the cutover either — `reap` is a no-op under swarm, because a replace is ordinarily an
+    // update of the same service. Retiring it is an operator's `docker service rm <app>`, in the
+    // order AGENTS.md's "Retiring the plane's bare-named services" sets out.
+    String environmentId = createEnvironment("flow-renamed");
+    specs.script("repo-renamed", new SpecSource.DeploymentSpec(false, null, null, null, null));
+    postRelease("repo-renamed", V_A);
+    awaitApplied(1);
+    awaitWorkerIdle();
+
+    DeploymentDriver.ServiceSpec spec = driver.applied().get(0);
+    assertEquals("flow-renamed-repo-renamed", spec.wireAlias(), "the qualified name is asked for");
+    assertEquals(
+        "flow-renamed-repo-renamed",
+        deploymentOf("repo-renamed", environmentId, V_A).containerName,
+        "and it is what the row records, which is every later question's only handle");
+    assertEquals(
+        List.of(),
+        driver.removedServices(),
+        "nothing removes the bare-named predecessor: it is not named by any row this build writes");
   }
 
   @Test
@@ -836,7 +693,7 @@ public class PdDeploymentFlowTest {
     // other event — which is what the ancestor's null-environment_id row had no constraint for.
     createEnvironment("flow-once");
     specs.script(
-        "repo-once", new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+        "repo-once", new SpecSource.DeploymentSpec(false, null, null, null, null));
     int senders = 8;
     java.util.concurrent.ExecutorService pool =
         java.util.concurrent.Executors.newFixedThreadPool(senders);
@@ -875,8 +732,7 @@ public class PdDeploymentFlowTest {
             .stream()
             .filter(a -> "repo-once".equals(a.get("repoId")))
             .toList();
-    assertEquals(1, rows.size(), "one platform row for one repository: " + rows);
-    assertEquals("PLATFORM", rows.get(0).get("target"));
+    assertEquals(1, rows.size(), "one row for one repository: " + rows);
   }
 
   @Test
@@ -941,8 +797,10 @@ public class PdDeploymentFlowTest {
     // difference between what the git host served and what the store was handed could only be
     // introduced here.
     assertEquals(DECLARATION, seeded.get(0).yaml());
-    // ...and the plane the spec asked for, which is what the store resolves the overrides against.
-    assertEquals(PdDeploymentTarget.ENVIRONMENT, seeded.get(0).target());
+    // The seam carried the PLANE beside these three, because the store resolved a platform-plane
+    // declaration against the platform's own overrides rather than a tier's. The plane is deleted, so
+    // the seam states none — and `ConfigHostDeclarationSeed` sends the constant `environment` on the
+    // wire, because the query parameter is qits-configuration's route and its vocabulary to retire.
     // AND THE FACT TRAVELS TO THE ARGV. The extras read at the bottom of the driver's argv build is
     // addressed by the released version, and the store answers 404 for a version it holds no
     // declaration for — so what the seed decided here has to be what the read asks there, or a
@@ -965,7 +823,7 @@ public class PdDeploymentFlowTest {
     String environmentId = createEnvironment("flow-declared-plane");
     specs.script(
         "repo-declared-plane",
-        new SpecSource.DeploymentSpec(PdDeploymentTarget.PLATFORM, false, null, null, null, null));
+        new SpecSource.DeploymentSpec(false, null, null, null, null));
     specs.scriptDeclaration("repo-declared-plane", DECLARATION);
 
     postRelease("repo-declared-plane", V_A);
@@ -974,11 +832,9 @@ public class PdDeploymentFlowTest {
 
     List<FakeDeclarationSeed.Seeded> seeded = declarations.seeded();
     assertEquals(1, seeded.size(), "one seed for the whole event: " + seeded);
-    assertEquals(
-        PdDeploymentTarget.PLATFORM,
-        seeded.get(0).target(),
-        "the plane reaches the store, because a platform declaration resolves against the"
-            + " platform's own overrides");
+    assertEquals("repo-declared-plane", seeded.get(0).applicationName());
+    assertEquals(V_A, seeded.get(0).version(), "addressed by (application, version) and nothing"
+        + " else — which is why a fan-out could never need a second POST");
   }
 
   @Test

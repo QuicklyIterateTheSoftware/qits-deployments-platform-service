@@ -88,15 +88,18 @@ public class RollbackPins {
   /**
    * One deployment row reduced to what the rule reads. Grouped by {@code applicationId} and
    * reported by {@code applicationName}: the id is what makes a tier's history its own, the name is
-   * what a pin addresses. The id is derived from the row's own {@code (deploymentTarget,
-   * environmentId, applicationName)} ({@link ApplicationKeys}) rather than read off a service row —
-   * same grouping, and nothing to join.
+   * what a pin addresses. The id is derived from the row's own {@code (environmentId,
+   * applicationName)} ({@link ApplicationKeys}) rather than read off a service row — same grouping,
+   * and nothing to join.
    *
-   * <p><b>The plane is part of that grouping since V8</b>, and it has to be: a platform deployment
-   * names the main environment now, so a key without it would have split one application's history
-   * across the deployment that introduced the tier — the rows before it under {@code platform:} and
-   * the rows after it under the tier — and the pin rule reads "the previous distinct tag" straight
-   * off one such group.
+   * <p><b>The plane used to be part of that grouping and is not any more.</b> It was there because a
+   * platform deployment's rows changed tier under it at V8; the plane is deleted, every row names the
+   * tier it ran in, and a key over the tier alone is the whole of what makes one application's
+   * history its own. The one-off cost is where the plane's deletion changes a row's group: the pin
+   * rule reads "the previous distinct tag" off one group, so the deployment that first carries the
+   * qualified name starts a group whose previous tag is the last ENVIRONMENT-keyed one rather than
+   * the last PLATFORM-keyed one. On the nine that were the plane both keys are the same tier
+   * already, because V8 had put their rows there.
    */
   public record Row(
       String applicationId, String applicationName, String imageTag, PdDeploymentStatus status) {}
@@ -114,10 +117,7 @@ public class RollbackPins {
     for (PdDeployment deployment : deployments.listAllNewestFirst()) {
       rows.add(
           new Row(
-              ApplicationKeys.of(
-                  deployment.deploymentTarget,
-                  deployment.environmentId,
-                  deployment.applicationName),
+              ApplicationKeys.of(deployment.environmentId, deployment.applicationName),
               deployment.applicationName,
               deployment.imageTag(),
               deployment.status));

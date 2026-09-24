@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
 import org.junit.jupiter.api.Test;
 
@@ -69,48 +68,45 @@ class DeploymentIdentifiersTest {
 
   @Test
   void containerNamesCarryTheTierTheApplicationAndTheDeployment() {
+    // The prefix is the ancestor's `qits-cd-` renamed with everything else, and a bootstrap that
+    // greps for containers greps for this.
     assertEquals(
         "qits-pd-some-epic-qits-gateway-0123abcd",
-        ContainerNames.of(
-            PdDeploymentTarget.ENVIRONMENT,
-            "some-epic",
-            "qits-gateway",
-            "0123abcd-ffff-4000-8000-0000"));
-    // A platform deployment's names are unqualified, and the segment is DROPPED rather than filled
-    // with the word: the platform repositories carry the plane in their own names, so
-    // `qits-pd-platform-qits-platform-idp-…` would say it twice. The prefix is the ancestor's
-    // `qits-cd-` renamed with everything else, and a bootstrap that greps for containers greps for
-    // this.
-    //
-    // THE PLANE IS ASKED, NOT THE TIER. A platform service is deployed into the designated
-    // environment since V8 and carries its name, so a shape that keyed on "no environment" would
-    // have started qualifying these the moment the tier arrived.
-    assertEquals(
-        "qits-pd-qits-platform-idp-0123abcd",
-        ContainerNames.of(
-            PdDeploymentTarget.PLATFORM,
-            "dev",
-            "qits-platform-idp",
-            "0123abcd-ffff-4000-8000-0000"));
+        ContainerNames.of("some-epic", "qits-gateway", "0123abcd-ffff-4000-8000-0000"));
   }
 
   @Test
-  void theWireAliasCarriesTheTierAndAPlatformServicesDoesNot() {
+  void containerNamesAreQUALIFIEDForTheApplicationsThatUsedToBeThePlane() {
+    // What replaced the second half of the test above, which held that a platform deployment's name
+    // DROPS the tier segment (`qits-pd-qits-platform-idp-…`). The plane is deleted, so a name that
+    // dropped it would be a name with nothing where the tier goes — and the plane's own applications
+    // are exactly the ones whose names move.
+    assertEquals(
+        "qits-pd-dev-qits-platform-idp-0123abcd",
+        ContainerNames.of("dev", "qits-platform-idp", "0123abcd-ffff-4000-8000-0000"));
+  }
+
+  @Test
+  void aNameWithNoTierSkipsTheSegmentRatherThanComposingADoubleDash() {
+    // The one shape left with no tier to name: the refusal row a mid-bootstrap install records
+    // before any environment is designated. `qits-pd--qits-gateway-…` would be the alternative.
+    assertEquals(
+        "qits-pd-qits-gateway-0123abcd",
+        ContainerNames.of(null, "qits-gateway", "0123abcd-ffff-4000-8000-0000"));
+  }
+
+  @Test
+  void theWireAliasCarriesTheTierForEveryService() {
     // What peers dial, and under swarm the service's own NAME. The qualifier is what lets two tiers
-    // hold one application's address on the shared flat network without colliding; a platform
-    // service is one instance for the whole platform and is reached by writing its bare name from
-    // any tier.
-    assertEquals(
-        "prod-qits-gateway",
-        PdNetworks.alias(PdDeploymentTarget.ENVIRONMENT, "prod", "qits-gateway"));
-    // ...and it stays bare now that the plane HAS a tier. This is the regression that would be a
-    // second service beside the one that was serving: swarm cannot rename a service, so an alias
-    // that started carrying `dev-` would create `dev-qits-platform-idp` and leave every peer
-    // dialling a name nothing answers to.
-    assertEquals(
-        "qits-platform-idp",
-        PdNetworks.alias(PdDeploymentTarget.PLATFORM, "dev", "qits-platform-idp"));
-    assertEquals("qits-platform-idp", PdNetworks.platformAlias("qits-platform-idp"));
+    // hold one application's address on the shared flat network without colliding.
+    assertEquals("prod-qits-gateway", PdNetworks.alias("prod", "qits-gateway"));
+    // ...including the applications that were the platform plane, which is the whole of this change
+    // and the one cutover in it. Their alias WAS bare, because a peer in any tier reached them by
+    // writing the bare name; swarm cannot rename a service, so the first deployment under this
+    // derivation creates `dev-qits-platform-idp` beside the `qits-platform-idp` that was serving.
+    // What makes that survivable is that the qualified name was granted as an extra network alias
+    // one release earlier, on every one of the nine.
+    assertEquals("dev-qits-platform-idp", PdNetworks.alias("dev", "qits-platform-idp"));
   }
 
   @Test

@@ -9,7 +9,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec.ResourceSpec;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdResource;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdResourceRepository;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -222,13 +221,25 @@ public class IdpClientProvisioningTest {
   }
 
   @Test
-  void thePlatformPlaneDerivesTheBareClientId() {
+  void theClientIdAndTheIdpAddressAreBOTHTierQualifiedNow() {
+    // What replaced `thePlatformPlaneDerivesTheBareClientId`. That test held that a platform-plane
+    // application's idp client id is the BARE application name and that the injected URL is
+    // `http://qits-platform-idp:8080/idp` — both of them the plane's un-tiered spelling, both derived
+    // through `PdNetworks.alias(PLATFORM, …)`. The plane is deleted, so the one derivation left
+    // answers `<tier>-<app>`, and the address a provisioned container is handed has to carry the tier
+    // or it resolves to nothing once qits-platform-idp's bare-named service is retired.
+    //
+    // The client id moving is a real cutover rather than a cosmetic one: qits-idp keys a service
+    // client by it, so the first deployment of a former platform application under this code creates
+    // a NEW client rather than finding the old one. That is the ordinary create arm and it is safe —
+    // the registry row is rewritten with the fresh secret in the same pass — but it is why the id is
+    // spelled in exactly one place.
     List<DeploymentDriver.ResourceBinding> bindings =
-        provisioning.ensureAll(
-            "idp-plat", "idp-tier", PdDeploymentTarget.PLATFORM, idpClient());
+        provisioning.ensureAll("idp-plat", "idp-tier", idpClient());
 
-    assertEquals(List.of("idp-plat"), idpProvisioner.createCalls(), "bare — no tier qualifier");
-    assertEquals("idp-plat", bindings.get(0).value("CLIENT_ID"));
-    assertEquals("http://qits-platform-idp:8080/idp", bindings.get(0).value("URL"));
+    assertEquals(
+        List.of("idp-tier-idp-plat"), idpProvisioner.createCalls(), "the tier is the qualifier");
+    assertEquals("idp-tier-idp-plat", bindings.get(0).value("CLIENT_ID"));
+    assertEquals("http://idp-tier-qits-platform-idp:8080/idp", bindings.get(0).value("URL"));
   }
 }

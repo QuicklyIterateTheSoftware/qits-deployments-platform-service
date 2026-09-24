@@ -12,7 +12,6 @@ import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.Deplo
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import io.quarkus.hibernate.orm.PersistenceUnit;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -120,26 +119,25 @@ public class PdSweepAdoptionPublishTest {
   }
 
   @Test
-  public void anAdoptedPlatformServiceAnnouncesItsTierAndKeepsItsBareUpstreamHost() {
+  public void anAdoptedFormerPlatformServiceAnnouncesItsTierAndItsQualifiedUpstreamHost() {
     // The self-update of a PLATFORM service, which is this component's own every single time, and
     // the two halves of what V8 changed about it — both read off the row by a sweep with no live
     // process that read the spec.
     //
     // The tier is announced, where a platform deployment used to announce null: the edge projects
     // its route table per environment, so an application it could not place was an application it
-    // could not route. And the upstream host is BARE, because the alias is the plane's address and
-    // does not take the tier — a sweep that rebuilt it from the row's environment would announce
-    // `sweep-pub-plane-qits-sweep-pub-plane`, a name docker's DNS answers for nobody.
+    // could not route.
+    //
+    // AND THE UPSTREAM HOST IS TIER-QUALIFIED, which is the half this change reverses. It used to be
+    // BARE here, because the alias was the plane's address and deliberately carried no tier; the
+    // plane is deleted, so the sweep rebuilds `<env>-<app>` from the row's own environment exactly as
+    // it does for every other adopted row — and that is the name the service answers to, because it
+    // IS the service's name.
     String environmentId = createEnvironment("sweep-pub-plane");
     specs.scriptFailure("qits-sweep-pub-plane", "the git host must not be asked");
     String handedOff =
         deployment(
-            "qits-sweep-pub-plane",
-            environmentId,
-            PdDeploymentTarget.PLATFORM,
-            "run-sweep-pub-plane",
-            null,
-            "new-plane");
+            "qits-sweep-pub-plane", environmentId, "run-sweep-pub-plane", null, "new-plane");
     routing(handedOff, "/plane", 8080, "plane", "platform.Plane:1");
     driver.scriptRunningImage("new-plane", image(SHA));
 
@@ -151,8 +149,10 @@ public class PdSweepAdoptionPublishTest {
     assertTrue(
         active.payload.contains("\"environmentName\":\"sweep-pub-plane\""), active.payload);
     assertTrue(
-        active.payload.contains("\"upstreamHost\":\"qits-sweep-pub-plane\""),
-        "the plane's address is bare whichever tier it is deployed into: " + active.payload);
+        active.payload.contains("\"upstreamHost\":\"sweep-pub-plane-qits-sweep-pub-plane\""),
+        "the address is the tier-qualified one, which is what the service answers to now — it was"
+            + " BARE while the plane's alias deliberately carried no tier: "
+            + active.payload);
   }
 
   @Test
@@ -276,7 +276,6 @@ public class PdSweepAdoptionPublishTest {
   private static DeploymentSpec spec(
       List<String> routes, int upstreamPort, List<NavigationEntry> navigationEntries) {
     return new DeploymentSpec(
-        PdDeploymentTarget.ENVIRONMENT,
         false,
         null,
         null,
@@ -313,26 +312,13 @@ public class PdSweepAdoptionPublishTest {
   /**
    * A row in the state a handed-off self-update leaves behind: {@code STARTING}, named, and with
    * nobody left to record it.
+   *
+   * <p>There were two of these, one stating the tier and one stating the PLANE beside it. The plane
+   * is deleted, so a place is a tier and one arm says everything.
    */
   private String deployment(
       String applicationName,
       String environmentId,
-      String runId,
-      UUID cause,
-      String containerName) {
-    return deployment(
-        applicationName,
-        environmentId,
-        environmentId == null ? PdDeploymentTarget.PLATFORM : PdDeploymentTarget.ENVIRONMENT,
-        runId,
-        cause,
-        containerName);
-  }
-
-  private String deployment(
-      String applicationName,
-      String environmentId,
-      PdDeploymentTarget target,
       String runId,
       UUID cause,
       String containerName) {
@@ -344,7 +330,6 @@ public class PdSweepAdoptionPublishTest {
               row.id = id;
               row.applicationName = applicationName;
               row.environmentId = environmentId;
-              row.deploymentTarget = target;
               row.commitSha = SHA;
               row.runId = runId;
               row.causationId = cause;

@@ -1,12 +1,10 @@
 package eu.wohlben.qits.platform.deployments.environments.control;
 
 import eu.wohlben.qits.db.DbRetry;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdEnvironment;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdService;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdServiceLink;
 import eu.wohlben.qits.platform.deployments.environments.error.BadRequestException;
-import eu.wohlben.qits.platform.deployments.environments.error.ConflictException;
 import eu.wohlben.qits.platform.deployments.environments.error.NotFoundException;
 import eu.wohlben.qits.platform.deployments.environments.persistence.PdEnvironmentRepository;
 import eu.wohlben.qits.platform.deployments.environments.persistence.PdServiceLinkRepository;
@@ -24,7 +22,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
 
 /**
  * The catalogue of services and the environments they are linked into — the topology's other half,
@@ -36,22 +33,17 @@ import org.jboss.logging.Logger;
  * knows everything about the service, so a merge could only ever preserve something the file has
  * stopped saying.
  *
- * <p>Three rules live here and nowhere else:
+ * <p><b>One rule lives here and nowhere else: the link set is replaced, never merged.</b> A
+ * service's links are exactly the environments the upsert names.
  *
- * <ul>
- *   <li><b>The link set is replaced, never merged.</b> An environment service's links are exactly
- *       the environments the upsert names.
- *   <li><b>A platform service carries no links.</b> An upsert that gives one links is a 400, not a
- *       silent drop: the caller and this service disagree about what the row means, and storing
- *       either reading would hide it.
- *   <li><b>The target flip is one-way.</b> environment → platform converts, dropping the links;
- *       platform → environment is refused with the remediation in the message. See {@link #upsert}.
- * </ul>
+ * <p><b>The other two rules went with the platform plane.</b> They were "a platform service carries
+ * no links" (a 400) and "the plane flip is one-way" (a 409 backwards), and both said something about
+ * a column this catalogue no longer has. A service is registered with links to the environments it
+ * runs in, always — <b>including the nine that used to be the plane</b> — so there is no second
+ * shape of row to validate against, nothing to convert and nothing to refuse.
  */
 @ApplicationScoped
 public class ServiceCatalog {
-
-  private static final Logger LOG = Logger.getLogger(ServiceCatalog.class);
 
   @Inject PdServiceRepository services;
   @Inject PdServiceLinkRepository links;
@@ -67,19 +59,17 @@ public class ServiceCatalog {
 
   /**
    * What an upsert states. {@code branch} is <b>vestigial</b> — nothing decides a deployment on it
-   * any more, both planes deploying off {@code environment/<name>} — and derived registration sends
-   * null. It is still stored beside {@code PLATFORM} and still dropped beside {@code ENVIRONMENT},
-   * so an operator's write over the API round-trips as it always did. See {@code PdService.branch}.
+   * any more — and derived registration sends null. It is stored as it arrives, so an operator's
+   * write over the API round-trips as it always did. See {@code PdService.branch}.
    */
   public record Upsert(
       String name,
-      PdDeploymentTarget target,
       String branch,
       boolean availableOnEnv,
       String healthPath,
       List<String> environmentIds) {}
 
-  /** A service together with the environments it is linked into (empty for a platform service). */
+  /** A service together with the environments it is linked into. */
   public record LinkedService(PdService service, List<String> environmentIds) {}
 
   /**
@@ -91,8 +81,8 @@ public class ServiceCatalog {
 
   /**
    * One service as the flat read surface reports it: a row flattened into one tier. {@code
-   * environmentId} and {@code environmentName} are null exactly for a platform service, and for an
-   * environment service the catalogue currently links nowhere.
+   * environmentId} and {@code environmentName} are null exactly for a service the catalogue links
+   * nowhere — a row registered before this release, or one whose links an operator emptied.
    */
   public record ApplicationView(PdService service, String environmentId, String environmentName) {}
 
@@ -106,23 +96,12 @@ public class ServiceCatalog {
    * lock is the belt for every other caller; it costs nothing, since an upsert is three short
    * statements against one local database.
    *
-   * <p>The flip between planes is asymmetric on purpose:
+   * <p><b>There is one shape of row and therefore no flip to arbitrate.</b> This method used to
+   * convert a service onto the platform plane and refuse the way back with a 409; the plane is gone,
+   * so an upsert states a link set and the row takes it.
    *
-   * <ul>
-   *   <li><b>environment → platform converts.</b> The links are dropped and the row keeps its
-   *       identity, which is exactly the one-time migration a service goes through when it becomes
-   *       cross-environment.
-   *   <li><b>platform → environment is a 409.</b> There is no answer to which environments a
-   *       service that was everywhere should now be in — the upsert states a set, but a platform
-   *       service became one by having its old set thrown away, and reinstating a guess would
-   *       deploy a second copy beside the running one. The message names the remediation, and an
-   *       operator does it deliberately: delete the service, then let the next green build register
-   *       it afresh.
-   * </ul>
-   *
-   * @throws BadRequestException on a failed validation, or on a platform service given links
+   * @throws BadRequestException on a failed validation
    * @throws NotFoundException if an environment id names no environment
-   * @throws ConflictException on a platform → environment flip
    */
   public UpsertResult upsert(Upsert request) {
     // The REST door. No hop stands between the request thread and the insert below, so the
@@ -161,26 +140,15 @@ public class ServiceCatalog {
    */
   public synchronized UpsertResult upsert(Upsert request, UUID causationId) {
     String name = PdIdentifiers.requireName(request.name(), "service name");
-    PdDeploymentTarget target = request.target();
-    if (target == null) {
-      throw new BadRequestException("Missing deploymentTarget — ENVIRONMENT or PLATFORM");
-    }
     List<String> requestedEnvironments =
         request.environmentIds() == null ? List.of() : request.environmentIds();
     String healthPath =
         isBlank(request.healthPath()) ? null : PdIdentifiers.requireHealthPath(request.healthPath());
-
-    if (target == PdDeploymentTarget.PLATFORM && !requestedEnvironments.isEmpty()) {
-      throw new BadRequestException(
-          "A platform service carries no environment links — it is present in every environment by"
-              + " having none. Send environmentIds only with deploymentTarget ENVIRONMENT.");
-    }
-    // Vestigial, and kept only so an operator's write round-trips: a branch stated beside
-    // ENVIRONMENT is accepted and dropped rather than refused.
+    // Vestigial, and kept only so an operator's write round-trips: nothing decides a deployment on
+    // it. It used to be stored beside PLATFORM alone and dropped otherwise, which was the plane
+    // being asked a question about a column it had no opinion on.
     String branch =
-        target == PdDeploymentTarget.PLATFORM && !isBlank(request.branch())
-            ? PdIdentifiers.requireBranch(request.branch())
-            : null;
+        isBlank(request.branch()) ? null : PdIdentifiers.requireBranch(request.branch());
 
     // Deduplicated in request order: naming an environment twice states the same link twice, which
     // is a caller's redundancy rather than an error, and the unique constraint would otherwise turn
@@ -191,19 +159,6 @@ public class ServiceCatalog {
         .call(
             () -> {
               PdService service = services.findByName(name).orElse(null);
-              if (service != null
-                  && service.deploymentTarget == PdDeploymentTarget.PLATFORM
-                  && target == PdDeploymentTarget.ENVIRONMENT) {
-                LOG.errorf("Refused to flip platform service '%s' back to an environment service", name);
-                throw new ConflictException(
-                    "Service '"
-                        + name
-                        + "' is a platform service and cannot become an environment service. A"
-                        + " platform service has no environments to go back to, and a guessed set"
-                        + " would deploy a second copy beside the running one. Remediation: remove"
-                        + " this service deliberately, and let the next green build register it"
-                        + " afresh.");
-              }
               boolean created = service == null;
               if (created) {
                 service = new PdService();
@@ -216,17 +171,12 @@ public class ServiceCatalog {
                 service.causationId = causationId;
                 service.createdAt = Instant.now();
                 services.persist(service);
-              } else if (service.deploymentTarget == PdDeploymentTarget.ENVIRONMENT
-                  && target == PdDeploymentTarget.PLATFORM) {
-                LOG.infof("Converting '%s' to a platform service — dropping its environment links", name);
               }
-              service.deploymentTarget = target;
               service.branch = branch;
               service.availableOnEnv = request.availableOnEnv();
               service.healthPath = healthPath;
 
-              // Replace, never merge. A converting service lands here with an empty set, which is
-              // what drops its links.
+              // Replace, never merge.
               links.deleteByService(service.id);
               for (String environmentId : environmentIds) {
                 PdEnvironment environment =
@@ -245,7 +195,7 @@ public class ServiceCatalog {
             });
   }
 
-  /** Remove a service and its links. The deliberate act the refused flip's message points at. */
+  /** Remove a service and its links — the operator's deliberate act on a derived catalogue. */
   public void delete(String name) {
     QuarkusTransaction.requiringNew()
         .run(
@@ -301,13 +251,14 @@ public class ServiceCatalog {
   }
 
   /**
-   * The pull query: every service present in one environment — the ones linked into it, then every
-   * platform service.
+   * The pull query: every service present in one environment — which is exactly the ones linked
+   * into it.
    *
-   * <p>The composition <b>is</b> the answer, not a convenience. A reader that took the links alone
-   * would leave qits-idp and this component out of the environment they are most needed in, and a
-   * reader that had to add the platform services itself would be a second place the rule lives.
-   * They come last so the list reads as "this tier's own, then the platform's".
+   * <p><b>It was a composition and is one query now.</b> The links used to be half the answer: every
+   * platform service was appended, because the plane's way of saying "present everywhere" was to
+   * carry no link at all. The plane is deleted and qits-idp and this component are linked into the
+   * tier they run in like everything else, so the second half described nothing and reading it would
+   * be a rule with no rows behind it.
    *
    * @throws NotFoundException if the environment does not exist
    */
@@ -319,19 +270,16 @@ public class ServiceCatalog {
                   .findByIdOptional(environmentId)
                   .orElseThrow(
                       () -> new NotFoundException("No such environment: " + environmentId));
-              List<PdService> present = new ArrayList<>(links.listServicesOf(environmentId));
-              present.addAll(services.listPlatformServices());
-              return List.copyOf(present);
+              return List.copyOf(links.listServicesOf(environmentId));
             });
   }
 
   /**
-   * The services of one environment as the environment aggregate reports them: the tier's own,
-   * <b>without</b> the platform ones.
+   * The services of one environment as the environment aggregate reports them.
    *
-   * <p>{@link #linksOf} returns both — a reconciliation needs the platform services too — but this
-   * is the environment aggregate, and a platform service belongs to no tier. Those are reached
-   * through the flat listing, which is why that listing exists.
+   * <p>It answers the same rows as {@link #linksOf} now and is kept as a separate method because the
+   * two have different shapes and different readers — an aggregate carries the tier's name with each
+   * row, a reconciliation does not.
    */
   public List<ApplicationView> applicationsOf(PdEnvironment environment) {
     return QuarkusTransaction.joiningExisting()
@@ -346,12 +294,12 @@ public class ServiceCatalog {
   }
 
   /**
-   * Every application this component deploys, flat: one row per environment link, one row per
-   * platform service.
+   * Every application this component deploys, flat: one row per environment link.
    *
-   * <p>Flat because a platform service belongs to no environment — reading the catalogue through
-   * the environments would leave qits-idp and this component out of it, which are the two a reader
-   * most wants to find.
+   * <p>A service the catalogue links nowhere still gets one row, with no tier on it. That used to be
+   * the platform plane's shape and is now the honest report of a service that runs nowhere — a row
+   * registered before the plane was deleted, or one whose links an operator emptied — which is a
+   * thing a reader has to be able to see rather than a row to hide.
    */
   public List<ApplicationView> allApplications() {
     return QuarkusTransaction.joiningExisting()
@@ -363,8 +311,7 @@ public class ServiceCatalog {
               }
               List<ApplicationView> views = new ArrayList<>();
               for (LinkedService linked : list()) {
-                if (linked.service().deploymentTarget == PdDeploymentTarget.PLATFORM
-                    || linked.environmentIds().isEmpty()) {
+                if (linked.environmentIds().isEmpty()) {
                   views.add(new ApplicationView(linked.service(), null, null));
                   continue;
                 }

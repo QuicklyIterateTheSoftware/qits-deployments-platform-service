@@ -3,7 +3,6 @@ package eu.wohlben.qits.platform.deployments.api;
 import eu.wohlben.qits.auth.MachineAuth;
 import eu.wohlben.qits.platform.deployments.environments.control.ServiceCatalog;
 import eu.wohlben.qits.platform.deployments.environments.dto.PdServiceDto;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.mapper.EnvironmentMapper;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -55,18 +54,18 @@ public class PdServiceController {
    * The whole of a service.
    *
    * <p>{@code environmentIds} <b>replaces</b> the link set — it is not a delta, and an empty or
-   * absent list on an environment service unlinks it everywhere. On a {@code PLATFORM} service it
-   * must be absent or empty: a platform service is present in every environment by having no links,
-   * so naming some would say the opposite of what it means, and the answer is a 400 rather than a
-   * silent drop.
+   * absent list unlinks the service everywhere, which since the platform plane was deleted means it
+   * runs nowhere rather than everywhere.
    *
-   * <p>{@code branch} is <b>vestigial</b>: nothing decides a deployment on it any more, since both
-   * planes deploy off {@code environment/<name>}. It is still accepted and still stored beside
-   * {@code PLATFORM}, so an operator's write round-trips; derived registration writes null. See
+   * <p><b>{@code deploymentTarget} is gone from this payload.</b> An older sender's value
+   * deserializes into nothing rather than failing the write, which is the only compatibility owed —
+   * the same answer {@code branch} got when {@code pd_environment.branch} left the create payload.
+   *
+   * <p>{@code branch} is <b>vestigial</b>: nothing decides a deployment on it any more. It is still
+   * accepted and stored so an operator's write round-trips; derived registration writes null. See
    * {@code PdService.branch}.
    */
   public record UpsertServiceRequest(
-      PdDeploymentTarget deploymentTarget,
       String branch,
       boolean availableOnEnv,
       String healthPath,
@@ -79,36 +78,28 @@ public class PdServiceController {
   /**
    * Register or update one service, whole. 201 the first time a name is seen, 200 afterwards.
    *
-   * <p>A flip between planes is asymmetric: {@code ENVIRONMENT} → {@code PLATFORM} converts and
-   * drops the links, which is the one-time migration a service goes through when it becomes
-   * cross-environment; {@code PLATFORM} → {@code ENVIRONMENT} is refused with the remediation in
-   * the message, because a platform service has no set of environments to go back to and a guessed
-   * one would start a second copy beside the running instance.
+   * <p><b>There is one shape of service and therefore no flip to arbitrate.</b> This door used to
+   * convert a service onto the platform plane (dropping its links) and refuse the way back with a
+   * 409; the plane is deleted, so an upsert states a link set and the row takes it.
    */
   @PUT
   @Path("/{name}")
   @Operation(summary = "Register or update one service, replacing its environment links")
   @APIResponse(responseCode = "200", description = "The updated service")
   @APIResponse(responseCode = "201", description = "The newly registered service")
-  @APIResponse(
-      responseCode = "400",
-      description = "Validation failed, or a platform service was given environment links")
+  @APIResponse(responseCode = "400", description = "Validation failed")
   @APIResponse(responseCode = "404", description = "An environmentId names no environment")
-  @APIResponse(
-      responseCode = "409",
-      description = "A platform service cannot become an environment service")
   @APIResponse(responseCode = "401", description = "Gate on and no machine token presented")
   @APIResponse(responseCode = "403", description = "Gate on and the token is for another service")
   @jakarta.annotation.security.RolesAllowed({"qits:system"})
   public Response upsert(@PathParam("name") String name, UpsertServiceRequest request) {
     machineAuth.require();
     UpsertServiceRequest body =
-        request == null ? new UpsertServiceRequest(null, null, false, null, null) : request;
+        request == null ? new UpsertServiceRequest(null, false, null, null) : request;
     ServiceCatalog.UpsertResult result =
         catalog.upsert(
             new ServiceCatalog.Upsert(
                 name,
-                body.deploymentTarget(),
                 body.branch(),
                 body.availableOnEnv(),
                 body.healthPath(),
@@ -122,9 +113,9 @@ public class PdServiceController {
   /**
    * Every service, oldest first, each flattened with the environments it is linked into.
    *
-   * <p>Flat because a platform service belongs to no environment: reading the catalogue through the
-   * environments would leave qits-platform-idp and this component out of it, which are the two a
-   * reader most wants to find.
+   * <p>Flat because the listing has one entry per (service, tier) and a service the catalogue links
+   * nowhere still has to appear — a row nothing has registered into a tier is exactly the row a
+   * reader goes looking for.
    *
    * <p>Held through a short database outage rather than answering 500 — see {@link PdReadPatience}.
    * The write above is deliberately not: a retried insert whose commit the connection died before
@@ -142,7 +133,7 @@ public class PdServiceController {
   }
 
   /**
-   * Remove a service and its links. This is the deliberate act the refused platform → environment
+   * Remove a service and its links. This is the deliberate act the refused platform-to-environment
    * flip points at: remove the row, then let the next green build register the service afresh in
    * the shape its repository now declares.
    *

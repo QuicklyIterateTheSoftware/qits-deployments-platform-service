@@ -115,8 +115,6 @@ components:
           type: string
         environmentName:
           type: string
-        target:
-          $ref: "#/components/schemas/PdDeploymentTarget"
         availableOnEnv:
           type: boolean
         branch:
@@ -196,11 +194,6 @@ components:
       - SCALED_TO_ZERO
       - DECLARATION_REFUSED
       - DECOMMISSIONED
-    PdDeploymentTarget:
-      type: string
-      enum:
-      - ENVIRONMENT
-      - PLATFORM
     PdEnvironmentDto:
       type: object
       properties:
@@ -225,8 +218,6 @@ components:
           type: string
         name:
           type: string
-        target:
-          $ref: "#/components/schemas/PdDeploymentTarget"
         availableOnEnv:
           type: boolean
         healthPath:
@@ -252,8 +243,6 @@ components:
           type: string
         name:
           type: string
-        target:
-          $ref: "#/components/schemas/PdDeploymentTarget"
         branch:
           type: string
         availableOnEnv:
@@ -299,8 +288,6 @@ components:
     UpsertServiceRequest:
       type: object
       properties:
-        deploymentTarget:
-          $ref: "#/components/schemas/PdDeploymentTarget"
         branch:
           type: string
         availableOnEnv:
@@ -511,8 +498,7 @@ paths:
         - qits:system
   /platform-deployments/api/deployments:
     get:
-      summary: "One plane's recorded deployments, newest-first — an environment id,\
-        \ or 'platform'"
+      summary: "One tier's recorded deployments, newest-first"
       parameters:
       - name: environmentId
         in: query
@@ -766,12 +752,9 @@ paths:
         "201":
           description: The newly registered service
         "400":
-          description: "Validation failed, or a platform service was given environment\
-            \ links"
+          description: Validation failed
         "404":
           description: An environmentId names no environment
-        "409":
-          description: A platform service cannot become an environment service
         "401":
           description: Gate on and no machine token presented
         "403":

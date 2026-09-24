@@ -14,7 +14,6 @@ import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
 import eu.wohlben.qits.platform.deployments.environments.control.ServiceCatalog;
 import eu.wohlben.qits.platform.deployments.environments.control.ServiceCatalog.LinkedService;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.environments.entity.PdEnvironment;
 import eu.wohlben.qits.platform.deployments.events.DeploymentActive;
 import eu.wohlben.qits.platform.deployments.events.DeploymentEndpoint;
@@ -59,17 +58,16 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Registration is derived, and it is a local write.</b> Nothing declares an application over
  * the API. A release carries this component to {@code .config/qits/deployments.yml} in the
- * repository at that tag, and the service row is created or brought up to date from it: an {@code
- * environment} target is linked into the entry tier, a {@code platform} target keeps no links at
- * all and deploys once for the whole platform. A repository with no such file gets the defaults and
- * behaves exactly as it did before the file existed.
+ * repository at that tag, and the service row is created or brought up to date from it: the service
+ * is linked into the entry tier, and that link is the whole of what says where it runs. A repository
+ * with no such file gets the defaults and behaves exactly as it did before the file existed.
  *
- * <p><b>Both planes deploy INTO a tier, and the tier is the same one</b> — {@code
- * pd_environment.platform}, the designated entry environment. What makes the platform plane the
- * platform plane is stated by the spec ({@code deployment_target: platform}) and carried as {@link
- * Target#target()}, never inferred from a missing environment: the plane's deployments name the
- * main tier on the row, in the labels, in {@code QITS_ENVIRONMENT} and on all four events, and what
- * stays different is the <b>bare wire alias</b> and a membership in every environment's networks.
+ * <p><b>There is ONE plane and one shape of deployment.</b> A release lands in {@code
+ * pd_environment.platform}, the designated entry environment, and everything about the deployment
+ * names it: the row, the labels, {@code QITS_ENVIRONMENT}, the wire alias {@code <env>-<app>}, the
+ * container name and all four events. The platform plane — one instance for the whole platform,
+ * carrying no link, reached under its bare name from every tier — is deleted, and with it the two
+ * register arms, the conversion between them and everything that asked which plane a row was on.
  *
  * <p><b>This is what the merge bought.</b> Registration and resolution used to be HTTP calls onto
  * qits-serviceregistry: a port, a {@code java.net.http} implementation, a stub server in the suite,
@@ -279,32 +277,6 @@ public class DeployService implements ReleaseAnnouncements {
    * retries ever overlap: they cannot, the worker is single-threaded.
    */
   private final Map<String, SpecRetry> specRetries = new ConcurrentHashMap<>();
-
-  /**
-   * The old {@code <env>-<app>} services a PLANE CONVERSION stranded, keyed by application name —
-   * one distinct entry per tier the application was serving in, taken from the {@code
-   * container_name} of each row {@link #registerPlatform} decommissioned (under swarm that column
-   * IS the service's name). Written when the rows move onto the plane, consumed by the first
-   * platform deployment of that application that reports {@code ACTIVE}.
-   *
-   * <p><b>It waits for a healthy successor, and that is the whole reason it is a map rather than a
-   * teardown at conversion time.</b> Retiring the tier services while the rows move would leave the
-   * application with NOTHING serving it for as long as the first platform deployment takes — and
-   * with nothing at all if that deployment fails, which is a conversion turning a working
-   * application off. Deferred, a failed first attempt leaves the old services running and the entry
-   * in place for the next deployment that succeeds.
-   *
-   * <p><b>In memory on purpose, and it is the {@link #specRetries} trade.</b> A process that dies
-   * holding an entry leaves the old services running, which is the state that was there before this
-   * existed — an operator's {@code docker service rm} from an admin workspace, which is exactly what
-   * {@code dev-qits-configuration} needed on 2026-09-07 after qits-configuration's own flip. The
-   * INFO line written at conversion and the WARN written on a refusal are what make that findable.
-   *
-   * <p>The deployer's own flip is not a case this can serve and does not need to be: that
-   * deployment is {@code HANDED_OFF} to the orchestrator and settled by the successor's startup
-   * sweep, in a process whose map is empty. README's hand step for the plane flip stays what it is.
-   */
-  private final Map<String, Set<String>> owedTierRetirements = new ConcurrentHashMap<>();
 
   /**
    * The observation tick — a bare daemon thread, the worker's own shape, rather than the
@@ -564,6 +536,10 @@ public class DeployService implements ReleaseAnnouncements {
    * <p>{@code upstreamPort} is the snapshot's sentinel: null is a row queued before V3 added the
    * columns, not a row without a port. See {@link #adoptedSnapshot}.
    *
+   * <p><b>It carried the row's PLANE and does not any more.</b> The alias this sweep rebuilds for an
+   * adopted deployment's routes used to be bare on the platform plane and qualified in a tier; it is
+   * qualified always, so the tier the row already carries is the whole of what the rebuild needs.
+   *
    * <p>The last two are V3's retired pair, carried for one reason: a row queued before V4 has a
    * label and no entries, and the sweep announces it as {@code system.<label>} rather than as
    * nothing. Nothing writes them.
@@ -572,7 +548,6 @@ public class DeployService implements ReleaseAnnouncements {
       String deploymentId,
       String applicationName,
       String environmentId,
-      PdDeploymentTarget target,
       PdDeploymentStatus status,
       String containerName,
       String imageTag,
@@ -610,10 +585,6 @@ public class DeployService implements ReleaseAnnouncements {
                     row.id,
                     row.applicationName,
                     row.environmentId,
-                    // The plane, carried out with the tier: the alias this sweep rebuilds for an
-                    // adopted deployment's routes is bare on the platform plane and qualified in a
-                    // tier, and both kinds of row name a tier now.
-                    row.deploymentTarget,
                     row.status,
                     row.containerName,
                     row.imageTag(),
@@ -783,7 +754,7 @@ public class DeployService implements ReleaseAnnouncements {
     return new Snapshot(
         resolveEndpoints(
             splitRoutes(row.routes()),
-            PdNetworks.alias(row.target(), environmentName, row.applicationName()),
+            PdNetworks.alias(environmentName, row.applicationName()),
             row.upstreamPort()),
         row.browserHost(),
         row.apiDocs(),
@@ -831,7 +802,7 @@ public class DeployService implements ReleaseAnnouncements {
         return new Snapshot(
             resolveEndpoints(
                 spec.routes(),
-                PdNetworks.alias(row.target(), environmentName, row.applicationName()),
+                PdNetworks.alias(environmentName, row.applicationName()),
                 spec.upstreamPort()),
             browserHost(row.applicationName(), spec),
             spec.apiDocs(),
@@ -1219,9 +1190,13 @@ public class DeployService implements ReleaseAnnouncements {
   }
 
   /**
-   * One place this build deploys to: one application in one tier, or the platform plane. Resolved
-   * before anything is queued and carried by value from there on — the docker work must not need a
-   * second query to know where it is going.
+   * One place this build deploys to: one application in one tier. Resolved before anything is queued
+   * and carried by value from there on — the docker work must not need a second query to know where
+   * it is going.
+   *
+   * <p><b>It carried a {@code target} and does not any more.</b> The field said which plane, and the
+   * plane decided three things — the bare wire alias, a membership in every tier's networks, and a
+   * {@code platform:<name>} read-surface key. All three are gone, so a place is a tier.
    *
    * <p>{@code healthCmd}, {@code resources}, routing and the orchestrator options are the
    * spec's, and are <b>the only fields here no row holds</b>. They need none: the spec is read
@@ -1236,7 +1211,6 @@ public class DeployService implements ReleaseAnnouncements {
       String environmentId,
       String environmentName,
       String bundleNetwork,
-      PdDeploymentTarget target,
       boolean availableOnEnv,
       String healthPath,
       String healthCmd,
@@ -1455,7 +1429,7 @@ public class DeployService implements ReleaseAnnouncements {
         // where that version lands. The plane does reach the store, because a platform-plane
         // declaration resolves against the platform's own overrides — and every row of one event
         // shares it, which is what makes the spec's own target the honest thing to send.
-        declarationSeed.seed(applicationName, version, spec.target(), declaration.yaml());
+        declarationSeed.seed(applicationName, version, declaration.yaml());
       } catch (DeclarationRefused refused) {
         // The registration-failure path's exact shape: every queued row is settled with the one
         // sentence that says why, and nothing is executed. The rows already exist, which is what
@@ -1862,7 +1836,7 @@ public class DeployService implements ReleaseAnnouncements {
    *
    * <p><b>Empty is a real answer</b>, not only a fresh-database one: an install can be mid-bootstrap
    * with no tier designated yet, and a release then registers nothing and deploys nothing rather
-   * than picking a tier at random. That is the same answer {@code registerPlatform} always gave.
+   * than picking a tier at random. That is the same answer both retired register arms gave.
    *
    * <p><b>It is the platform plane's tier too</b>, and that is what makes it one question rather
    * than two. A platform service is deployed INTO the environment a release enters at — same row,
@@ -1884,27 +1858,22 @@ public class DeployService implements ReleaseAnnouncements {
 
   /**
    * Bring the catalogue up to date with what the repository declares, and answer where to deploy.
-   * The whole of derived registration.
+   * The whole of derived registration, and it is <b>one arm</b>.
    *
-   * <p><b>The plane is asked of the CATALOGUE first, and that is the 2026-09-23 incident's fix.</b>
-   * A registration is now the only authority left on which plane an already-registered service is
-   * on, because the FILE can no longer state one: {@code deployment_target} is retired — accepted
-   * and ignored — so every spec a parse produces says {@code ENVIRONMENT}, the plane's own services
-   * included. While this routed on the spec alone, the environment arm was handed all nine platform
-   * services and refused each of them for asking to go back; from release 2026.923.142928 nothing on
-   * the plane could deploy, including this component's own next version, so the running deployer
-   * refused the release that fixed it. A service the catalogue holds as {@link
-   * PdDeploymentTarget#PLATFORM} therefore takes the platform arm whatever the spec says, and it
-   * will keep taking it until the plane itself is deleted.
+   * <p><b>It was two, and they are collapsed because the plane is deleted.</b> {@code
+   * registerInEnvironments} linked a service into the entry tier; {@code registerPlatform} dropped
+   * its links, moved its deployment history onto the plane and owed the stranded {@code <env>-<app>}
+   * services a retirement. There is one kind of service now, so there is one arm, no conversion, and
+   * nothing to route between — including the catalogue read that decided the routing, which was the
+   * 2026-09-23 incident's fix and superseded by this change. {@code alreadyRegistered} keeps its own
+   * catalogue read: that one answers where to record a failure, which is a different question.
    *
-   * <p><b>The spec's own {@code PLATFORM} stays an additional trigger, and it is not dead code.</b>
-   * It is no longer producible from a file, but it is the CONVERSION's trigger — an environment
-   * application becoming a platform service — and that is the one direction with something to
-   * decide: there is no catalogue row saying {@code PLATFORM} yet, so nothing but the spec can ask
-   * for the move. It is reachable in-process and from the suite (the conversion tests construct a
-   * {@code DeploymentSpec(PLATFORM, …)} directly), and dropping it would delete the conversion
-   * rather than tidy up an unused arm. The plane is what goes, later and deliberately; nothing here
-   * goes with it early.
+   * <p>The link set written is the <b>union</b> of what the catalogue already holds and the entry
+   * tier this release lands in. A release entering dev says nothing about whether the service also
+   * belongs in preprod, and the upsert replaces the whole set — so sending only the entry tier
+   * would silently unlink every other tier a promotion has already reached. <b>It is also what
+   * carries the nine that were the plane</b>: V13 linked each of them into the designated tier, so
+   * the union reads that link back and states it again rather than emptying it.
    */
   private List<Target> register(
       String applicationName, DeploymentSpec spec, UUID causationId) {
@@ -1915,53 +1884,13 @@ public class DeployService implements ReleaseAnnouncements {
       LOG.warnf("%s cannot be an application name, so nothing was registered", applicationName);
       return List.of();
     }
-    Optional<LinkedService> known = findService(applicationName);
-    boolean registeredAsPlatform =
-        known.filter(s -> s.service().deploymentTarget == PdDeploymentTarget.PLATFORM).isPresent();
-    return registeredAsPlatform || spec.target() == PdDeploymentTarget.PLATFORM
-        ? registerPlatform(applicationName, spec, known, causationId)
-        : registerInEnvironments(applicationName, spec, known, causationId);
-  }
-
-  /**
-   * The environment half, and it is now reached only by applications that ARE on this plane —
-   * {@link #register} routes a catalogue-{@code PLATFORM} service to the other arm before this is
-   * called.
-   *
-   * <p><b>This used to refuse such a service on the record, and the refusal is gone because it
-   * became unexpressible rather than because it became wrong.</b> Going back is still not a
-   * conversion, and every reason it was not is untouched: the forward direction has exactly one
-   * destination to move the history to and retires the tier services those rows named once the
-   * plane is serving ({@link #registerPlatform}, {@link #retireConvertedTierServices}), while
-   * backwards has as many destinations as there are tiers the service is linked into, no answer to
-   * which of them inherits the deployment history, a running service under the plane's BARE name
-   * that an environment deployment would not even find — it would create {@code <env>-<app>} beside
-   * it and leave a row saying {@code ACTIVE} about a container nothing replaced — and no symmetric
-   * retirement to offer, since the plane's service is the one thing that IS serving. What changed is
-   * that a repository can no longer ASK for it: {@code deployment_target} is retired in the parser,
-   * so a spec saying {@code ENVIRONMENT} about a platform service is the parser's only possible
-   * answer rather than a statement anybody made. The catalogue decides the plane, so there is
-   * nothing left here to refuse — and refusing it anyway is precisely what stopped all nine platform
-   * services deploying on 2026-09-23. <b>Do not restore the branch.</b> If going back is ever wanted
-   * it is a deliberate door of its own (retire the platform service, then deploy), not a spec value
-   * read out of a file that no longer carries one.
-   *
-   * <p>The link set written is the <b>union</b> of what the catalogue already holds and the entry
-   * tier this release lands in. A release entering dev says nothing about whether the service also
-   * belongs in preprod, and the upsert replaces the whole set — so sending only the entry tier
-   * would silently unlink every other tier a promotion has already reached.
-   */
-  private List<Target> registerInEnvironments(
-      String applicationName,
-      DeploymentSpec spec,
-      Optional<LinkedService> known,
-      UUID causationId) {
     List<PdEnvironment> matching = entryTiers();
     if (matching.isEmpty()) {
       // No tier is designated as the platform's entry tier — a mid-bootstrap install. Nothing to
-      // link into, so nothing is written.
+      // link into, so nothing is written. That is the answer both register arms always gave.
       return List.of();
     }
+    Optional<LinkedService> known = findService(applicationName);
 
     Set<String> links =
         new LinkedHashSet<>(known.map(LinkedService::environmentIds).orElse(List.of()));
@@ -1980,8 +1909,7 @@ public class DeployService implements ReleaseAnnouncements {
     catalog.upsert(
         new ServiceCatalog.Upsert(
             applicationName,
-            PdDeploymentTarget.ENVIRONMENT,
-            null, // PdService.branch is vestigial; nothing decides a deployment on it
+            null, // PdService.branch is vestigial; a release names a tag
             spec.availableOnEnv(),
             healthPath,
             List.copyOf(links)),
@@ -1998,7 +1926,6 @@ public class DeployService implements ReleaseAnnouncements {
               environment.id,
               environment.name,
               environment.network,
-              PdDeploymentTarget.ENVIRONMENT,
               spec.availableOnEnv(),
               healthPath,
               spec.healthCmd(),
@@ -2013,148 +1940,6 @@ public class DeployService implements ReleaseAnnouncements {
               spec.apiDocs()));
     }
     return List.copyOf(targets);
-  }
-
-  /**
-   * The platform half, including the conversion a service goes through when it becomes
-   * cross-environment: a repository that was an environment application until this release had links
-   * in every environment it was in, and those links go rather than sit beside the platform row. Its
-   * deployment history is <b>moved onto the platform plane</b> — the active rows decommissioned,
-   * since the application they described is about to be replaced from a different plane. Moving
-   * rather than deleting is what keeps an in-flight self-update row alive across the component's own
-   * conversion.
-   *
-   * <p><b>And the RUNTIME half follows the rows, which it did not for a release.</b> Each row this
-   * decommissions names a {@code <env>-<app>} service that is still running, still holding that
-   * tier's alias, ports and volumes, and — the moment the row moves — managed by nobody: the plane
-   * deploys under the bare alias, so no later deployment of this application ever addresses it
-   * again. So the names are owed a retirement ({@link #owedTierRetirements}) and are removed by
-   * {@link #retireConvertedTierServices} after the first platform deployment reports healthy. That
-   * is the 2026-09-07 {@code dev-qits-configuration} incident: converted rows, a running service and
-   * nobody managing it, half-failing for hours until it was removed by hand from an admin
-   * workspace. The conversion no longer ends at the rows.
-   *
-   * <p>There is no "this name already belongs to another repository" check, and there is nothing to
-   * check: the catalogue holds one identity for a service and derived registration has always named
-   * an application after its repository, so the name IS the repository.
-   *
-   * <p><b>A platform service is deployed INTO the main environment, and that is the whole of this
-   * arm now.</b> The two register arms answer the same question — which tier does this release enter
-   * at ({@link #entryTiers()}) — and produce a {@link Target} carrying that tier's id, name and
-   * bundle network in both cases. Nothing about the target says "no environment" any more.
-   *
-   * <p>What still tells the planes apart is {@link PdDeploymentTarget#PLATFORM} on the target, and
-   * it decides three things and no others: the wire alias is <b>bare</b>, so a peer in any tier
-   * reaches qits-ci by writing {@code qits-ci}; the membership is every environment's networks
-   * rather than one tier's; and the read surface keys it {@code platform:<name>}. Everything else —
-   * the row, the labels, the injected {@code QITS_ENVIRONMENT}, the four events — is an ordinary
-   * deployment into the designated tier.
-   *
-   * <p><b>Why the plane deploys somewhere at all.</b> "No environment" was a defensible spelling of
-   * "serves all of them" while nothing needed to know where a platform container ran — and it cost
-   * exactly what an unstated fact costs: a platform service booted without {@code QITS_ENVIRONMENT}
-   * and could not tell its own telemetry, its own peers or its own resource rows which install it
-   * was part of, while four lifecycle events announced a null tier to consumers projecting a route
-   * table per environment. The main environment is the honest answer: there is one, it is
-   * designated, and the plane already provisions its databases on that tier's postgres.
-   */
-  private List<Target> registerPlatform(
-      String applicationName,
-      DeploymentSpec spec,
-      Optional<LinkedService> known,
-      UUID causationId) {
-    List<PdEnvironment> entry = entryTiers();
-    if (entry.isEmpty()) {
-      return List.of();
-    }
-    PdEnvironment main = entry.get(0);
-    if (known.isEmpty()) {
-      LOG.infof(
-          "Registered %s as a platform service, deploying into %s", applicationName, main.name);
-    }
-    String healthPath = resolveHealthPath(applicationName, spec, known);
-    List<ResourceProvisioning.Resolved> resources =
-        ResourceProvisioning.resolve(applicationName, spec.resources());
-    List<DeploymentDriver.VolumeMount> volumes = volumeMounts(applicationName, spec);
-    catalog.upsert(
-        new ServiceCatalog.Upsert(
-            applicationName,
-            PdDeploymentTarget.PLATFORM,
-            null, // PdService.branch is vestigial; a release names a tag
-            false,
-            healthPath,
-            List.of()),
-        causationId);
-
-    // The services those rows named, collected while they are still readable as tier deployments —
-    // one per tier the application was serving in. They outlive this transaction on purpose: see
-    // owedTierRetirements for why the removal waits for a healthy platform deployment.
-    Set<String> retired = new LinkedHashSet<>();
-    QuarkusTransaction.requiringNew()
-        .run(
-            () -> {
-              List<PdDeployment> scoped = deployments.listEnvironmentScoped(applicationName);
-              for (PdDeployment deployment : scoped) {
-                if (deployment.status == PdDeploymentStatus.ACTIVE) {
-                  // Read BEFORE the row is overwritten, and only off an ACTIVE one: a FAILED or
-                  // DECOMMISSIONED row names a service somebody else's cutover already dealt with,
-                  // and the whole rule here is that only the service a row named may be acted on
-                  // for that row.
-                  if (deployment.containerName != null) {
-                    retired.add(deployment.containerName);
-                  }
-                  deployment.status = PdDeploymentStatus.DECOMMISSIONED;
-                  deployment.finishedAt = Instant.now();
-                }
-                // The history moves onto the plane, which is now a column and a tier rather than
-                // the absence of one. It used to be spelled `environmentId = null`; that null was
-                // read as "the platform plane" by every query underneath, and both halves of the
-                // statement are said out loud here instead.
-                deployment.deploymentTarget = PdDeploymentTarget.PLATFORM;
-                deployment.environmentId = main.id;
-              }
-              if (!scoped.isEmpty()) {
-                LOG.infof(
-                    "Converted %s from an environment application to a platform service in %s",
-                    applicationName, main.name);
-              }
-            });
-    if (!retired.isEmpty()) {
-      // Merged rather than replaced: a second release arriving before the first platform deployment
-      // went healthy would otherwise drop whatever the first conversion owed.
-      owedTierRetirements.merge(
-          applicationName,
-          Set.copyOf(retired),
-          (existing, added) -> {
-            LinkedHashSet<String> union = new LinkedHashSet<>(existing);
-            union.addAll(added);
-            return Set.copyOf(union);
-          });
-      LOG.infof(
-          "The tier services of %s (%s) will be retired once its first platform deployment reports"
-              + " healthy",
-          applicationName, retired);
-    }
-
-    return List.of(
-        new Target(
-            applicationName,
-            main.id,
-            main.name,
-            main.network,
-            PdDeploymentTarget.PLATFORM,
-            false,
-            healthPath,
-            spec.healthCmd(),
-            resources,
-            volumes,
-            spec.updateOrder(),
-            spec.publishMode(),
-            spec.routes(),
-            spec.upstreamPort(),
-            browserHost(applicationName, spec),
-            spec.navigationEntries(),
-            spec.apiDocs()));
   }
 
   /**
@@ -2227,17 +2012,15 @@ public class DeployService implements ReleaseAnnouncements {
    * intake is fire-and-forget, so the row is the only surface a refusal can surface on.
    *
    * <p><b>It has NO CALLER LEFT</b>, and knowing why saves the next reader a search — the {@link
-   * HealthGate#await} situation, and the same answer. Its one caller was the environment arm
-   * refusing a repository the catalogue already held as a platform service, and that refusal went
-   * on 2026-09-23: the plane is no longer stated by a file, so {@link #register} routes such a
-   * service to the platform arm and there is nothing left to refuse (see {@link
-   * #registerInEnvironments}). What is kept is the SHAPE of recording a refusal where an operator
-   * looks — the intake is fire-and-forget, so a row is the only surface a registration that refused
-   * to queue anything can surface on, and the next such refusal wants exactly this and not a second
-   * spelling of it. The row is the plane's and names the tier the plane deploys into — the same
-   * place the deployment being refused would have gone; a mid-bootstrap install with no designated
-   * tier records it with none, because a row with no tier and no successor is a worse answer than a
-   * refusal nobody can see, and it is the one place a null environment survives.
+   * HealthGate#await} situation, and the same answer. Its one caller was the environment arm refusing
+   * a repository the catalogue held as a platform service; that refusal went on 2026-09-23, and the
+   * plane it was about went with this change. What is kept is the SHAPE of recording a refusal where
+   * an operator looks — the intake is fire-and-forget, so a row is the only surface a registration
+   * that refused to queue anything can surface on, and the next such refusal wants exactly this and
+   * not a second spelling of it. The row names the entry tier — the same place the deployment being
+   * refused would have gone; a mid-bootstrap install with no designated tier records it with none,
+   * because a row with no tier and no successor is a worse answer than a refusal nobody can see, and
+   * it is the one place a null environment survives.
    */
   @SuppressWarnings("unused")
   private void recordRejection(
@@ -2253,7 +2036,6 @@ public class DeployService implements ReleaseAnnouncements {
               rejected.causationId = causationId;
               rejected.applicationName = applicationName;
               rejected.environmentId = environmentId;
-              rejected.deploymentTarget = PdDeploymentTarget.PLATFORM;
               rejected.version = version;
               rejected.runId = runId;
               rejected.status = PdDeploymentStatus.FAILED;
@@ -2277,35 +2059,6 @@ public class DeployService implements ReleaseAnnouncements {
       return List.of();
     }
     LinkedService linked = known.get();
-    if (linked.service().deploymentTarget == PdDeploymentTarget.PLATFORM) {
-      // The same entry-tier question the deploying path asks, so a spec read that failed records
-      // the failure exactly where a successful one would have deployed — the tier included, since
-      // that is where a platform service deploys.
-      List<PdEnvironment> entry = entryTiers();
-      if (entry.isEmpty()) {
-        return List.of();
-      }
-      PdEnvironment main = entry.get(0);
-      return List.of(
-          new Target(
-              applicationName,
-              main.id,
-              main.name,
-              main.network,
-              PdDeploymentTarget.PLATFORM,
-              false,
-              linked.service().healthPath,
-              null,
-              List.of(),
-              List.of(),
-              null,
-              null,
-              List.of(),
-              DeploymentSpecParser.DEFAULT_UPSTREAM_PORT,
-              null,
-              null,
-              null));
-    }
     List<Target> targets = new ArrayList<>();
     for (PdEnvironment environment : entryTiers()) {
       if (linked.environmentIds().contains(environment.id)) {
@@ -2315,7 +2068,6 @@ public class DeployService implements ReleaseAnnouncements {
                 environment.id,
                 environment.name,
                 environment.network,
-                PdDeploymentTarget.ENVIRONMENT,
                 linked.service().availableOnEnv,
                 linked.service().healthPath,
                 null,
@@ -2379,9 +2131,7 @@ public class DeployService implements ReleaseAnnouncements {
                           "The quality gate refused %s@%s for %s: %s",
                           release.applicationName(),
                           release.version(),
-                          target.environmentName() == null
-                              ? "the platform"
-                              : target.environmentName(),
+                          target.environmentName(),
                           verdict.detail());
                       continue;
                     }
@@ -2470,10 +2220,6 @@ public class DeployService implements ReleaseAnnouncements {
     deployment.causationId = release.causationId();
     deployment.applicationName = target.applicationName();
     deployment.environmentId = target.environmentId();
-    // The plane, stated. Both arms of register() now hand over the designated tier's id above, so
-    // "which plane is this" stopped being answerable from the row's environment and is written
-    // instead — see PdDeployment.deploymentTarget and V8.
-    deployment.deploymentTarget = target.target();
     // The released coordinate — the tag the image carries and what everything below derives from
     // — and, beside it, the commit that tag resolved to. The second is null when the spec read
     // could not resolve one, which is a real answer and never a reason to refuse a deployment.
@@ -2546,15 +2292,9 @@ public class DeployService implements ReleaseAnnouncements {
       return target.volumes();
     }
 
-    boolean platform() {
-      return target.target() == PdDeploymentTarget.PLATFORM;
-    }
-
     /** The one network {@code docker run} can take; every other membership is a join. */
     String primaryNetwork() {
-      return platform()
-          ? PdNetworks.PLATFORM
-          : PdNetworks.application(environmentName(), applicationName());
+      return PdNetworks.application(environmentName(), applicationName());
     }
 
     DeploymentDriver.UpdateOrder updateOrder() {
@@ -2566,19 +2306,19 @@ public class DeployService implements ReleaseAnnouncements {
     }
 
     /**
-     * The address peers dial this by, on every network it is on: {@code
-     * <environment>-<application>} for a tier's copy, the bare application name for a platform
-     * service. It is derived in one place because everything that has to agree on it takes it from
-     * here — swarm's service NAME first of all, which is why a changed spelling is a second service
-     * beside the one that was serving rather than a rename.
+     * The address peers dial this by, on every network it is on: {@code <environment>-<application>},
+     * for every service there is. It is derived in one place because everything that has to agree on
+     * it takes it from here — swarm's service NAME first of all, which is why a changed spelling is a
+     * second service beside the one that was serving rather than a rename.
      *
-     * <p><b>The PLANE decides it, not the tier.</b> A platform service has an environment name now
-     * and its alias still must not carry it: the whole point of the bare spelling is that a peer in
-     * any tier reaches qits-ci by writing {@code qits-ci}, without knowing where the platform's own
-     * tier is or that it moved.
+     * <p><b>That is exactly what the plane's deletion cost once.</b> The nine services that were the
+     * platform plane answered on their bare names, and this now derives a qualified one for them — so
+     * the first deployment of each creates {@code <env>-<app>} and the bare-named service it replaces
+     * is found by nothing here. See {@code PdNetworks.alias} and AGENTS.md, <i>Retiring the plane's
+     * bare-named services</i>.
      */
     String wireAlias() {
-      return PdNetworks.alias(target.target(), environmentName(), applicationName());
+      return PdNetworks.alias(environmentName(), applicationName());
     }
 
     /**
@@ -2665,7 +2405,7 @@ public class DeployService implements ReleaseAnnouncements {
     try {
       bindings =
           resourceProvisioning.ensureAll(
-              plan.applicationName(), plan.environmentName(), plan.target().target(), plan.resources());
+              plan.applicationName(), plan.environmentName(), plan.resources());
     } catch (RuntimeException e) {
       LOG.warnf(
           "Could not provision the resources of %s: %s", plan.applicationName(), e.getMessage());
@@ -2723,14 +2463,13 @@ public class DeployService implements ReleaseAnnouncements {
     // answer, below: docker names one container per deployment, a swarm service's name IS its
     // address and a replace updates it in place.
     String deploymentName =
-        ContainerNames.of(
-            plan.target().target(), plan.environmentName(), plan.applicationName(), deploymentId);
+        ContainerNames.of(plan.environmentName(), plan.applicationName(), deploymentId);
 
     // Networks are re-ensured on every deployment rather than trusted from creation time — an
     // environment created while docker was down must heal, not stay broken.
     String primaryNetwork = plan.primaryNetwork();
     driver.ensureNetwork(primaryNetworkSpec(plan));
-    if (!plan.platform() && plan.availableOnEnv()) {
+    if (plan.availableOnEnv()) {
       driver.ensureNetwork(
           new DeploymentDriver.Network(
               plan.bundleNetwork(),
@@ -2854,18 +2593,9 @@ public class DeployService implements ReleaseAnnouncements {
     // replace is in place, so the predecessor row names the same service this deployment applied.
     toRemove.remove(name);
     driver.reap(List.copyOf(toRemove));
-    if (plan.platform()) {
-      // The plane is serving this application now, so whatever a conversion stranded under the
-      // tier-qualified names may go. Asked on every platform deployment and answered by the map:
-      // an application that never converted owes nothing and this is one lookup.
-      retireConvertedTierServices(plan.applicationName(), name);
-    }
     LOG.infof(
         "Deployed %s@%s into %s (%s)",
-        plan.applicationName(),
-        plan.version(),
-        plan.platform() ? "the platform" : plan.environmentName(),
-        name);
+        plan.applicationName(), plan.version(), plan.environmentName(), name);
     // Last, so an unreachable qits-events delays nothing this deployment still has to do. The
     // timestamp is the row's, so announcing late does not make the event late.
     announceActive(plan, name, cutover.finishedAt());
@@ -2874,74 +2604,27 @@ public class DeployService implements ReleaseAnnouncements {
   /** What the cutover bracket carries out: the containers to reap, and when it happened. */
   private record Cutover(List<String> oldContainers, Instant finishedAt) {}
 
-  /**
-   * The other half of a plane conversion: {@link #registerPlatform} moved the rows onto the
-   * platform plane, and this retires the {@code <env>-<app>} services those rows named — one per
-   * tier the application used to serve in — now that the platform deployment they were
-   * decommissioned for has reported {@code ACTIVE}.
-   *
-   * <p><b>Why AFTER and not at the conversion.</b> A teardown written where the rows move would
-   * stop the application before its replacement exists, and would leave it stopped for good if that
-   * first platform deployment then failed — a repository adding one line to its {@code
-   * deployments.yml} and taking itself off the platform. Deferred, a failed first attempt costs
-   * nothing: the old tier services are still running, still holding their aliases, and the owed
-   * entry is still in the map for the next deployment of that application that succeeds.
-   *
-   * <p><b>Why the names come off the ROWS.</b> {@code container_name} is what the deployment
-   * recorded and, under swarm, IS the service's name and therefore its address — the same source
-   * {@link DeploymentObserver} and {@code ApplicationScaling} act on, and the same rule: only the
-   * service a row named may be acted on for that row. Nothing is derived from the application name
-   * and a tier, because a row written by the docker-era code names a {@code qits-pd-<env>-<app>-<id8>}
-   * CONTAINER rather than a service — the driver answers "already absent" to that and says so, which
-   * is the honest outcome for a name no orchestrator holds.
-   *
-   * <p><b>Why nothing here can fail the deployment.</b> The container is live, the cutover is
-   * recorded and {@code DeploymentActive} is about to be announced; an orphaned old service is an
-   * operator's one-line cleanup, while a deployment recorded {@code FAILED} for it would be a lie
-   * about a healthy platform. The seam says an implementation must not throw and the catch is the
-   * belt for the one that does — with a WARN naming the by-hand remedy, because that is the only
-   * record anybody will have.
-   *
-   * <p><b>The entry is consumed once, even when a removal WARNs.</b> Re-attempting on every later
-   * deployment of the application would be a permanent retry of a name that may simply be gone in
-   * some other way, and the WARN already names the remedy. Volumes are untouched throughout: the
-   * plane's service serves out of the same stores.
-   */
-  private void retireConvertedTierServices(String applicationName, String liveName) {
-    Set<String> owed = owedTierRetirements.remove(applicationName);
-    if (owed == null) {
-      return;
-    }
-    for (String service : owed) {
-      if (service.equals(liveName)) {
-        // Never the thing that just went live. It cannot normally be both — the plane's alias is
-        // bare and a tier's is qualified — but the guard costs nothing and the failure would be
-        // removing the deployment this method runs behind.
-        continue;
-      }
-      try {
-        LOG.infof(
-            "Retiring the tier service %s: %s serves from the platform plane now",
-            service, applicationName);
-        driver.removeService(service);
-      } catch (RuntimeException e) {
-        LOG.warnf(
-            "Could not retire the tier service %s of %s — remove it by hand (docker service rm %s):"
-                + " %s",
-            service, applicationName, service, e.getMessage());
-      }
-    }
-  }
+  // `retireConvertedTierServices` lived here, and it went with the plane conversion that owed it.
+  // A repository flipping to `deployment_target: platform` had its `<env>-<app>` services left
+  // running, holding their aliases, ports and volumes with no row managing them — the 2026-09-07
+  // `dev-qits-configuration` incident — and this removed them once the first platform deployment
+  // reported healthy. There is no conversion to owe a retirement any more.
+  //
+  // WHAT THE SAME SHAPE WOULD HAVE ANSWERED, AND DELIBERATELY DOES NOT. Deleting the plane renames
+  // nine services the other way (`qits-ci` -> `dev-qits-ci`), so each of the nine leaves a
+  // bare-named predecessor behind exactly as a conversion did. It is NOT retired from here, and the
+  // reason is that nothing here can name it: the owed set was read off `container_name` on rows this
+  // component had itself written under the old address, and the address that changes here is the one
+  // every one of those rows already records — so a retirement driven from them would remove the
+  // service this deployment just created. The nine are an operator's hand step instead; AGENTS.md,
+  // "Retiring the plane's bare-named services", has the commands and the order.
 
   private DeploymentDriver.Network primaryNetworkSpec(Plan plan) {
-    return plan.platform()
-        ? new DeploymentDriver.Network(
-            PdNetworks.PLATFORM, null, DeploymentDriver.NetworkKind.PLATFORM, null)
-        : new DeploymentDriver.Network(
-            plan.primaryNetwork(),
-            plan.environmentId(),
-            DeploymentDriver.NetworkKind.APPLICATION,
-            plan.applicationName());
+    return new DeploymentDriver.Network(
+        plan.primaryNetwork(),
+        plan.environmentId(),
+        DeploymentDriver.NetworkKind.APPLICATION,
+        plan.applicationName());
   }
 
   /**
@@ -2957,7 +2640,7 @@ public class DeployService implements ReleaseAnnouncements {
     return new DeploymentDriver.ServiceSpec(
         plan.environmentId(),
         plan.environmentName(),
-        ApplicationKeys.of(plan.target().target(), plan.environmentId(), plan.applicationName()),
+        ApplicationKeys.of(plan.environmentId(), plan.applicationName()),
         plan.applicationName(),
         plan.deploymentId(),
         // TWO SLOTS, ONE VALUE TODAY, and the duplication is honest rather than sloppy. The first
@@ -2978,7 +2661,6 @@ public class DeployService implements ReleaseAnnouncements {
         imageRef,
         plan.healthPath(),
         plan.healthCmd(),
-        plan.target().target(),
         plan.availableOnEnv(),
         plan.updateOrder(),
         plan.publishMode(),
@@ -2999,22 +2681,18 @@ public class DeployService implements ReleaseAnnouncements {
    *       the transition membership that keeps today's direct cross-application URLs resolving;
    *   <li>a public node ({@code availableOnEnv}) additionally joins its environment's bundle and
    *       <b>every</b> per-application network of that environment: that is the hub, and it is how
-   *       an application reaches the gateway and how the gateway proxies every application;
-   *   <li>a platform service joins every per-application network of every environment — being
-   *       locally reachable everywhere is what makes it platform-plane rather than a shared service
-   *       that needs a route.
+   *       an application reaches the gateway and how the gateway proxies every application.
    * </ul>
+   *
+   * <p><b>A third bullet went with the platform plane</b>: a platform service joined every
+   * per-application network of every environment, which was the membership spelling of "locally
+   * reachable everywhere". Nothing is reachable everywhere by construction now; a service another
+   * tier needs is reached through the gateway like any other.
    */
   private List<String> desiredJoins(Plan plan, String primaryNetwork) {
     Set<String> joins = new LinkedHashSet<>();
     legacyNetwork.map(String::strip).filter(n -> !n.isEmpty()).ifPresent(joins::add);
-    if (plan.platform()) {
-      for (DeploymentDriver.Network network : driver.networks()) {
-        if (network.kind() == DeploymentDriver.NetworkKind.APPLICATION) {
-          joins.add(network.name());
-        }
-      }
-    } else if (plan.availableOnEnv()) {
+    if (plan.availableOnEnv()) {
       joins.add(plan.bundleNetwork());
       for (DeploymentDriver.Network network : driver.networks()) {
         if (network.kind() == DeploymentDriver.NetworkKind.APPLICATION
@@ -3189,14 +2867,6 @@ public class DeployService implements ReleaseAnnouncements {
   /** An environment's deployments across all its applications, newest-first. */
   public List<PdDeployment> deploymentsFor(String environmentId) {
     return deployments.listByEnvironmentNewestFirst(environmentId);
-  }
-
-  /**
-   * The platform plane's deployments across all its applications, newest-first — the same question
-   * as {@link #deploymentsFor}, asked of the plane that has no environment id to ask with.
-   */
-  public List<PdDeployment> platformDeployments() {
-    return deployments.listPlatformNewestFirst();
   }
 
   /**

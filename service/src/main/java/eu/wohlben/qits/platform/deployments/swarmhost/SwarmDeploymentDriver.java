@@ -10,7 +10,6 @@ import eu.wohlben.qits.platform.deployments.deployments.control.PdProcess;
 import eu.wohlben.qits.platform.deployments.deployments.control.ServiceExtras;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.file.Files;
@@ -56,12 +55,12 @@ import org.jboss.logging.Logger;
  *
  * <p><b>The topology collapses to two overlays, and it is not a simplification for its own
  * sake.</b> {@code service update --network-add} recreates the task, so a hub-and-spoke topology —
- * one network per application, joined after the fact by every hub and every platform service —
- * would turn a single deployment into a restart storm across the platform. So a service declares
- * its whole membership at create time: {@code
- * qits.platform.deployments.swarm.flat-network} (attachable, so plain {@code docker run} containers
- * — CI steps, workspaces, agents — keep working on it) plus {@code qits-platform} for a platform
- * service. The per-application networks the caller asks for are dropped, deliberately and out loud.
+ * one network per application, joined after the fact by every hub — would turn a single deployment
+ * into a restart storm across the platform. So a service declares its whole membership at create
+ * time, and the membership is ONE overlay: {@code qits.platform.deployments.swarm.flat-network}
+ * (attachable, so plain {@code docker run} containers — CI steps, workspaces, agents — keep working
+ * on it). {@code qits-platform} was the second, and went with the plane whose services ran on it.
+ * The per-application networks the caller asks for are dropped, deliberately and out loud.
  *
  * <p><b>What a service keeps across an update</b> is its mounts, its networks and its published
  * ports: {@link #buildUpdateArgv} changes the image, the identity labels, the environment and the
@@ -80,12 +79,12 @@ import org.jboss.logging.Logger;
  *
  * <p><b>A declared network ALIAS is the second, and it arrived for the same reason</b>: an
  * attachment is restated whole or not at all, {@link #buildUpdateArgv} states no networks, and so
- * an alias reaches a LIVE service only on its next create. A fleet that is already running is
- * therefore a fleet the declaration never reaches — which is exactly what the environment-qualified
- * alias of a platform service needs it to. So {@link #apply} asks the same question of the aliases,
- * one-directionally and with the same refusal to act on an inspect that failed, and each service
- * recreates once, on its own next deployment, and matches for good afterwards. See {@link
- * #missingDeclaredAlias}.
+ * an alias reaches a LIVE service only on its next create. So {@link #apply} asks the same question
+ * of the aliases, one-directionally and with the same refusal to act on an inspect that failed, and
+ * each service recreates once, on its own next deployment, and matches for good afterwards. See
+ * {@link #missingDeclaredAlias}. <b>The declarations are deployment config's alone now</b> — the
+ * derived half was the environment-qualified alias a platform service was granted beside its bare
+ * name, which was the staged half of the plane's own deletion and has nothing left to stage.
  *
  * <p><b>Two verbs here are not swarm-shaped at all</b>, and they are kept for what they answer:
  * {@code docker pull} classifies a missing image (swarm pulls on its own, but a task that never
@@ -97,15 +96,20 @@ import org.jboss.logging.Logger;
  * Nothing translates a {@code docker run} argv any more: config states the intent, and the one
  * intent swarm cannot express — a publish bound to an ip — is refused rather than widened.
  *
- * <p><b>Nothing here reads an absent environment as a plane.</b> A platform service is deployed
- * into the designated environment now, so every spec that reaches this class carries a tier: the
- * environment label is written for both planes and so is {@code QITS_ENVIRONMENT}. What the plane
- * still decides is asked of {@link ServiceSpec#platform()} — the {@code qits-platform} overlay on
- * top of the flat one, and the bare wire alias, which is also the service NAME and is therefore
- * what keeps a platform service's address unchanged across this whole change. The one reader that
- * must not follow the label is the environment teardown: it reaps by it, so it now also demands
- * {@code target=environment}, or tearing a tier down would take the platform plane with it. See
- * {@link #removeEnvironmentContainers}.
+ * <p><b>There is no plane to read at all.</b> Every spec that reaches this class carries a tier, the
+ * environment label and {@code QITS_ENVIRONMENT} are written for all of them, the wire alias is
+ * {@code <env>-<app>} for all of them, and {@code qits.platform.deployments.target} is written by
+ * nothing and read by nothing — the environment teardown reaps by the environment label alone again,
+ * because the second filter existed only to keep a platform service from going down with a tier it
+ * merely served. See {@link #removeEnvironmentContainers}.
+ *
+ * <p><b>One consequence of that rename is not handled here and cannot be.</b> A service is found by
+ * NAME, the name is the wire alias, and the nine services that were the plane are running under
+ * their old bare names — so the first deployment of each under this code finds nothing, CREATES
+ * {@code <env>-<app>}, and leaves the bare-named service running. {@link #reap} is a no-op under
+ * swarm (a replace is an update of the same service), so nothing retires it. That is an operator's
+ * hand step, in a stated order, and AGENTS.md's <i>Retiring the plane's bare-named services</i> is
+ * the whole of it.
  *
  * <p><b>The one piece of a self-update swarm does not do for us is the row.</b> The instance that
  * issues the update on its own service dies before the outcome exists, so the deployment stays
@@ -431,10 +435,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     for (String network : networks) {
       ensureNetwork(
           new Network(
-              network,
-              null,
-              PdNetworks.PLATFORM.equals(network) ? NetworkKind.PLATFORM : NetworkKind.BUNDLE,
-              null));
+              network, null, NetworkKind.BUNDLE, null));
     }
 
     // Asked BEFORE the update, because after it this process may not exist to ask anything: the
@@ -1192,8 +1193,8 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   public boolean ensureNetwork(Network spec) {
     if (!collapsed(spec.name())) {
       LOG.debugf(
-          "Not creating '%s': under swarm the topology is %s plus %s, declared at service create",
-          spec.name(), flatNetwork, PdNetworks.PLATFORM);
+          "Not creating '%s': under swarm the topology is %s, declared at service create",
+          spec.name(), flatNetwork);
       return false;
     }
     if (run(List.of(runtime, "network", "inspect", spec.name()), CLEANUP_TIMEOUT).exitCode() == 0) {
@@ -1339,6 +1340,9 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * Nothing to detach. A service's networks are declared when it is created and a teardown does not
    * reshape one; what makes the networks removable is the services going, which the reap before
    * this already ordered, and {@link #removeNetwork}'s retry loop waits for.
+   *
+   * <p>The name is the seam's and the seam's question outlived the platform plane it was asked
+   * about; see {@code DeploymentDriver.reap}.
    */
   @Override
   public void detachPlatformPlane(List<String> networks) {
@@ -1346,16 +1350,13 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   /**
-   * The environment's services, by the two labels that together mean "this tier's own".
+   * The environment's services, by the one label that means "this tier's own".
    *
-   * <p><b>The second filter is not belt and braces.</b> A platform service carries this
-   * environment's id now — it is deployed into the designated tier — and it must never go down with
-   * a tier, because it serves every one of them and the tier being torn down is merely where it
-   * happens to run. The environment label alone identified a tier's services only while the plane
-   * carried none; the plane's own label is what tells them apart now, and it is written on every
-   * service this component creates.
-   *
-   * <p>Two {@code --filter} arguments are ANDed by the CLI, which is what makes this one query.
+   * <p><b>There was a second filter and it went with the plane.</b> It demanded {@code
+   * qits.platform.deployments.target=environment} beside the environment id, because a platform
+   * service carried a tier's label while serving every tier, and a teardown of the designated tier
+   * would otherwise have taken the whole plane with it. There is no service that serves a tier it
+   * does not belong to any more, so the environment label is the whole question again.
    */
   @Override
   public int removeEnvironmentContainers(String environmentId) {
@@ -1367,12 +1368,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
                 "ls",
                 "-q",
                 "--filter",
-                "label=" + ENVIRONMENT_LABEL + "=" + environmentId,
-                "--filter",
-                "label="
-                    + TARGET_LABEL
-                    + "="
-                    + PdDeploymentTarget.ENVIRONMENT.name().toLowerCase(Locale.ROOT)),
+                "label=" + ENVIRONMENT_LABEL + "=" + environmentId),
             CLEANUP_TIMEOUT);
     if (listed.exitCode() != 0) {
       LOG.debugf("Could not list services of environment %s: %s", environmentId, listed.output());
@@ -1518,37 +1514,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * Every alias this service's attachment carries: what deployment config declared, plus what the
    * naming rule derives.
    *
-   * <p><b>The derived half is the environment-qualified name of a PLATFORM service</b>, and it is
-   * purely additive — see {@link PdNetworks#additionalAliases}. The service keeps its bare name, so
-   * {@code qits-platform-idp} goes on resolving exactly as it did; {@code dev-qits-platform-idp}
-   * starts resolving beside it, which is what lets dialers move one at a time before the plane is
-   * deleted. An environment service is named by the qualified form already and gains nothing.
+   * <p><b>There is no derived half left.</b> It was the environment-qualified name a PLATFORM
+   * service was granted beside its bare one — the additive first half of the plane's deletion, so a
+   * dialer could move to {@code dev-qits-platform-idp} while {@code qits-platform-idp} still
+   * answered. The plane is deleted and the qualified name is the service's own NAME now, so the
+   * derivation could only ever produce an alias equal to the name, which is a line swarm has no use
+   * for. What a service answers to beyond its name is deployment config's statement and nothing
+   * else.
    *
-   * <p><b>Config first, and duplicates dropped.</b> The declared aliases keep the order and the
-   * position they always had, so an application that declares none and is not on the plane produces
-   * the byte-identical short-form argv it always produced. A config entry that already spells the
-   * derived name is not emitted twice — swarm refuses a repeated alias on one attachment.
-   *
-   * <p><b>With no shared network to hold it, the derived alias is DROPPED rather than refused</b>,
-   * which is the one place it parts company with a declared one. A declared alias is a name somebody
-   * asked for, so registering none of it and saying nothing is the outage-hours-later failure {@link
-   * #networkFlags} refuses on. This one is nobody's request — it is a cutover convenience that the
-   * bare name already covers — so turning a platform deployment that works today into a refusal
-   * would be this change taking something away, which is exactly what it must not do.
+   * <p>An application that declares no aliases therefore produces the byte-identical short-form argv
+   * it always produced — and every application does, unless config says otherwise.
    */
   private List<String> aliasesOf(ServiceSpec spec, ServiceExtras extras, List<String> networks) {
-    String shared = flatNetwork == null ? "" : flatNetwork.strip();
-    if (shared.isEmpty() || !networks.contains(shared)) {
-      return extras.aliases();
-    }
-    List<String> derived =
-        PdNetworks.additionalAliases(spec.target(), spec.environmentName(), spec.applicationName());
-    if (derived.isEmpty()) {
-      return extras.aliases();
-    }
-    LinkedHashSet<String> all = new LinkedHashSet<>(extras.aliases());
-    all.addAll(derived);
-    return List.copyOf(all);
+    return extras.aliases();
   }
 
   /**
@@ -1781,17 +1759,15 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    */
   private static List<String> labels(ServiceSpec spec) {
     List<String> labels = new ArrayList<>();
-    // EVERY service carries the environment label now, the platform plane included: it is deployed
-    // into the designated tier and the label says which install and which tier a container on the
-    // host belongs to. The absence used to be load-bearing — an environment teardown reaps by this
-    // label — and that reader is what changed instead: it demands the target label too, so a
-    // teardown still cannot take a platform service down with a tier it merely serves.
+    // EVERY service carries the environment label: the label says which install and which tier a
+    // container on the host belongs to, and an environment teardown reaps by it. Its absence used to
+    // mean the platform plane, which is why the teardown briefly needed a target label beside it;
+    // both the absence and the second label are gone.
     if (spec.environmentId() != null) {
       labels.add(ENVIRONMENT_LABEL + "=" + spec.environmentId());
     }
     labels.add(APPLICATION_LABEL + "=" + spec.applicationId());
     labels.add(DEPLOYMENT_LABEL + "=" + spec.deploymentId());
-    labels.add(TARGET_LABEL + "=" + spec.target().name().toLowerCase(Locale.ROOT));
     labels.add(AVAILABLE_ON_ENV_LABEL + "=" + spec.availableOnEnv());
     labels.add(APP_NAME_LABEL + "=" + spec.applicationName());
     return List.copyOf(labels);
@@ -2150,9 +2126,6 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
     if (flatNetwork != null && !flatNetwork.isBlank()) {
       networks.add(flatNetwork.strip());
     }
-    if (spec.platform()) {
-      networks.add(PdNetworks.PLATFORM);
-    }
     List<String> dropped =
         spec.networks().stream().filter(network -> !networks.contains(network)).toList();
     if (!dropped.isEmpty()) {
@@ -2165,8 +2138,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   }
 
   private boolean collapsed(String network) {
-    return (flatNetwork != null && flatNetwork.strip().equals(network))
-        || PdNetworks.PLATFORM.equals(network);
+    return flatNetwork != null && flatNetwork.strip().equals(network);
   }
 
   private boolean serviceExists(String name) {

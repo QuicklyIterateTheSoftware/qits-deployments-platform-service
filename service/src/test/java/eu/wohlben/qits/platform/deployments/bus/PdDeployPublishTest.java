@@ -18,7 +18,6 @@ import eu.wohlben.qits.platform.deployments.deployments.control.FakeResourceProv
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeIdpClientProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.FakeSpecSource;
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import io.quarkus.hibernate.orm.PersistenceUnit;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -229,7 +228,6 @@ public class PdDeployPublishTest {
     specs.script(
         "repo-pub-nohost",
         new DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT,
             false,
             null,
             null,
@@ -258,7 +256,6 @@ public class PdDeployPublishTest {
   private static DeploymentSpec spec(
       List<String> routes, int upstreamPort, String host, List<NavigationEntry> navigationEntries) {
     return new DeploymentSpec(
-        PdDeploymentTarget.ENVIRONMENT,
         false,
         null,
         null,

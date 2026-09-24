@@ -1,22 +1,12 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
-
 /**
- * One name shape for every container this component starts: {@code qits-pd-<env>-<app>-<id8>}, and
- * {@code qits-pd-<app>-<id8>} for a platform deployment.
+ * One name shape for every container this component starts: {@code qits-pd-<env>-<app>-<id8>}.
  *
- * <p><b>The plane is asked, not inferred from a missing tier.</b> A platform deployment names the
- * main environment on its row and in its labels since V8, so "no environment" stopped identifying
- * one; what stayed is that the plane's names are unqualified, the wire alias first of all.
- *
- * <p><b>The platform shape drops the segment rather than filling it.</b> It used to read {@code
- * qits-pd-platform-<app>-<id8>}, which was right while a platform repository was named like any
- * other; the platform repositories carry the plane in their own names now ({@code
- * qits-platform-idp}, {@code qits-platform-artifacts}), so the word would be said twice —
- * {@code qits-pd-platform-qits-platform-artifacts-…}. What is left is unambiguous for the reason
- * that made the old shape unambiguous: an environment name sits in the same place, and the
- * application name carries the plane.
+ * <p><b>It is always qualified, and the second shape went with the platform plane.</b> A platform
+ * deployment used to drop the environment segment ({@code qits-pd-qits-ci-abc12345}) because the
+ * plane's names were unqualified, the wire alias first of all. Every deployment belongs to a tier
+ * now, and every name says which.
  *
  * <p><b>The prefix is {@code qits-pd-}, and it stays that way after the namespace rename.</b> The
  * config keys and labels spell the namespace in full ({@code qits.platform.deployments.*}); a
@@ -36,13 +26,17 @@ public final class ContainerNames {
 
   private ContainerNames() {}
 
-  public static String of(
-      PdDeploymentTarget target,
-      String environmentName,
-      String applicationName,
-      String deploymentId) {
+  /**
+   * @param environmentName the tier. Null keeps the segment out rather than composing {@code
+   *     qits-pd--<app>-…}, which is the one shape left that has no tier to name: the refusal row a
+   *     mid-bootstrap install records before anything is designated.
+   */
+  public static String of(String environmentName, String applicationName, String deploymentId) {
     String shortId = deploymentId.length() > 8 ? deploymentId.substring(0, 8) : deploymentId;
-    boolean qualified = target != PdDeploymentTarget.PLATFORM && environmentName != null;
-    return PREFIX + (qualified ? environmentName + "-" : "") + applicationName + "-" + shortId;
+    return PREFIX
+        + (environmentName == null ? "" : environmentName + "-")
+        + applicationName
+        + "-"
+        + shortId;
   }
 }

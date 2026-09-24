@@ -2,7 +2,6 @@ package eu.wohlben.qits.platform.deployments.deployments.control;
 
 import eu.wohlben.qits.platform.deployments.deployments.control.SpecSource.DeploymentSpec;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -202,10 +201,11 @@ import java.util.Set;
  *
  * <p><b>{@code deployment_target} is RETIRED: accepted, ignored, and acted on by nobody.</b> There
  * is no platform-service concept left for it to choose between — every service is an ordinary
- * environment service in the one tier — so there is no target for this file to state and nothing
- * downstream that would read one. The key is therefore not validated at all: {@code platform},
- * {@code environment}, {@code singleton} and any word whatsoever are read and dropped, because a
- * value nobody acts on is not a value worth refusing a deployment over.
+ * environment service in the one tier, and the enum it used to parse into no longer exists — so
+ * there is no target for this file to state and nothing downstream that would read one. The key is
+ * therefore not validated at all: {@code platform}, {@code environment}, {@code singleton} and any
+ * word whatsoever are read and dropped, because a value nobody acts on is not a value worth refusing
+ * a deployment over.
  *
  * <p>The tolerance is permanent, for the reason {@code deploy_branches} above records. <b>A spec is
  * fetched at the BUILT sha</b>, so a rollback pin, a redeploy of an older commit, or any of the
@@ -474,9 +474,6 @@ public final class DeploymentSpecParser {
               + (routes.isEmpty() ? "no routes at all" : String.join(",", routes)));
     }
     return new DeploymentSpec(
-        // The component still carries a target and nothing derives one any more: the key that used
-        // to state it is retired, so every spec reads as the one tier there is.
-        PdDeploymentTarget.ENVIRONMENT,
         availableOnEnv,
         deployBranches,
         healthPath,

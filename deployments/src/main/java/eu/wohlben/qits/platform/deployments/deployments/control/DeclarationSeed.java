@@ -1,6 +1,5 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 
 /**
  * Where a released repository's {@link SpecSource#DECLARATION_PATH} is handed to qits-configuration,
@@ -41,12 +40,9 @@ public interface DeclarationSeed {
    *     is this deployment's own application name and therefore already the {@code application:}
    *     override where the file states one
    * @param version the released CalVer stamp the declaration was read at
-   * @param target which plane this application deploys on, which is the store's {@code
-   *     deploymentTarget} — a platform-plane declaration resolves against the platform's own
-   *     overrides rather than a tier's
    * @param rawYaml the file's bytes as the git host served them, unparsed
    * @throws DeclarationRefused the store refused the file, or could not be reached within the
    *     budget. Either way this deployment does not run.
    */
-  void seed(String applicationName, String version, PdDeploymentTarget target, String rawYaml);
+  void seed(String applicationName, String version, String rawYaml);
 }

@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.platform.deployments.deployments.control.DeclarationRefused;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
@@ -59,7 +58,7 @@ class ConfigHostDeclarationSeedTest {
   void theDeclarationIsPostedAtTheApplicationsOwnVersionedAddress() {
     stub.answers(201, "{}");
 
-    stub.seed(NONE).seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION);
+    stub.seed(NONE).seed(APPLICATION, VERSION, DECLARATION);
 
     assertEquals(List.of("POST"), stub.methods(), "a seed is a write");
     assertEquals(
@@ -74,13 +73,18 @@ class ConfigHostDeclarationSeedTest {
   }
 
   @Test
-  void thePlaneRidesAlongBecauseAPlatformDeclarationResolvesAgainstOtherOverrides() {
+  void theDeploymentTargetParameterIsALWAYSEnvironmentAndSTAYSOnTheWire() {
+    // It was the PLANE and rode along because a platform declaration resolved against the platform's
+    // own overrides rather than a tier's. The plane is deleted here, so there is one value left — and
+    // the parameter is not dropped, because it is qits-configuration's route and its vocabulary.
+    // Retiring it is that repository's to lead; sending a constant is this one being honest.
     stub.answers(201, "{}");
 
-    stub.seed(NONE).seed(APPLICATION, VERSION, PdDeploymentTarget.PLATFORM, DECLARATION);
+    stub.seed(NONE).seed(APPLICATION, VERSION, DECLARATION);
 
     assertTrue(
-        stub.targets().get(0).endsWith("?deploymentTarget=platform"), stub.targets().toString());
+        stub.targets().get(0).endsWith("?deploymentTarget=environment"),
+        stub.targets().toString());
   }
 
   @Test
@@ -90,7 +94,7 @@ class ConfigHostDeclarationSeedTest {
     // by exactly this hop or by nothing.
     stub.answers(201, "{}");
 
-    stub.seed(NONE).seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION);
+    stub.seed(NONE).seed(APPLICATION, VERSION, DECLARATION);
 
     assertEquals(List.of(DECLARATION), stub.bodies());
     assertEquals(List.of("application/yaml"), stub.contentTypes());
@@ -103,7 +107,7 @@ class ConfigHostDeclarationSeedTest {
     // has this version's declaration, so the deployment proceeds.
     stub.answers(200, "{\"created\":false}");
 
-    stub.seed(NONE).seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION);
+    stub.seed(NONE).seed(APPLICATION, VERSION, DECLARATION);
 
     assertEquals(1, stub.methods().size(), "no retry, no refusal");
   }
@@ -119,7 +123,7 @@ class ConfigHostDeclarationSeedTest {
     DeclarationRefused refused =
         assertThrows(
             DeclarationRefused.class,
-            () -> seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+            () -> seed.seed(APPLICATION, VERSION, DECLARATION));
 
     assertEquals(DeclarationRefused.Kind.DECLARATION_BROKEN, refused.kind());
     assertTrue(refused.getMessage().contains(APPLICATION + "@" + VERSION), refused.getMessage());
@@ -142,7 +146,7 @@ class ConfigHostDeclarationSeedTest {
     DeclarationRefused refused =
         assertThrows(
             DeclarationRefused.class,
-            () -> seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+            () -> seed.seed(APPLICATION, VERSION, DECLARATION));
 
     assertEquals(DeclarationRefused.Kind.DECLARATION_BROKEN, refused.kind());
     assertEquals(1, stub.methods().size());
@@ -156,7 +160,7 @@ class ConfigHostDeclarationSeedTest {
     ConfigHostDeclarationSeed seed = stub.seed(NONE);
     seed.attempts = 2;
 
-    seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION);
+    seed.seed(APPLICATION, VERSION, DECLARATION);
 
     assertEquals(2, stub.methods().size(), "the second attempt is the one that was accepted");
   }
@@ -172,7 +176,7 @@ class ConfigHostDeclarationSeedTest {
     DeclarationRefused refused =
         assertThrows(
             DeclarationRefused.class,
-            () -> seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+            () -> seed.seed(APPLICATION, VERSION, DECLARATION));
 
     assertEquals(DeclarationRefused.Kind.SERVICE_UNAVAILABLE, refused.kind());
     assertTrue(refused.getMessage().contains(stub.url()), refused.getMessage());
@@ -190,7 +194,7 @@ class ConfigHostDeclarationSeedTest {
     DeclarationRefused refused =
         assertThrows(
             DeclarationRefused.class,
-            () -> seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+            () -> seed.seed(APPLICATION, VERSION, DECLARATION));
 
     assertEquals(DeclarationRefused.Kind.SERVICE_UNAVAILABLE, refused.kind());
     assertTrue(refused.getMessage().contains(unreachable), refused.getMessage());
@@ -208,7 +212,7 @@ class ConfigHostDeclarationSeedTest {
     DeclarationRefused refused =
         assertThrows(
             DeclarationRefused.class,
-            () -> seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+            () -> seed.seed(APPLICATION, VERSION, DECLARATION));
 
     assertEquals(DeclarationRefused.Kind.SERVICE_UNAVAILABLE, refused.kind());
     assertEquals(1, stub.methods().size(), "a wrong route is not patience material");
@@ -221,7 +225,7 @@ class ConfigHostDeclarationSeedTest {
     // every deployment for the absence of something it was never configured to have.
     ConfigHostDeclarationSeed seed = ExtrasStub.seed(NONE, null);
 
-    seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION);
+    seed.seed(APPLICATION, VERSION, DECLARATION);
 
     assertTrue(stub.methods().isEmpty(), "an unset url must reach nothing");
   }
@@ -233,7 +237,7 @@ class ConfigHostDeclarationSeedTest {
     stub.answers(201, "{}");
 
     stub.seed(() -> Optional.of("a-machine-token"))
-        .seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION);
+        .seed(APPLICATION, VERSION, DECLARATION);
 
     assertEquals(List.of("Bearer a-machine-token"), stub.authorizations());
   }
@@ -245,7 +249,7 @@ class ConfigHostDeclarationSeedTest {
     // nobody minted.
     stub.answers(201, "{}");
 
-    stub.seed(NONE).seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION);
+    stub.seed(NONE).seed(APPLICATION, VERSION, DECLARATION);
 
     assertEquals(1, stub.authorizations().size());
     assertNull(stub.authorizations().get(0));
@@ -259,10 +263,10 @@ class ConfigHostDeclarationSeedTest {
 
     assertThrows(
         DeclarationRefused.class,
-        () -> seed.seed("qits ci", VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+        () -> seed.seed("qits ci", VERSION, DECLARATION));
     assertThrows(
         DeclarationRefused.class,
-        () -> seed.seed(APPLICATION, "../2026", PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+        () -> seed.seed(APPLICATION, "../2026", DECLARATION));
     assertTrue(stub.methods().isEmpty(), "a refused address must reach nothing");
   }
 
@@ -276,7 +280,7 @@ class ConfigHostDeclarationSeedTest {
     DeclarationRefused refused =
         assertThrows(
             DeclarationRefused.class,
-            () -> seed.seed(APPLICATION, VERSION, PdDeploymentTarget.ENVIRONMENT, DECLARATION));
+            () -> seed.seed(APPLICATION, VERSION, DECLARATION));
 
     assertTrue(
         refused.getMessage().length() < ConfigHostDeclarationSeed.EXCERPT_LIMIT + 400,

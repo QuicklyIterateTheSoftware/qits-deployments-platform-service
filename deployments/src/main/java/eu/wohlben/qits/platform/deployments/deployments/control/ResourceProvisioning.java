@@ -5,7 +5,6 @@ import eu.wohlben.qits.platform.deployments.deployments.entity.PdResource;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdResourceRepository;
 import eu.wohlben.qits.platform.deployments.environments.control.PdIdentifiers;
 import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -165,40 +164,28 @@ public class ResourceProvisioning {
   }
 
   /**
-   * Make every declared resource exist and answer with what to inject for it — the environment
-   * plane's shape, where {@code idp:client} is never declared (D10) and no caller needs to name a
-   * plane. Delegates to the four-argument form with {@link PdDeploymentTarget#ENVIRONMENT}.
-   */
-  public List<DeploymentDriver.ResourceBinding> ensureAll(
-      String applicationName, String environmentName, List<Resolved> declared) {
-    return ensureAll(applicationName, environmentName, PdDeploymentTarget.ENVIRONMENT, declared);
-  }
-
-  /**
    * Make every declared resource exist and answer with what to inject for it.
    *
    * <p><b>The tier is part of the key and there is always one.</b> It used to be null for a
    * platform-plane deployment, and that null was doing two jobs: it named the plane, and it was the
-   * {@code pd_resource} lookup key those rows were written under. A platform service is deployed
-   * into the designated environment now, so both jobs are done by an ordinary tier name — the
-   * postgres it talks to is that tier's, which is the same instance the null arm resolved to, and
-   * its registry rows are keyed by that tier's name. {@code BootResourceRegistration} resolves the
-   * same name for its own rows, from the same designation, which is what keeps this component's
-   * first self-deploy on the no-op arm rather than rotating a password its pools are holding.
+   * {@code pd_resource} lookup key those rows were written under. Both jobs are an ordinary tier
+   * name now — the postgres a deployment talks to is its tier's, which is the same instance the null
+   * arm resolved to, and its registry rows are keyed by that tier's name. {@code
+   * BootResourceRegistration} resolves the same name for its own rows, from the same designation,
+   * which is what keeps this component's first self-deploy on the no-op arm rather than rotating a
+   * password its pools are holding.
    *
-   * <p>{@code target} decides nothing about postgres — the tier's instance is the tier's instance on
-   * either plane — but it is what an idp-client resource's client id is derived with: {@link
-   * PdNetworks#alias} answers bare for the platform plane and tier-qualified for an environment one.
+   * <p><b>There was a three-argument form and a {@code target} beside this one</b>, and both went
+   * with the plane: the short form delegated with {@code ENVIRONMENT}, and the plane was what an
+   * idp-client resource's client id used to be derived with (bare on the plane, tier-qualified
+   * otherwise). {@link PdNetworks#alias} answers one way now, so there is one derivation and one
+   * method.
    *
-   * @param environmentName the tier — the designated platform environment for a platform service
-   * @param target which plane this deployment is on
+   * @param environmentName the tier this deployment goes into
    * @throws ResourceException with an operator-facing sentence, and no credential in it
    */
   public List<DeploymentDriver.ResourceBinding> ensureAll(
-      String applicationName,
-      String environmentName,
-      PdDeploymentTarget target,
-      List<Resolved> declared) {
+      String applicationName, String environmentName, List<Resolved> declared) {
     if (declared == null || declared.isEmpty()) {
       return List.of();
     }
@@ -219,7 +206,7 @@ public class ResourceProvisioning {
           switch (resource.type()) {
             case POSTGRESQL ->
                 ensurePostgres(applicationName, environmentName, host, admin, resource);
-            case IDP_CLIENT -> ensureIdpClient(applicationName, environmentName, target, resource);
+            case IDP_CLIENT -> ensureIdpClient(applicationName, environmentName, resource);
           });
     }
     return List.copyOf(bindings);
@@ -262,10 +249,10 @@ public class ResourceProvisioning {
                               + " different one in `resources:`");
                     }
                   }
-                  // Keyed by the tier this deployment goes into, the platform plane's included.
-                  // The repository still tests null rather than comparing it, because rows written
-                  // before the plane had a tier keep theirs — and `= null` matches nothing, which
-                  // would rotate a working password on every deploy.
+                  // Keyed by the tier this deployment goes into. The repository still tests null
+                  // rather than comparing it, because rows written before the plane had a tier keep
+                  // theirs — and `= null` matches nothing, which would rotate a working password on
+                  // every deploy.
                   return resources
                       .findOne(applicationName, environmentName, name)
                       .map(row -> row.password)
@@ -320,7 +307,7 @@ public class ResourceProvisioning {
 
     LOG.infof(
         "Resource %s of %s (%s) is database %s on %s",
-        name, applicationName, environmentName == null ? "platform" : environmentName, database, host);
+        name, applicationName, environmentName, database, host);
     return DeploymentDriver.ResourceBinding.postgres(
         name, "jdbc:postgresql://" + host + ":" + POSTGRES_PORT + "/" + database, database, inEffect);
   }
@@ -343,14 +330,14 @@ public class ResourceProvisioning {
    * apart from "the row is stale", which a caller cannot see from its own registry alone.
    */
   private DeploymentDriver.ResourceBinding ensureIdpClient(
-      String applicationName, String environmentName, PdDeploymentTarget target, Resolved resource) {
+      String applicationName, String environmentName, Resolved resource) {
     String clientId =
         PdIdentifiers.requireName(
-            PdNetworks.alias(target, environmentName, applicationName), "idp client id");
+            PdNetworks.alias(environmentName, applicationName), "idp client id");
 
     // The registry read, and the cross-application check, in one bracket — the postgres arm's own
     // shape. Structurally this should never fire (the client id is derived one-to-one from
-    // (application, environment, plane)), but a derivation bug is exactly the case worth refusing
+    // (application, environment)), but a derivation bug is exactly the case worth refusing
     // loudly rather than handing one application's credential to another's container.
     String stored =
         QuarkusTransaction.requiringNew()
@@ -403,9 +390,9 @@ public class ResourceProvisioning {
 
     LOG.infof(
         "Resource %s of %s (%s) is the idp client %s",
-        IDP_RESOURCE_NAME, applicationName, environmentName == null ? "platform" : environmentName,
-        clientId);
-    return DeploymentDriver.ResourceBinding.idp(IDP_RESOURCE_NAME, idpUrl(), clientId, secret);
+        IDP_RESOURCE_NAME, applicationName, environmentName, clientId);
+    return DeploymentDriver.ResourceBinding.idp(
+        IDP_RESOURCE_NAME, idpUrl(environmentName), clientId, secret);
   }
 
   /**
@@ -447,9 +434,18 @@ public class ResourceProvisioning {
     }
   }
 
-  /** {@code http://qits-platform-idp:8080/idp} — derived, like the postgres host, never configured. */
-  private static String idpUrl() {
-    return "http://" + PdNetworks.platformAlias(IDP_APPLICATION) + ":" + IDP_PORT + "/idp";
+  /**
+   * {@code http://<tier>-qits-platform-idp:8080/idp} — derived, like the postgres host, never
+   * configured.
+   *
+   * <p><b>It gained the tier when the plane was deleted, and that is a cutover rather than a
+   * cosmetic change.</b> It read {@code http://qits-platform-idp:8080/idp} while the plane's services
+   * answered on their bare names; qits-platform-idp is an ordinary service in the one tier now, so
+   * the address a provisioned container is handed has to carry the tier or it resolves to nothing the
+   * moment the bare-named predecessor is retired.
+   */
+  private static String idpUrl(String environmentName) {
+    return "http://" + PdNetworks.alias(environmentName, IDP_APPLICATION) + ":" + IDP_PORT + "/idp";
   }
 
   /**

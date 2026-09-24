@@ -1,6 +1,5 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.test.Mock;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
@@ -22,7 +21,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>What it records is the tuple, not just the bytes.</b> A seed is addressed by (application,
  * version) and carries a plane and a body, and each of the four is a claim some test makes: that a
  * multi-tier fan-out seeds ONCE rather than per row, that the version is the released one, that the
- * plane is the spec's own, and that the yaml is byte-identical to what the git host served.
+ * yaml is byte-identical to what the git host served. It carried the PLANE too, and the plane is
+ * deleted — the seam states none.
  *
  * <p>Application-scoped and therefore shared: reset it in {@code @BeforeEach} and use distinct
  * application names per test. State is read through methods only — the injected reference is a CDI
@@ -32,9 +32,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @ApplicationScoped
 public class FakeDeclarationSeed implements DeclarationSeed {
 
-  /** One accepted seed, whole — see the class javadoc for why all four values are kept. */
-  public record Seeded(
-      String applicationName, String version, PdDeploymentTarget target, String yaml) {}
+  /** One accepted seed, whole — see the class javadoc for why each value is kept. */
+  public record Seeded(String applicationName, String version, String yaml) {}
 
   private final List<Seeded> seeded = new ArrayList<>();
 
@@ -66,8 +65,7 @@ public class FakeDeclarationSeed implements DeclarationSeed {
   }
 
   @Override
-  public void seed(
-      String applicationName, String version, PdDeploymentTarget target, String rawYaml) {
+  public void seed(String applicationName, String version, String rawYaml) {
     DeclarationRefused refusal = refusals.get(applicationName);
     if (refusal != null) {
       // Thrown fresh rather than re-thrown, so a scripted refusal reads the same on the second
@@ -76,7 +74,7 @@ public class FakeDeclarationSeed implements DeclarationSeed {
       throw new DeclarationRefused(refusal.kind(), refusal.getMessage());
     }
     synchronized (this) {
-      seeded.add(new Seeded(applicationName, version, target, rawYaml));
+      seeded.add(new Seeded(applicationName, version, rawYaml));
     }
   }
 }

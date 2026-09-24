@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import eu.wohlben.qits.eventstream.entity.OutboxEvent;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.hibernate.orm.PersistenceUnit;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -130,7 +129,6 @@ public class PdSwarmDeployFlowTest {
     specs.script(
         "repo-swarm-ingress",
         new SpecSource.DeploymentSpec(
-            PdDeploymentTarget.ENVIRONMENT,
             false,
             null,
             null,

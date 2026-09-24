@@ -8,7 +8,6 @@ import eu.wohlben.qits.platform.deployments.environments.dto.PdApplicationDto;
 import eu.wohlben.qits.platform.deployments.environments.dto.PdEnvironmentDto;
 import eu.wohlben.qits.platform.deployments.environments.dto.PdLinkedServiceDto;
 import eu.wohlben.qits.platform.deployments.environments.dto.PdServiceDto;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 /**
@@ -47,7 +46,6 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       PdDeploymentDto.class,
       PdDeploymentRequestDto.class,
       PdPinDto.class,
-      PdDeploymentTarget.class,
       PdQualityGate.class
     })
 final class ApiWireReflection {

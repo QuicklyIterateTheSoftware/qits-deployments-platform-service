@@ -1,6 +1,5 @@
 package eu.wohlben.qits.platform.deployments.deployments.control;
 
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import eu.wohlben.qits.platform.deployments.events.NavigationEntry;
 import java.util.List;
 
@@ -240,7 +239,6 @@ public interface SpecSource {
    * #deployBranches()}.
    */
   record DeploymentSpec(
-      PdDeploymentTarget target,
       boolean availableOnEnv,
       List<String> deployBranches,
       String healthPath,
@@ -274,13 +272,12 @@ public interface SpecSource {
      * most of them.
      */
     public DeploymentSpec(
-        PdDeploymentTarget target,
         boolean availableOnEnv,
         List<String> deployBranches,
         String healthPath,
         String healthCmd,
         List<ResourceSpec> resources) {
-      this(target, availableOnEnv, deployBranches, healthPath, healthCmd, resources, null, null);
+      this(availableOnEnv, deployBranches, healthPath, healthCmd, resources, null, null);
     }
 
     /**
@@ -289,7 +286,6 @@ public interface SpecSource {
      * nothing has always meant.
      */
     public DeploymentSpec(
-        PdDeploymentTarget target,
         boolean availableOnEnv,
         List<String> deployBranches,
         String healthPath,
@@ -298,7 +294,6 @@ public interface SpecSource {
         DeploymentDriver.UpdateOrder updateOrder,
         DeploymentDriver.PublishMode publishMode) {
       this(
-          target,
           availableOnEnv,
           deployBranches,
           healthPath,
@@ -382,17 +377,16 @@ public interface SpecSource {
       }
     }
 
-    /** No file, or a file that sets nothing: an ordinary environment application. */
+    /** No file, or a file that sets nothing: an ordinary application in the tier it lands in. */
     public static final DeploymentSpec DEFAULTS =
-        new DeploymentSpec(PdDeploymentTarget.ENVIRONMENT, false, List.of(), null, null, List.of());
+        new DeploymentSpec(false, List.of(), null, null, List.of());
 
     /**
      * The refs the repository declares itself deployable from — {@code deploy_branches:} in the
      * file.
      *
      * <p><b>Nothing in this component matches on it.</b> Where a build deploys is decided by the
-     * environment rows: a green build deploys wherever an environment listens to its branch, on
-     * either plane. The key is parsed and validated because the <b>release flow</b> reads the same
+     * environment rows: a release lands in the tier the platform designates. The key is parsed and validated because the <b>release flow</b> reads the same
      * file for its promotion targets, and this parser is strict — an unknown key fails a
      * deployment, so a key another reader needs has to be one this reader knows. Reading it and
      * ignoring it is cheaper than two files, and far cheaper than a lenient parser.

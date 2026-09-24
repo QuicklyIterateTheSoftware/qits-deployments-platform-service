@@ -44,9 +44,12 @@ import org.junit.jupiter.api.Test;
  *       platform plane wrote before V8 — gets one row per resource rather than one per deployment.
  * </ul>
  *
- * <p><b>Two of them migrate halfway</b>, and they are the only tests here that do: V8 carries this
- * lineage's one backfill, and a backfill is invisible to a suite that always starts from an empty
- * schema. They stop at V7, write the rows the old code wrote, and migrate the rest of the way.
+ * <p><b>Four of them migrate halfway</b>, and they are the only tests here that do: a backfill is
+ * invisible to a suite that always starts from an empty schema, so each of them stops at the version
+ * before, writes the rows the old code wrote, and migrates on. Two hold V8 (the plane becoming a
+ * column and a tier) and stop at 12, because V13 drops the very column they read; two hold V13 (the
+ * plane being deleted, and every one of its services being LINKED into the designated tier instead of
+ * carrying no link at all) and migrate the whole way.
  */
 public class PdSchemaTest {
 
@@ -128,8 +131,8 @@ public class PdSchemaTest {
               + " ('env-1', 'dev', 'qits-net', true, timestamp with time zone"
               + " '2026-08-06 10:00:00Z')");
       sql.execute(
-          "insert into pd_service (id, name, deployment_target, branch, available_on_env,"
-              + " health_path, created_at) values ('svc-1', 'qits-gateway', 'ENVIRONMENT', null,"
+          "insert into pd_service (id, name, branch, available_on_env,"
+              + " health_path, created_at) values ('svc-1', 'qits-gateway', null,"
               + " true, '/q/health/ready', timestamp with time zone '2026-08-06 10:00:00Z')");
       sql.execute(
           "insert into pd_service_link (id, service_id, environment_id, created_at) values"
@@ -142,11 +145,13 @@ public class PdSchemaTest {
               "select s.name || '|' || l.environment_id from pd_service s"
                   + " join pd_service_link l on l.service_id = s.id"));
 
-      // A platform service has NO link row at all, and that absence is what makes an environment
-      // created tomorrow pick it up.
+      // A service with NO link row is still expressible, and it MEANS the opposite of what it used
+      // to. It was the platform plane — present everywhere by being linked nowhere in particular,
+      // which is what made an environment created tomorrow pick it up — and since V13 it is a
+      // service that runs nowhere: a row nothing has registered into a tier.
       sql.execute(
-          "insert into pd_service (id, name, deployment_target, branch, available_on_env,"
-              + " health_path, created_at) values ('svc-2', 'qits-idp', 'PLATFORM', 'main', false,"
+          "insert into pd_service (id, name, branch, available_on_env,"
+              + " health_path, created_at) values ('svc-2', 'qits-idp', 'main', false,"
               + " '/idp/q/health/ready', timestamp with time zone '2026-08-06 10:00:00Z')");
       assertEquals(
           List.of("qits-idp"),
@@ -262,7 +267,11 @@ public class PdSchemaTest {
       resource(sql, "r-stale", "qits-ci", "'dev'", "db", "qits_ci");
     }
 
-    migrate(url, null);
+    // STOPPED AT 12, AND THAT IS NOT A SHORTCUT. V13 deletes the platform plane and drops
+    // `deployment_target` from both tables, so migrating the rest of the way would leave this test
+    // unable to read the column whose backfill it is about. V8's statement is still true of every
+    // database that passed through it; V13's own conversion is the pair of tests below.
+    migrate(url, "12");
 
     try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
         Statement sql = connection.createStatement()) {
@@ -314,7 +323,8 @@ public class PdSchemaTest {
       resource(sql, "r-plane", "qits-ci", "null", "db", "qits_ci");
     }
 
-    migrate(url, null);
+    // At 12 for the reason the test above stops there: V13 drops the column this reads.
+    migrate(url, "12");
 
     try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
         Statement sql = connection.createStatement()) {
@@ -329,6 +339,111 @@ public class PdSchemaTest {
           rows(sql, "select coalesce(environment_name, '') from pd_resource"),
           "and the credential row keeps the key its writer will keep using");
     }
+  }
+
+  @Test
+  public void theV13ConversionLinksEveryPlatformServiceIntoTheDesignatedTier() throws Exception {
+    // V13's backfill, and it is the one this lineage could least afford to get wrong. A PLATFORM row
+    // carried NO pd_service_link, because carrying none WAS how the plane spelled "present in every
+    // environment". Deleting the column alone would leave exactly those rows linked nowhere — which
+    // after V13 reads as "runs nowhere": the link query would stop returning them, the flat listing
+    // would report them with no tier, and the deployer would no longer manage the nine services the
+    // platform is built out of.
+    //
+    // The translation is decidable for V8's own reason: the plane already deployed INTO the
+    // designated tier, so the tier half is what survives the plane's deletion and nothing is guessed.
+    String url = EmbeddedPg.url("pd_deployments_" + UUID.randomUUID().toString().replace("-", ""));
+    migrate(url, "12");
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      sql.execute(
+          "insert into pd_environment (id, name, network, platform, created_at) values"
+              + " ('env-dev', 'dev', 'qits-net', true, timestamp with time zone"
+              + " '2026-08-06 10:00:00Z'),"
+              + " ('env-prod', 'prod', 'qits-env-prod', false, timestamp with time zone"
+              + " '2026-08-06 10:00:00Z')");
+      // Two of the nine, as the plane wrote them: PLATFORM and no link at all.
+      service(sql, "svc-idp", "qits-platform-idp", "PLATFORM");
+      service(sql, "svc-ci", "qits-ci", "PLATFORM");
+      // ...and an ordinary tier service, which must come out of this with the one link it had.
+      service(sql, "svc-gw", "qits-gateway", "ENVIRONMENT");
+      sql.execute(
+          "insert into pd_service_link (id, service_id, environment_id, created_at) values"
+              + " ('link-gw', 'svc-gw', 'env-prod', timestamp with time zone"
+              + " '2026-08-06 10:00:00Z')");
+    }
+
+    migrate(url, null);
+
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      assertEquals(
+          List.of("qits-ci|env-dev", "qits-gateway|env-prod", "qits-platform-idp|env-dev"),
+          rows(
+              sql,
+              "select s.name || '|' || l.environment_id from pd_service s"
+                  + " join pd_service_link l on l.service_id = s.id order by s.name"),
+          "every one of the plane's services is linked into the designated tier, and the tier"
+              + " service keeps the one link it had rather than gaining a second");
+
+      assertEquals(
+          List.of(),
+          rows(
+              sql,
+              "select name from pd_service where id not in"
+                  + " (select service_id from pd_service_link)"),
+          "nothing is left linked nowhere, which after V13 would mean running nowhere");
+
+      assertEquals(
+          List.of(),
+          rows(
+              sql,
+              "select table_name from information_schema.columns where column_name ="
+                  + " 'deployment_target' order by table_name"),
+          "and the column that said which plane is gone from both tables — on pd_deployment it HAS"
+              + " to be, because V8 made it not null with no default and the writer that filled it"
+              + " is deleted, so an insert would fail from the first release onwards");
+    }
+  }
+
+  @Test
+  public void theV13ConversionLeavesAnUndesignatedInstallAlone() throws Exception {
+    // V8's own second half, restated one migration on: an install mid-bootstrap has designated no
+    // tier, so the cross join answers no rows, the insert inserts nothing, and the columns still go.
+    // Every database the suite migrates is this case, which is why it is worth pinning rather than
+    // assuming — a fresh install must not end up with a link to nowhere.
+    String url = EmbeddedPg.url("pd_deployments_" + UUID.randomUUID().toString().replace("-", ""));
+    migrate(url, "12");
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      service(sql, "svc-idp", "qits-platform-idp", "PLATFORM");
+    }
+
+    migrate(url, null);
+
+    try (Connection connection = DriverManager.getConnection(url, EmbeddedPg.USER, EmbeddedPg.PASSWORD);
+        Statement sql = connection.createStatement()) {
+      assertEquals(List.of(), rows(sql, "select id from pd_service_link"), "no tier to link into");
+      assertEquals(
+          List.of("qits-platform-idp"),
+          rows(sql, "select name from pd_service"),
+          "and the row is still there, reporting honestly that it runs nowhere");
+    }
+  }
+
+  /** A pre-V13 service row, which is the only shape that still states a plane. */
+  private static void service(Statement sql, String id, String name, String target)
+      throws SQLException {
+    sql.execute(
+        "insert into pd_service (id, name, deployment_target, branch, available_on_env,"
+            + " health_path, created_at) values ('"
+            + id
+            + "', '"
+            + name
+            + "', '"
+            + target
+            + "', null, false, '/q/health/ready', timestamp with time zone"
+            + " '2026-08-06 10:00:00Z')");
   }
 
   /** A freshly created, freshly migrated database — one per test, so no test inherits rows. */
@@ -530,30 +645,11 @@ public class PdSchemaTest {
   private static void deployment(
       Statement sql, String id, String applicationName, String environmentId, String sha, String status)
       throws Exception {
-    // The plane is stated, because V8's column is not null and carries no default — pd_service's
-    // rule, applied to the execution row. A row with a tier is an environment deployment here; the
-    // platform-plane cases below say so explicitly.
-    deployment(
-        sql,
-        id,
-        applicationName,
-        environmentId,
-        sha,
-        status,
-        "null".equals(environmentId) ? "PLATFORM" : "ENVIRONMENT");
-  }
-
-  private static void deployment(
-      Statement sql,
-      String id,
-      String applicationName,
-      String environmentId,
-      String sha,
-      String status,
-      String target)
-      throws Exception {
+    // There was a second arm here that stated the PLANE, because V8's `deployment_target` was not
+    // null and carried no default. V13 dropped the column with the plane, so a row says where it ran
+    // and nothing else.
     sql.execute(
-        "insert into pd_deployment (id, application_name, environment_id, deployment_target,"
+        "insert into pd_deployment (id, application_name, environment_id,"
             + " commit_sha, status, container_name, created_at) values ('"
             + id
             + "', '"
@@ -561,8 +657,6 @@ public class PdSchemaTest {
             + "', "
             + environmentId
             + ", '"
-            + target
-            + "', '"
             + sha
             + "', '"
             + status

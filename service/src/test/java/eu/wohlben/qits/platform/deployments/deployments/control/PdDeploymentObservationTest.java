@@ -8,7 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
@@ -69,10 +68,6 @@ public class PdDeploymentObservationTest {
               row.id = id;
               row.applicationName = applicationName;
               row.environmentId = environmentId;
-              row.deploymentTarget =
-                  environmentId == null
-                      ? PdDeploymentTarget.PLATFORM
-                      : PdDeploymentTarget.ENVIRONMENT;
               row.commitSha = SHA_A;
               row.status = status;
               row.containerName = containerName;

@@ -10,12 +10,14 @@ import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeployment;
 import eu.wohlben.qits.platform.deployments.deployments.entity.PdDeploymentStatus;
 import eu.wohlben.qits.platform.deployments.deployments.persistence.PdDeploymentRepository;
 import eu.wohlben.qits.platform.deployments.environments.control.ApplicationKeys;
-import eu.wohlben.qits.platform.deployments.environments.entity.PdDeploymentTarget;
+import eu.wohlben.qits.platform.deployments.environments.entity.PdEnvironment;
+import eu.wohlben.qits.platform.deployments.environments.persistence.PdEnvironmentRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import java.time.Instant;
 import java.util.UUID;
 import org.hamcrest.Matchers;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -37,12 +39,42 @@ public class PdApplicationRetirementTest {
 
   private static final String APPLICATIONS = "/platform-deployments/api/applications/";
 
+  /**
+   * The tier the fixtures below name, as a REAL environment row.
+   *
+   * <p>It did not have to exist while these fixtures stood for the platform plane: their rows carried
+   * no tier, they were addressed {@code platform:<name>}, and the deployment listing's {@code
+   * ?environmentId=platform} arm skipped the tier check because the plane was not a row and so could
+   * not be missing. The plane is deleted, so a place is a tier — and the listing's own rule is that a
+   * tier which does not exist is a 404 rather than an empty list. The deployment ROWS still need no
+   * environment row (V1: no FK, so history outlives the topology); the LISTING does.
+   */
+  @BeforeEach
+  void theTierExists() {
+    QuarkusTransaction.requiringNew()
+        .run(
+            () -> {
+              if (environments.findByIdOptional(TIER).isEmpty()) {
+                PdEnvironment tier = new PdEnvironment();
+                tier.id = TIER;
+                tier.name = TIER;
+                tier.network = "qits-env-" + TIER;
+                // Never the designated one: designation is moved by creating a tier through the
+                // door, and a fixture that took it would decide where every other class's release
+                // lands.
+                tier.platform = false;
+                tier.createdAt = Instant.now();
+                environments.persist(tier);
+              }
+            });
+  }
+
   @jakarta.inject.Inject PdDeploymentRepository deployments;
+  @jakarta.inject.Inject PdEnvironmentRepository environments;
 
   private String deployment(
       String applicationName,
       String environmentId,
-      PdDeploymentTarget target,
       PdDeploymentStatus status,
       String containerName,
       String detail) {
@@ -54,7 +86,6 @@ public class PdApplicationRetirementTest {
               row.id = id;
               row.applicationName = applicationName;
               row.environmentId = environmentId;
-              row.deploymentTarget = target;
               row.commitSha = SHA;
               row.status = status;
               row.containerName = containerName;
@@ -66,8 +97,19 @@ public class PdApplicationRetirementTest {
     return id;
   }
 
-  private String platformRow(String applicationName, PdDeploymentStatus status, String detail) {
-    return deployment(applicationName, null, PdDeploymentTarget.PLATFORM, status, null, detail);
+  /**
+   * The ordinary shape, and the one every fixture here takes now: a row in a tier.
+   *
+   * <p>It was {@code platformRow} — a row with NO tier at all, which was how the platform plane
+   * spelled itself and was addressed {@code platform:<name>}. The plane is deleted, so a row names
+   * the tier it ran in and the id is that tier's. The tier id is a literal rather than a created
+   * environment because a deployment row has no FK to one (V1's rule: history outlives the topology),
+   * and these doors read the rows.
+   */
+  private static final String TIER = "env-retire-tier";
+
+  private String tieredRow(String applicationName, PdDeploymentStatus status, String detail) {
+    return deployment(applicationName, TIER, status, null, detail);
   }
 
   private PdDeployment rowOf(String deploymentId) {
@@ -90,7 +132,7 @@ public class PdApplicationRetirementTest {
 
   private int rowCount(String applicationName) {
     return QuarkusTransaction.requiringNew()
-        .call(() -> deployments.listForPlaceNewestFirst(applicationName, null).size());
+        .call(() -> deployments.listForPlaceNewestFirst(applicationName, TIER).size());
   }
 
   // --- what it writes -----------------------------------------------------------------------------
@@ -101,14 +143,14 @@ public class PdApplicationRetirementTest {
     // left behind with the failures of the builds that discovered the rename. Three rows, and the
     // newest is what the listing calls the application's state.
     String failure = "[resource provisioning failed: the database is already provisioned]";
-    String oldest = platformRow("retire-renamed", PdDeploymentStatus.FAILED, failure);
-    String middle = platformRow("retire-renamed", PdDeploymentStatus.FAILED, failure);
-    String newest = platformRow("retire-renamed", PdDeploymentStatus.FAILED, failure);
+    String oldest = tieredRow("retire-renamed", PdDeploymentStatus.FAILED, failure);
+    String middle = tieredRow("retire-renamed", PdDeploymentStatus.FAILED, failure);
+    String newest = tieredRow("retire-renamed", PdDeploymentStatus.FAILED, failure);
     int before = rowCount("retire-renamed");
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-renamed/decommission")
+        .post(APPLICATIONS + TIER + ":retire-renamed/decommission")
         .then()
         .statusCode(200)
         .body("applicationName", Matchers.equalTo("retire-renamed"))
@@ -138,13 +180,13 @@ public class PdApplicationRetirementTest {
 
   @Test
   public void theReadSurfaceSaysDecommissionedRatherThanTheStaleFailure() {
-    String id = platformRow("retire-on-the-surface", PdDeploymentStatus.FAILED, "boom");
+    String id = tieredRow("retire-on-the-surface", PdDeploymentStatus.FAILED, "boom");
 
-    given().when().post(APPLICATIONS + "platform:retire-on-the-surface/decommission").then().statusCode(200);
+    given().when().post(APPLICATIONS + TIER + ":retire-on-the-surface/decommission").then().statusCode(200);
 
     given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=platform")
+        .get("/platform-deployments/api/deployments?environmentId=" + TIER)
         .then()
         .statusCode(200)
         .body(
@@ -157,12 +199,12 @@ public class PdApplicationRetirementTest {
     // SPEC_UNREADABLE is the one word here that is not terminal: DeployService re-reads such a row
     // on the observation's cadence until the git host answers. A retired application's spec never
     // will, so leaving one would be a retry running for ever against an address nobody maintains.
-    String stranded = platformRow("retire-stranded", PdDeploymentStatus.SPEC_UNREADABLE, "403");
-    String newest = platformRow("retire-stranded", PdDeploymentStatus.FAILED, "boom");
+    String stranded = tieredRow("retire-stranded", PdDeploymentStatus.SPEC_UNREADABLE, "403");
+    String newest = tieredRow("retire-stranded", PdDeploymentStatus.FAILED, "boom");
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-stranded/decommission")
+        .post(APPLICATIONS + TIER + ":retire-stranded/decommission")
         .then()
         .statusCode(200)
         // Newest first, and both of them: the current row because it is the state, the older one
@@ -176,12 +218,12 @@ public class PdApplicationRetirementTest {
   @Test
   public void retiringTwiceSaysTheSameThingOnceRatherThanGrowingTheColumn() {
     String failure = "[deployment spec unreadable: line 42]";
-    String id = platformRow("retire-twice", PdDeploymentStatus.FAILED, failure);
+    String id = tieredRow("retire-twice", PdDeploymentStatus.FAILED, failure);
 
-    given().when().post(APPLICATIONS + "platform:retire-twice/decommission").then().statusCode(200);
+    given().when().post(APPLICATIONS + TIER + ":retire-twice/decommission").then().statusCode(200);
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-twice/decommission")
+        .post(APPLICATIONS + TIER + ":retire-twice/decommission")
         .then()
         .statusCode(200)
         // The second call finds the row already retired and says so — it is the current row, so it
@@ -204,22 +246,19 @@ public class PdApplicationRetirementTest {
   }
 
   @Test
-  public void aPlatformApplicationIsFoundByItsPlaneEvenThoughItNamesTheDesignatedTier() {
-    // V8's silent regression, guarded on this door too: a platform deployment carries the
-    // designated tier now, so a `platform:` read that asked "the rows with no tier" would settle a
-    // pre-V8 row and leave the one an operator is looking at exactly as it was.
+  public void aFormerPlatformApplicationIsAddressedByTheTIERItRunsIn() {
+    // What replaced `aPlatformApplicationIsFoundByItsPlaneEvenThoughItNamesTheDesignatedTier`. That
+    // test held that `platform:<name>` is how such an application is addressed, and that reading the
+    // plane as "the rows with no tier" would settle a pre-V8 row and leave the live one alone. The
+    // plane is deleted: the id is `<tier>:<name>` for everything, and the rows of the nine that were
+    // the plane already name the designated tier, because V8 put them there.
     String id =
         deployment(
-            "retire-planed",
-            "env-retire-designated",
-            PdDeploymentTarget.PLATFORM,
-            PdDeploymentStatus.FAILED,
-            null,
-            "boom");
+            "retire-planed", "env-retire-designated", PdDeploymentStatus.FAILED, null, "boom");
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-planed/decommission")
+        .post(APPLICATIONS + "env-retire-designated:retire-planed/decommission")
         .then()
         .statusCode(200)
         .body("environmentId", Matchers.equalTo("env-retire-designated"))
@@ -229,22 +268,31 @@ public class PdApplicationRetirementTest {
   }
 
   @Test
+  public void aCachedPlatformIdNamesNoTierAndIsRefusedRatherThanMatchedLoosely() {
+    // The other end of that cutover, and it is worth pinning rather than assuming. `platform:` is no
+    // longer a stand-in for an environment id, so a client still holding one parses it as a TIER
+    // literally called `platform` — which names no row. The door must answer "no such application"
+    // rather than fall through to something that looks close enough.
+    deployment("retire-cached", "env-retire-cached", PdDeploymentStatus.FAILED, null, "boom");
+
+    given()
+        .when()
+        .post(APPLICATIONS + "platform:retire-cached/decommission")
+        .then()
+        .statusCode(404);
+  }
+
+  @Test
   public void anEnvironmentApplicationIsAddressedByTheKeyTheListingCarries() {
     String id =
         deployment(
-            "retire-tiered",
-            "env-retire-tiered",
-            PdDeploymentTarget.ENVIRONMENT,
-            PdDeploymentStatus.FAILED,
-            null,
-            null);
+            "retire-tiered", "env-retire-tiered", PdDeploymentStatus.FAILED, null, null);
 
     given()
         .when()
         .post(
             APPLICATIONS
-                + ApplicationKeys.of(
-                    PdDeploymentTarget.ENVIRONMENT, "env-retire-tiered", "retire-tiered")
+                + ApplicationKeys.of("env-retire-tiered", "retire-tiered")
                 + "/decommission")
         .then()
         .statusCode(200)
@@ -261,11 +309,11 @@ public class PdApplicationRetirementTest {
   public void anApplicationThatIsSTILLDEPLOYEDIsRefused() {
     // The id names a place by string, and a typo names a live application just as well as a dead
     // one. This is the refusal that makes the door safe to hand an operator.
-    platformRow("retire-serving", PdDeploymentStatus.ACTIVE, null);
+    tieredRow("retire-serving", PdDeploymentStatus.ACTIVE, null);
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-serving/decommission")
+        .post(APPLICATIONS + TIER + ":retire-serving/decommission")
         .then()
         .statusCode(409)
         .body("message", Matchers.containsString("still deployed"));
@@ -273,7 +321,7 @@ public class PdApplicationRetirementTest {
     assertEquals(
         PdDeploymentStatus.ACTIVE,
         QuarkusTransaction.requiringNew()
-            .call(() -> deployments.listForPlaceNewestFirst("retire-serving", null).get(0).status),
+            .call(() -> deployments.listForPlaceNewestFirst("retire-serving", TIER).get(0).status),
         "a refusal writes nothing");
   }
 
@@ -282,11 +330,11 @@ public class PdApplicationRetirementTest {
     // SCALED_TO_ZERO is not terminal in the sense the others are: the swarm service exists, holds
     // its ports and its volumes, and one scale back up makes the row ACTIVE again. Calling that
     // decommissioned would leave the service with nothing pointing at it.
-    platformRow("retire-stopped", PdDeploymentStatus.SCALED_TO_ZERO, null);
+    tieredRow("retire-stopped", PdDeploymentStatus.SCALED_TO_ZERO, null);
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-stopped/decommission")
+        .post(APPLICATIONS + TIER + ":retire-stopped/decommission")
         .then()
         .statusCode(409)
         .body("message", Matchers.containsString("SCALED_TO_ZERO"));
@@ -297,11 +345,11 @@ public class PdApplicationRetirementTest {
     // QUEUED and STARTING belong to the worker's state machine, and it is about to write the next
     // word. A row settled out from under it would be overwritten a second later and the operator
     // would never learn their action did nothing.
-    String id = platformRow("retire-in-flight", PdDeploymentStatus.QUEUED, null);
+    String id = tieredRow("retire-in-flight", PdDeploymentStatus.QUEUED, null);
 
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-in-flight/decommission")
+        .post(APPLICATIONS + TIER + ":retire-in-flight/decommission")
         .then()
         .statusCode(409)
         .body("message", Matchers.containsString("deploy worker"));
@@ -325,7 +373,7 @@ public class PdApplicationRetirementTest {
   public void anApplicationNothingEverDeployedHasNothingToRetire() {
     given()
         .when()
-        .post(APPLICATIONS + "platform:retire-never-deployed-anywhere/decommission")
+        .post(APPLICATIONS + TIER + ":retire-never-deployed-anywhere/decommission")
         .then()
         .statusCode(404)
         .body("message", Matchers.containsString("nothing to retire"));
