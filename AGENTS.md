@@ -592,6 +592,21 @@ Four things about the rendering, each easy to undo by accident:
   already on is an error, so a live service gains or loses one by hand (`service update --network-rm
   <net> --network-add name=<net>,alias=…`, which recreates the task) or by a `service rm` and a
   redeploy. A declared alias reaches a service only on its next **create**.
+- **…which is why a declared alias MISSING from the live service forces that create**, the declared
+  volume's arm applied to the second shape change a deployment performs for itself
+  (`missingDeclaredAlias`). Without it the environment-qualified alias above would reach only
+  services created after it shipped — measured on the estate: `qits-platform-idp` resolved and
+  `dev-qits-platform-idp` did not, after two deployments carrying the declaration. It is the lever
+  that makes the plane cutover **staggered**: nobody here has host access to run `service rm` by
+  hand, and each platform service recreates once on its own next deployment, as its own release, and
+  never again. Everything the volume arm says holds here word for word — one-directional (an alias
+  the service carries that nothing declares is not a reason to recreate, and an application
+  declaring none spends no CLI call), an inspect that cannot answer recreates **nothing**, a WARN
+  names the service and the alias first, and a self-update never recreates.
+  `aLiveServiceWithAliasesAndNoDeclarationsIsUPDATEDANDNOTRECREATED` is the estate protection and is
+  named so nobody deletes it. The live aliases are read as the **union over all attachments**, never
+  matched against the shared network by name: the daemon resolves a network name to its **id** when
+  it stores the spec, so a name match would match nothing anywhere and read as "no aliases at all".
 
 **`update_order` in `.config/qits/deployments.yml`** is `start-first` (default) or `stop-first`, per
 repository, and only the repository knows: a published host port, a single-writer store or a held
@@ -1764,8 +1779,13 @@ plane — while the old `<env>-<app>` swarm service kept running with its alias,
 managed by nobody: the plane deploys under the bare alias and never addresses the qualified name
 again. `dev-qits-configuration` half-failed as exactly that orphan for hours after
 qits-configuration's flip on 2026-09-07 and was removed by hand from an admin workspace. (The
-reverse direction was always guarded — `registerInEnvironments` refuses it on the record — only the
-forward teardown was never written.) Now the conversion owes the runtime a retirement, and five
+reverse direction used to be guarded — `registerInEnvironments` refused it on the record — and only
+the forward teardown was never written. **That guard is gone since 2026-09-23**, because the reverse
+direction stopped being something a repository can ask for: `deployment_target` is retired in the
+parser, so the catalogue registration is the authority on which plane a registered service is on and
+`register` routes a catalogue-`PLATFORM` service to the platform arm whatever the spec says. See *The
+plane is the catalogue's answer* below — refusing it on the spec's word is what stopped all nine
+platform services deploying that day.) Now the conversion owes the runtime a retirement, and five
 things hold it up:
 
 - **The retirement waits for a HEALTHY successor.** `registerPlatform` collects the decommissioned
@@ -1792,6 +1812,46 @@ things hold it up:
 - **The deployer's own flip is not this path's and cannot be**: that deployment is `HANDED_OFF` and
   settled by the successor's sweep, whose map is empty. README's hand step for the plane flip
   (`docker service rm <env>-qits-deployments` once the successor is healthy) stays.
+
+### The plane is the catalogue's answer, not the file's (2026-09-23)
+
+**The deployer refused to deploy its own fix, and that is the worst shape this component can take.**
+`deployment_target` was retired in `DeploymentSpecParser` — the key is accepted and ignored, and every
+spec a parse produces carries `ENVIRONMENT` — while `DeployService.register` still chose its arm off
+`spec.target()` and `registerInEnvironments` still refused an application the catalogue held as
+`PLATFORM`. So from release `2026.923.142928`, live at 14:42, **every** deployment of **all nine**
+platform services came back `[refused: <app> is a platform service and this commit asks for
+deployment_target: environment …]`, qits-deployments' own next version included — ten refusals, with
+ordinary environment-tier applications deploying green throughout, which is what made it read as a
+per-application problem rather than the one routing line it was.
+
+**The rule that replaced it: a registration is the authority on which plane an already-registered
+service is on**, until the plane itself is deleted. `register` asks the catalogue first and routes a
+`PdDeploymentTarget.PLATFORM` row to `registerPlatform` whatever the spec says. Three things about it,
+each easy to undo by accident:
+
+- **The spec's own `PLATFORM` stays an ADDITIONAL trigger and is not dead code.** It is no longer
+  producible from a file, but it is the CONVERSION's trigger — an environment application becoming a
+  platform service — and that is the one direction with something to decide, since there is no
+  catalogue row saying `PLATFORM` yet for nothing but the spec to ask on behalf of. It is reachable
+  in-process and from the suite: the four conversion tests construct a `SpecSource.DeploymentSpec(
+  PLATFORM, …)` directly. Deleting the arm deletes the conversion.
+- **The refusal is gone because it became UNEXPRESSIBLE, not because it became wrong.** Going back is
+  still not a conversion and every reason is still true (see *A plane conversion retires its tier
+  services*); what changed is that no repository can ask for it, so a spec saying `ENVIRONMENT` about a
+  platform service is the parser's only possible answer rather than anybody's statement. **Do not
+  restore the branch** — if going back is ever wanted it is a deliberate door (retire the platform
+  service, then deploy), never a value read out of a file that no longer carries one.
+- **`recordRejection` is kept and has no caller left**, and its javadoc says so — the
+  `HealthGate.await` stance. It was that branch's, and what it is worth keeping for is the shape: the
+  intake is fire-and-forget, so a `FAILED` row on the plane is the only surface a registration that
+  queued nothing can surface on.
+
+`PdDeploymentFlowTest.aServiceTheCatalogueHoldsAsPlatformKeepsThePlaneWhateverTheSpecSays` is the
+incident's regression test — it replaced the test that asserted the refusal — and what it pins is the
+wire alias as much as the plane: swarm cannot rename a service, so the environment arm would have
+created `<env>-<app>` beside the bare-named service that is serving and left every peer dialling a
+name nothing answers to.
 
 ### The application name is the repository's NAME, never its storage id (2026-08-21)
 
