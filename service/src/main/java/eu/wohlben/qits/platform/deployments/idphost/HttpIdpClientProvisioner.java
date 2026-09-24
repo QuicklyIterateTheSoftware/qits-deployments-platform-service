@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import eu.wohlben.qits.platform.deployments.deployments.control.IdpClientProvisioner;
 import eu.wohlben.qits.platform.deployments.deployments.control.ResourceException;
+import eu.wohlben.qits.platform.deployments.environments.control.PdNetworks;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -26,16 +28,18 @@ import org.jboss.logging.Logger;
  * port. There is one idp per platform, so there is nothing to configure, and no caller of this class
  * supplies it.
  *
- * <p><b>It is the ONE bare, un-tiered address left in this component, and it is a known debt rather
- * than a convention.</b> Every other derived address carries the tier now that the platform plane is
- * deleted ({@code PdNetworks.alias}), including the {@code QITS_RESOURCE_IDP_URL} this component
- * injects into the containers it starts ({@code ResourceProvisioning.idpUrl}). This one cannot: the
- * {@link IdpClientProvisioner} seam is a courier of three requests and carries no tier, so
- * qualifying the address means widening all three verbs. Until that happens the value here resolves
- * only while qits-platform-idp's bare-named swarm service is still up — which it is, because
- * retiring those services is a hand step (AGENTS.md, <i>Retiring the plane's bare-named
- * services</i>). <b>Widen the seam before removing {@code qits-platform-idp} by hand</b>, or
- * provisioning an {@code idp:client} resource starts failing with an unresolvable host.
+ * <p><b>The address carries the tier, and the SEAM still does not.</b> Every derived address in this
+ * component carries it now that the platform plane is deleted ({@code PdNetworks.alias}), including
+ * the {@code QITS_RESOURCE_IDP_URL} injected into the containers this component starts ({@code
+ * ResourceProvisioning.idpUrl}). This one was the last exception: it read a bare
+ * {@code qits-platform-idp} and so resolved only while that plane-era swarm service was still up,
+ * which made retiring that service break every {@code idp:client} provisioning. It now derives
+ * {@code <env>-qits-platform-idp} from this component's OWN environment (see {@link
+ * #resolveBaseUrl}). The debt that remains is narrower and unchanged in kind: {@link
+ * IdpClientProvisioner} is a courier of three requests carrying no tier, so this uses the
+ * environment this component runs in rather than the one the application being provisioned for runs
+ * in. Identical on a single-environment estate; the day a second tier exists, the three verbs have
+ * to take it.
  *
  * <p><b>The credential is this component's own, never the target application's.</b> qits-idp's
  * service-client API takes Basic auth from a caller that must itself be a service client holding
@@ -63,13 +67,53 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
   static final int SECRET_MAX_CHARS = 128;
 
   /**
+   * The environment this component is deployed into, which is the tier whose idp it provisions
+   * against. Injected into every container by this very component
+   * ({@code BootResourceRegistration.ENVIRONMENT_VARIABLE}), so it is always present on the estate
+   * and falls back to {@code dev} for a clone-alone run.
+   */
+  @ConfigProperty(name = "QITS_ENVIRONMENT", defaultValue = "dev")
+  String environment;
+
+  /**
    * The service-client API's base — derived by default, the postgres host's own arrangement. A
    * plain field rather than a method so {@code IdpStub} can point one instance at a real socket,
    * the {@code ExtrasStub.source(...)} shape: there is no config key for this, on purpose (see the
    * class javadoc), so a test override is the only override there is.
+   *
+   * <p>Null until {@link #resolveBaseUrl} runs at startup, because the tier it carries comes from
+   * an injected field and a field initialiser would run before injection. A test that sets it keeps
+   * what it set: the resolve only fills a null.
    */
-  String baseUrl =
-      "http://" + IDP_APPLICATION + ":" + IDP_PORT + "/idp/api/service-clients";
+  String baseUrl;
+
+  /**
+   * THE TIER IS DERIVED HERE, and this is what retires the last bare address in this component.
+   *
+   * <p>It used to read {@code http://qits-platform-idp:8080/...} — bare, because a platform-tier
+   * service was one process for the whole estate. That plane is deleted, the idp is an ordinary
+   * application addressed {@code <env>-<application>}, and its bare-named swarm service is retired
+   * as part of the rollout — at which point a bare address here would fail every {@code idp:client}
+   * provisioning with an unresolvable host.
+   *
+   * <p><b>The seam is still not widened, and that debt is unchanged.</b> {@link
+   * IdpClientProvisioner} carries no tier, so this uses the environment THIS component runs in
+   * rather than the environment of the application being provisioned for. Those are the same string
+   * on a single-environment estate and would diverge the day a second tier exists — at which point
+   * the three verbs have to take it, which is the fix the class javadoc describes. What has changed
+   * is that the address now resolves at all.
+   */
+  @PostConstruct
+  void resolveBaseUrl() {
+    if (baseUrl == null) {
+      baseUrl =
+          "http://"
+              + PdNetworks.alias(environment, IDP_APPLICATION)
+              + ":"
+              + IDP_PORT
+              + "/idp/api/service-clients";
+    }
+  }
 
   @ConfigProperty(name = "qits.platform.deployments.idp-timeout-seconds")
   long timeoutSeconds;
