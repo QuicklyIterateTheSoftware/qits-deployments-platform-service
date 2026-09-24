@@ -1822,17 +1822,30 @@ It is survivable where the work is claim-guarded — `GcSchedule` refuses a seco
 store's active-run check, not merely through per-JVM `ConcurrentExecution.SKIP` — but that is one
 component's guarantee and not a property of the six.
 
-Verify the premise rather than trusting it. After the qits-350 releases have all deployed, read what
-the running containers actually hold:
+Verify the premise rather than trusting it — and **do not verify it by diffing env KEYS against
+config**, which is the obvious check and the wrong one. A container's environment is frozen at
+creation, so a service that deployed BEFORE the entries were corrected holds the old VALUE under a
+key that config now states correctly: the key diff comes back clean while the container still dials
+the bare alias. The system API exposes env keys and never values, so nothing about the live spec can
+tell those two apart.
 
-    docker ps --format '{{.Names}}' | while read c; do
-      docker exec "$c" env 2>/dev/null | grep -E '=(https?://)?qits-(platform-)?(idp|mirror|events|configuration|maintenance|orchestrator|system|deployments)[:/]' \
-        | sed "s|^|$c |"
-    done
+**The reliable signal is time, not shape: every consumer must have DEPLOYED since the entries were
+corrected.** The qits-350 entries were corrected on 2026-09-24 at roughly 15:30 UTC (qits-configuration
+revisions ~424-451). So:
 
-Anything it prints is a container still dialling a bare alias, and that one's predecessor has to stay
-until it is redeployed. An empty answer means the bare names serve nothing and all nine predecessors
-can go first.
+    GET qits-deployments:8080/platform-deployments/api/deployments?environmentId=<id>
+    # for each applicationName, the newest ACTIVE row's createdAt must be AFTER the correction
+
+Any application whose newest deployment predates it is still carrying bare addresses and must be
+redeployed before the bare-named services are retired. Known to be in that state at the time of
+writing: **qits-artifacts**, which deployed at 14:42:37 and whose entries were corrected afterwards.
+
+The direct reading, if you have a shell on the node, settles it for a single container and is worth
+it for the ones you are about to strand:
+
+    docker exec <container> env | grep -E 'qits-(platform-)?(idp|mirror|events|configuration|maintenance|orchestrator|system|deployments)'
+
+Anything printing a BARE alias is a container that breaks the moment its predecessor goes.
 
 **THE EDGE IS CIRCULAR AND NEEDS ITS IMAGE ON THE NODE FIRST.** It fronts the registry, so removing
 it takes away the very route a `docker service create` would pull the successor's image through —
