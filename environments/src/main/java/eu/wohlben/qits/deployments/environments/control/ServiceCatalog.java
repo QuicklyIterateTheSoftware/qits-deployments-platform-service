@@ -54,7 +54,7 @@ public class ServiceCatalog {
    * deadline the read surface spends, for the same caller. See {@link #upsert(Upsert)}, which is the
    * only method here that spends it.
    */
-  @ConfigProperty(name = "qits.platform.deployments.db-retry-deadline")
+  @ConfigProperty(name = "qits.deployments.db-retry-deadline")
   Duration writeDeadline;
 
   /**

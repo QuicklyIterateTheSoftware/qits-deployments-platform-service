@@ -62,7 +62,7 @@ public class PdApplicationRetirementTest {
                 // Never the designated one: designation is moved by creating a tier through the
                 // door, and a fixture that took it would decide where every other class's release
                 // lands.
-                tier.platform = false;
+                tier.designated = false;
                 tier.createdAt = Instant.now();
                 environments.persist(tier);
               }

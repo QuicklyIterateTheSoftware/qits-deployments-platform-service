@@ -115,16 +115,16 @@ public class HttpIdpClientProvisioner implements IdpClientProvisioner {
     }
   }
 
-  @ConfigProperty(name = "qits.platform.deployments.idp-timeout-seconds")
+  @ConfigProperty(name = "qits.deployments.idp-timeout-seconds")
   long timeoutSeconds;
 
-  @ConfigProperty(name = "qits.platform.deployments.idp-attempts")
+  @ConfigProperty(name = "qits.deployments.idp-attempts")
   int attempts;
 
-  @ConfigProperty(name = "qits.platform.deployments.idp.client-id")
+  @ConfigProperty(name = "qits.deployments.idp.client-id")
   Optional<String> ownClientId;
 
-  @ConfigProperty(name = "qits.platform.deployments.idp.client-secret")
+  @ConfigProperty(name = "qits.deployments.idp.client-secret")
   Optional<String> ownClientSecret;
 
   /** How long a failed attempt waits before the next — the declaration seed's arrangement. */

@@ -438,7 +438,7 @@ public final class StoryPeers {
     if (!CONFIGURED.equals(application) && !DECLARED.equals(application)) {
       return "{\"headRevision\":1,\"properties\":{}}";
     }
-    return "{\"headRevision\":4,\"properties\":{\"qits.platform.deployments.extras."
+    return "{\"headRevision\":4,\"properties\":{\"qits.deployments.extras."
         + application
         + "."
         + EXTRA_ENV_KEY

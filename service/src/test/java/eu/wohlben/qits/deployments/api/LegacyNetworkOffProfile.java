@@ -4,7 +4,7 @@ import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
 /**
- * The platform after the enforcement flip: {@code qits.platform.deployments.legacy-network} empty.
+ * The platform after the enforcement flip: {@code qits.deployments.legacy-network} empty.
  *
  * <p>That one empty value is the whole of the flip — from then on a container is reachable only
  * through its own network, its environment's hub, or a gateway route, and a direct cross-application
@@ -16,6 +16,6 @@ public class LegacyNetworkOffProfile implements QuarkusTestProfile {
 
   @Override
   public Map<String, String> getConfigOverrides() {
-    return Map.of("qits.platform.deployments.legacy-network", "");
+    return Map.of("qits.deployments.legacy-network", "");
   }
 }

@@ -31,7 +31,7 @@ import java.util.function.Supplier;
  * <p>So the only two verdicts that end the gate early are <b>healthy</b> and <b>gone</b>. Gone is a
  * container docker cannot inspect at all — removed underneath the deployment — and there is nothing
  * to wait for. Everything else is the deadline's to decide, and the deadline is the caller's
- * ({@code qits.platform.deployments.health-timeout-seconds}); this change does not extend it by a
+ * ({@code qits.deployments.health-timeout-seconds}); this change does not extend it by a
  * second, it only stops spending it early.
  *
  * <p><b>The race itself is gone with the path.</b> A swarm service declares its whole membership

@@ -25,6 +25,27 @@ public record PdEnvironmentDto(
     String id,
     String name,
     String network,
+    boolean designated,
     boolean platform,
     Instant createdAt,
-    List<PdApplicationDto> applications) {}
+    List<PdApplicationDto> applications) {
+
+  /**
+   * THE TWO FLAGS ARE ONE VALUE, and {@code platform} is the retired spelling kept for its readers.
+   *
+   * <p>The designation stopped borrowing the deleted plane's word, but the field is on the wire:
+   * qits-bootstrap-cli asserts it when it creates the first tier, and the deployments client draws
+   * it. Both are released separately from this component, so emitting only the new name would break
+   * them on this component's next deploy. Both are emitted, always equal, and {@code platform} comes
+   * out once nothing reads it.
+   */
+  public static PdEnvironmentDto of(
+      String id,
+      String name,
+      String network,
+      boolean designated,
+      Instant createdAt,
+      List<PdApplicationDto> applications) {
+    return new PdEnvironmentDto(id, name, network, designated, designated, createdAt, applications);
+  }
+}

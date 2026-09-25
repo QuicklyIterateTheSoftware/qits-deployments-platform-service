@@ -15,7 +15,7 @@ import org.jboss.logging.Logger;
 
 /**
  * The sole production implementation of {@link SpecSource}: one {@code GET} against the platform
- * git host's blob endpoint ({@code qits.platform.deployments.git-host-url}), the same contract
+ * git host's blob endpoint ({@code qits.deployments.git-host-url}), the same contract
  * qits-ci reads a pipeline definition through.
  *
  * <pre>
@@ -77,10 +77,10 @@ public class GitHostSpecSource implements SpecSource {
 
   private static final Logger LOG = Logger.getLogger(GitHostSpecSource.class);
 
-  @ConfigProperty(name = "qits.platform.deployments.git-host-url")
+  @ConfigProperty(name = "qits.deployments.git-host-url")
   String gitHostUrl;
 
-  @ConfigProperty(name = "qits.platform.deployments.git-host-timeout-seconds")
+  @ConfigProperty(name = "qits.deployments.git-host-timeout-seconds")
   long timeoutSeconds;
 
   /**

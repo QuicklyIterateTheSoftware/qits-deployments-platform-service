@@ -5,7 +5,7 @@ import java.util.Map;
 
 /**
  * A deployment that was never told the postgres superuser's password — the shipped state, since
- * {@code qits.platform.deployments.postgres.admin-password} deliberately has no default.
+ * {@code qits.deployments.postgres.admin-password} deliberately has no default.
  *
  * <p>The empty value is what makes it absent rather than blank: SmallRye reads an empty string as
  * ABSENT, which is the same fact {@code LegacyNetworkOffProfile} turns on its head for the network
@@ -16,6 +16,6 @@ public class MissingAdminPasswordProfile implements QuarkusTestProfile {
 
   @Override
   public Map<String, String> getConfigOverrides() {
-    return Map.of("qits.platform.deployments.postgres.admin-password", "");
+    return Map.of("qits.deployments.postgres.admin-password", "");
   }
 }
