@@ -99,7 +99,30 @@ routes: /platform-deployments
 # which is why this line moves in the same commit as the webui gitlink that carries the page.
 navigation-entries: platform.Deployments:4, project.detail.Deployment Requests:5=deployment-requests
 
-resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream
+# RESOURCES ARE DECLARED NOWHERE FOR EXACTLY ONE RELEASE, AND THE NEXT COMMIT PUTS THE LINE BACK.
+#
+#   resources: postgresql:db, postgresql:eventstream:qits_deployments_eventstream
+#
+# THIS IS A DEADLOCK ESCAPE, not a change of shape. The namespace rename left
+# qits.deployments.postgres.admin-password with no bridging declaration to the old environment
+# variable, so the deployer that went live at 09:37 on 2026-09-25 refuses EVERY deployment that
+# declares a resource — six in a row, each rolled back. The fix is one line in this component's own
+# config, and this component is what deploys it: with the line above present, the deploy of the fix
+# is itself a resource-declaring deployment and dies of the very defect it carries the cure for.
+#
+# Declaring none makes `ResourceProvisioning.provision` return before it asks for the password
+# (`needsPostgres ? requireAdminPassword() : null`), so the release lands. The credentials this
+# component runs on are NOT lost with it, and that is checked rather than hoped:
+#
+#   - it is a SELF-UPDATE (`ownServiceName()` equals the wire alias), which the driver exempts from
+#     the recreate path — so this is `service update`, never `service rm` + `create`;
+#   - `SwarmDeploymentDriver.envRemovals` never emits `--env-rm` for a key starting `QITS_RESOURCE_`,
+#     so QITS_RESOURCE_DB_* and QITS_RESOURCE_EVENTSTREAM_* stay on the service untouched;
+#   - `BootResourceRegistration` re-records both registry rows from the environment at every boot,
+#     so the rows survive a deployment that provisioned nothing.
+#
+# RESTORE IT IN THE VERY NEXT RELEASE. Left off, this component would keep its credentials only for
+# as long as nothing recreates its service, and a cold bootstrap would provision nothing at all.
 
 # STOP-FIRST, AND THIS COMPONENT IS THE REASON THE KEY EXISTS. The default is `start-first`: the
 # successor starts beside the predecessor, which is what makes an orchestrator's rollback lossless.
