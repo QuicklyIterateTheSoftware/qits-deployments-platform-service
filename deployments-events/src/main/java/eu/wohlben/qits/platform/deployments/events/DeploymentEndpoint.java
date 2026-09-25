@@ -1,4 +1,4 @@
-package eu.wohlben.qits.platform.deployments.events;
+package eu.wohlben.qits.deployments.events;
 
 /**
  * One public path prefix of the immutable routing snapshot carried by {@link DeploymentActive}.

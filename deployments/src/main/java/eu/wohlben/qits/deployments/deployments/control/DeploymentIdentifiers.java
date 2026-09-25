@@ -1,0 +1,294 @@
+package eu.wohlben.qits.deployments.deployments.control;
+
+import eu.wohlben.qits.deployments.environments.error.BadRequestException;
+
+/**
+ * Validates the untrusted strings that reach an argv or the git host's URL but are never stored in
+ * the topology: the commit sha, the repository id, the repository name and its project id, the ci
+ * run id, one value of an OpenTelemetry attribute list, and the health command a repository may
+ * declare for itself.
+ *
+ * <p>The split from {@code PdIdentifiers} is the module partition, not a taxonomy: names, branches
+ * and health paths are values the topology <b>keeps</b>, so they are checked where they are kept;
+ * these exist only for the length of one deployment, so they are checked beside the argv they
+ * guard.
+ *
+ * <p>Defence in depth, not the only guard: argvs are assembled for {@link ProcessBuilder}, which
+ * never re-splits. {@link #requireRunId} is the one exception to the sentence above and says so in
+ * its own javadoc: it reaches no argv, and is bounded here only so a hostile length cannot break
+ * the intake's insert.
+ */
+public final class DeploymentIdentifiers {
+
+  /**
+   * Same slug the git host accepts for a repo id — no separators, no leading dash. It is wide
+   * enough for the opaque UUID a storage id is now, and for the repository <b>name</b> and the
+   * project id that arrive beside it.
+   */
+  private static final String REPO_ID = "[A-Za-z0-9][A-Za-z0-9-]{0,63}";
+
+  /** A hex object id (abbreviated ids are accepted; the registry resolves the tag either way). */
+  private static final String SHA = "[0-9a-f]{7,64}";
+
+  /**
+   * A released version, which is also a git tag name and an OCI tag. The charset is <b>docker's own
+   * tag charset</b> narrowed to what this column holds: the value is written into an image
+   * reference, into a git rev in a URL path, and into a {@code varchar(64)}.
+   *
+   * <p>The platform's stamp is {@code YYYY.MMDD.HHMMSS} and would fit a far tighter pattern, and
+   * this deliberately does not use one: the manual door exists so an operator can redeploy or roll
+   * back a version, and a tag this component refuses is a version it can never put back. What is
+   * excluded is what cannot be a tag — a leading dash or dot (which docker refuses and which would
+   * read as an option on an argv), a slash (which would move the image path), and anything that
+   * needs quoting.
+   */
+  private static final String VERSION = "[A-Za-z0-9_][A-Za-z0-9._-]{0,63}";
+
+  /** A foreign opaque id: qits-ci's run ids are UUIDs, and this is wide enough to stay so. */
+  private static final String RUN_ID = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}";
+
+  /**
+   * One value of an {@code OTEL_RESOURCE_ATTRIBUTES} pair. The list's own separators are the
+   * guard's whole subject: {@code ,} would forge a second pair and {@code =} would move the
+   * boundary between key and value, so neither is in the charset.
+   */
+  private static final String ATTRIBUTE_VALUE = "[A-Za-z0-9._/:-]{1,255}";
+
+  /**
+   * The {@code <name>} a repository writes in {@code volumes: private:<name>:<target>}. The
+   * dns-label charset, because the volume it becomes half of is {@code <application>-<name>} and
+   * the other half is a name the topology already holds to that rule.
+   */
+  private static final String VOLUME_NAME = "[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?";
+
+  /**
+   * A volume name as it reaches a {@code --mount}: a derived private one, or one of the platform's
+   * shared volumes, which are spelled with underscores ({@code qits_shared_m2}).
+   */
+  private static final String VOLUME_SOURCE = "[A-Za-z0-9][A-Za-z0-9._-]{0,63}";
+
+  /** Where a volume is mounted in the container: absolute, and never the bare root. */
+  private static final String MOUNT_TARGET = "(?:/[A-Za-z0-9._-]+)+";
+
+  private static final int MOUNT_TARGET_MAX_CHARS = 255;
+
+  /** How long a {@code health_cmd} may be. Long enough for a real probe, short enough to read. */
+  public static final int HEALTH_CMD_MAX_CHARS = 512;
+
+  private DeploymentIdentifiers() {}
+
+  /**
+   * @throws BadRequestException if the repo id could escape an argv
+   */
+  public static String requireRepoId(String repoId) {
+    if (repoId == null || !repoId.matches(REPO_ID)) {
+      throw new BadRequestException("Invalid repository id");
+    }
+    return repoId;
+  }
+
+  /**
+   * The repository's public NAME, the half of {@code (projectId, repoName)} the deployer keeps: it
+   * becomes the application name, and from there the image path segment, the wire alias, the
+   * container name and the GC pin key. Optional, because an event published before the name fields
+   * existed carries neither and falls back to the repository id.
+   *
+   * @throws BadRequestException if a present name could escape an argv
+   */
+  public static String requireRepoName(String repoName) {
+    if (repoName == null) {
+      return null;
+    }
+    if (!repoName.matches(REPO_ID)) {
+      throw new BadRequestException("Invalid repository name");
+    }
+    return repoName;
+  }
+
+  /**
+   * The project the repository belongs to — the other half of the public address, and the first
+   * segment of the name-addressed blob URL the spec is read through. Optional for the same reason
+   * {@link #requireRepoName} is.
+   *
+   * @throws BadRequestException if a present project id could escape the path it is written into
+   */
+  public static String requireProjectId(String projectId) {
+    if (projectId == null) {
+      return null;
+    }
+    if (!projectId.matches(REPO_ID)) {
+      throw new BadRequestException("Invalid project id");
+    }
+    return projectId;
+  }
+
+  /**
+   * @throws BadRequestException if the sha is not a plain hex object id
+   */
+  public static String requireSha(String sha) {
+    if (sha == null || !sha.matches(SHA)) {
+      throw new BadRequestException("Invalid commit sha");
+    }
+    return sha;
+  }
+
+  /**
+   * The released version — the CalVer stamp, the git tag the release pushed, and the tag the image
+   * carries. <b>Required</b>, because it is the whole coordinate a release deployment has: there is
+   * no sha to fall back on and no {@code latest} this component would ever deploy.
+   *
+   * @throws BadRequestException if the version could escape an image reference, a git rev in a URL
+   *     path, or its column
+   */
+  public static String requireVersion(String version) {
+    if (version == null || !version.matches(VERSION)) {
+      throw new BadRequestException("Invalid release version");
+    }
+    return version;
+  }
+
+  /**
+   * The name a release deploys under, taken from the released package rather than from a repository
+   * ({@code qits/qits-ci} → {@code qits-ci}). Required, and checked with the same slug discipline
+   * as a repository name because it lands in exactly the same places — the image path segment, the
+   * wire alias, the container name, the provisioned role.
+   *
+   * <p>It is deliberately NOT the dns-label check: {@code PdIdentifiers.requireName} is what the
+   * topology stores and it is asked one layer down ({@code DeployService.isDeployableName}), where
+   * a name that cannot be a network alias is a log line rather than a refusal. This one only says
+   * the string cannot escape what it is written into.
+   *
+   * @throws BadRequestException if the application name is absent or could escape an argv
+   */
+  public static String requireApplicationName(String applicationName) {
+    if (applicationName == null || !applicationName.matches(REPO_ID)) {
+      throw new BadRequestException("Invalid application name");
+    }
+    return applicationName;
+  }
+
+  /**
+   * The causing ci run, which is <b>optional</b> — a sender that omits it records a deployment with
+   * no build to point at.
+   *
+   * <p>This is the one check here that guards no argv and no shell string: the run id is stored and
+   * displayed, nothing more. It exists because the column is bounded — an oversized value would
+   * fail the intake's insert, and the sender is fire-and-forget, so the deployment would simply
+   * never happen and no one would be told why. Bounding it at the boundary turns that into a 400
+   * the sender's log can show.
+   *
+   * @throws BadRequestException if a present run id is not a plain opaque identifier
+   */
+  public static String requireRunId(String runId) {
+    if (runId == null) {
+      return null;
+    }
+    if (!runId.matches(RUN_ID)) {
+      throw new BadRequestException("Invalid run id");
+    }
+    return runId;
+  }
+
+  /**
+   * One value of a resource-attribute pair, checked at the argv rather than at the boundary — the
+   * second belt of the same kind as the health-path check. Every value put in that list is already
+   * a validated sha, a validated name, or a container name composed out of both, so this can only
+   * fail if one of those checks is ever loosened; it is here so that loosening one is a failed
+   * deployment rather than a forged extra attribute.
+   *
+   * @throws BadRequestException if the value carries a {@code ,} or {@code =} the list would read
+   *     as its own punctuation
+   */
+  public static String requireAttributeValue(String value, String what) {
+    if (value == null || !value.matches(ATTRIBUTE_VALUE)) {
+      throw new BadRequestException(
+          "Invalid " + what + " — no commas or equals signs in a resource attribute value");
+    }
+    return value;
+  }
+
+  /**
+   * The readiness probe a repository declares for itself ({@code health_cmd}), on its way to a
+   * {@code --health-cmd}. <b>This is the one value here with no charset</b>, and that is the
+   * point: it is a shell command, docker hands it to {@code /bin/sh -c} inside the container, and
+   * an allowlist would refuse the ones worth writing ({@code pg_isready -U postgres || exit 1}).
+   *
+   * <p>Refusing the charset costs nothing, because the command grants nothing. It runs in the
+   * repository's own container, under the image's own entrypoint, which that repository already
+   * chooses; and it is one argv element to {@link ProcessBuilder}, which never re-splits, so it
+   * reaches no docker flag of its own. What is checked is what a probe cannot be: blank, longer
+   * than {@link #HEALTH_CMD_MAX_CHARS}, or carrying a control character — a newline would make one
+   * spec line into two, and the rest of them belong in no command.
+   *
+   * @throws BadRequestException if the command is blank, oversized, or not one plain line
+   */
+  public static String requireHealthCmd(String healthCmd) {
+    if (healthCmd == null
+        || healthCmd.isBlank()
+        || healthCmd.length() > HEALTH_CMD_MAX_CHARS
+        || healthCmd.chars().anyMatch(Character::isISOControl)) {
+      throw new BadRequestException(
+          "Invalid health command — one non-blank line of at most "
+              + HEALTH_CMD_MAX_CHARS
+              + " characters");
+    }
+    return healthCmd;
+  }
+
+  /**
+   * The {@code <name>} half of a repository's {@code volumes: private:<name>:<target>} — never the
+   * whole volume name, which is {@code <application>-<name>} and is derived one layer up.
+   *
+   * <p>The charset is the dns-label one the rest of this platform's derived names use, because that
+   * is what it becomes half of: a docker volume name, one {@code --mount} field away from the
+   * {@code source=} it is spliced into. A comma or an equals sign there would forge a second field
+   * of that mount, and neither is in the charset.
+   *
+   * @throws BadRequestException if the segment could not be half of a volume name
+   */
+  public static String requireVolumeName(String name) {
+    if (name == null || !name.matches(VOLUME_NAME)) {
+      throw new BadRequestException(
+          "Invalid volume name — lowercase letters, digits and inner dashes, at most 32 characters");
+    }
+    return name;
+  }
+
+  /**
+   * A volume name as it reaches the argv: a private volume's derived {@code <application>-<name>},
+   * or one of the platform's shared volumes, whose spelling carries underscores. Checked at the
+   * last line before the {@code --mount}, the health path's rule — the two halves of a derived name
+   * were each checked where they were written, and this is the check on what they made.
+   *
+   * @throws BadRequestException if the source could forge a field of the mount it is rendered into
+   */
+  public static String requireVolumeSource(String source) {
+    if (source == null || !source.matches(VOLUME_SOURCE)) {
+      throw new BadRequestException(
+          "Invalid volume source — letters, digits, dots, underscores and inner dashes, at most 64"
+              + " characters");
+    }
+    return source;
+  }
+
+  /**
+   * Where a volume is mounted inside the container: an absolute path, and never {@code /} alone.
+   *
+   * <p>It is rendered into the same comma-separated {@code --mount} argument the source is, so the
+   * charset excludes the two characters that would forge a field, and whitespace with them — an
+   * argv element is never re-split, so a space would simply be part of a path nothing exists at.
+   * The bare root is refused because mounting a volume over {@code /} is not a thing a repository
+   * can have meant.
+   *
+   * @throws BadRequestException if the target is not an absolute container path
+   */
+  public static String requireMountTarget(String target) {
+    if (target == null || target.length() > MOUNT_TARGET_MAX_CHARS || !target.matches(MOUNT_TARGET)) {
+      throw new BadRequestException(
+          "Invalid mount target — an absolute path inside the container, at most "
+              + MOUNT_TARGET_MAX_CHARS
+              + " characters");
+    }
+    return target;
+  }
+}

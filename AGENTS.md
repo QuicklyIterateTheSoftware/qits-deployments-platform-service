@@ -69,7 +69,7 @@ changed with no crash and no log. **A fifth event joins the list in the commit t
 
 ## The partition, and the one rule that keeps it
 
-Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
+Four maven modules, package root `eu.wohlben.qits.deployments`:
 
 - **`environments/`** (`…environments.*`) — the topology: `entity`, `persistence`, `dto`, `mapper`,
   `control`, `error`. `EnvironmentService` (tier rows), `ServiceCatalog` (services, links and the
@@ -101,12 +101,14 @@ Four maven modules, package root `eu.wohlben.qits.platform.deployments`:
   library's own `ObjectMapper` binds. Identity is not a package here: the forward-auth pair
   lives in the published `qits-auth-core`.
 
-**`platform` is a namespace qualifier, not half of a word** — hence `…qits.platform.deployments`
-rather than `…qits.platformdeployments`. The execution module therefore lands at
-`…qits.platform.deployments.deployments`, next to `…qits.platform.deployments.environments`: the
-repetition is the price of a qualifier that names the plane, and renaming the module package to
-dodge it would cost the pairing with `environments`. The artifactIds (`qits-platform-deployments-*`)
-and the REST path (`/platform-deployments/api`) are unaffected and stay as they are.
+**The `platform` qualifier is GONE from the package root**, with the plane it named: it is
+`eu.wohlben.qits.deployments` now, so the execution module lands at `…qits.deployments.deployments`
+next to `…qits.deployments.environments`. The repetition was the price of a qualifier naming the
+plane and is now just the price of a module called `deployments` inside a component called
+`deployments` — the pairing with `environments` is what it buys, and renaming either to dodge it
+would cost that. The artifactIds (`qits-platform-deployments-*`) and the REST path
+(`/platform-deployments/api`) are a SEPARATE rename and are deliberately untouched here: both are
+published coordinates that consumers and the edge's route table spell out.
 
 **`deployments` depends on `environments` and never the reverse.** That is the partition, and it is
 the thing to defend. Execution reads and writes the topology; the topology knows nothing about

@@ -1,4 +1,4 @@
-package eu.wohlben.qits.platform.deployments.events;
+package eu.wohlben.qits.deployments.events;
 
 import eu.wohlben.qits.eventstream.QitsEvent;
 import java.time.Instant;
