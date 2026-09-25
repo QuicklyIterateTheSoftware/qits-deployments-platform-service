@@ -173,7 +173,7 @@
         </dependency>
         <dependency>
             <!-- The platform's shared ArchUnit rules; ArchRulesTest points them at
-                 eu.wohlben.qits.platform.deployments. It sits HERE and not in a domain module
+                 eu.wohlben.qits.deployments. It sits HERE and not in a domain module
                  because this is the one classpath that carries every entity of the component —
                  both domain jars and anything this module ever adds. Forgetting a causation
                  decision on a new @Entity fails this build naming the class. -->

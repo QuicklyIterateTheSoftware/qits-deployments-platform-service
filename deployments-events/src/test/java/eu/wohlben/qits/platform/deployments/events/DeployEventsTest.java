@@ -1,4 +1,4 @@
-package eu.wohlben.qits.platform.deployments.events;
+package eu.wohlben.qits.deployments.events;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

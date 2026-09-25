@@ -1,4 +1,4 @@
-package eu.wohlben.qits.platform.deployments.events;
+package eu.wohlben.qits.deployments.events;
 
 /**
  * One placement of an application in the platform's navigation, carried by {@link
