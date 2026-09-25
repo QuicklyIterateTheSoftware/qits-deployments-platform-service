@@ -93,8 +93,22 @@ public class PdEnvironmentController {
   public record CreateEnvironmentRequest(
       @NotBlank String name,
       String network,
-      Boolean platform,
-      @Deprecated List<@Valid ApplicationSpec> applications) {}
+      Boolean designated,
+      @Deprecated Boolean platform,
+      @Deprecated List<@Valid ApplicationSpec> applications) {
+
+    /**
+     * The designation, under either spelling, {@code designated} winning.
+     *
+     * <p>{@code platform} is the retired name and is still ACCEPTED because the senders are
+     * released separately from this component — qits-bootstrap-cli asserts it on the tier it
+     * creates at cold boot, and a bootstrap older than this build states nothing else. Refusing it
+     * would make this component undeployable by the very thing that installs it.
+     */
+    Boolean effectiveDesignation() {
+      return designated != null ? designated : platform;
+    }
+  }
 
   /**
    * The rename/designate payload — every field optional, an omitted one is left alone. This is how
@@ -104,7 +118,14 @@ public class PdEnvironmentController {
    * (409): the platform plane always has a tier to deploy into, so the designation is moved, never
    * dropped.
    */
-  public record UpdateEnvironmentRequest(String name, Boolean platform) {}
+  public record UpdateEnvironmentRequest(
+      String name, Boolean designated, @Deprecated Boolean platform) {
+
+    /** The designation, under either spelling — see {@link CreateEnvironmentRequest}. */
+    Boolean effectiveDesignation() {
+      return designated != null ? designated : platform;
+    }
+  }
 
   public record EnvironmentResponse(PdEnvironmentDto environment) {}
 
@@ -130,7 +151,7 @@ public class PdEnvironmentController {
     }
     PdEnvironment environment =
         environments.create(
-            request.name(), request.network(), Boolean.TRUE.equals(request.platform()));
+            request.name(), request.network(), Boolean.TRUE.equals(request.effectiveDesignation()));
     return Response.status(Response.Status.CREATED).entity(toResponse(environment)).build();
   }
 
@@ -164,7 +185,7 @@ public class PdEnvironmentController {
         environments.update(
             environmentId,
             request == null ? null : request.name(),
-            request == null ? null : request.platform());
+            request == null ? null : request.effectiveDesignation());
     return toResponse(environment);
   }
 

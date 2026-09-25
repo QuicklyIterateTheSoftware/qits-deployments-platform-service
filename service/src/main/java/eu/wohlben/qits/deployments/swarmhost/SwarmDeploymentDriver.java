@@ -57,7 +57,7 @@ import org.jboss.logging.Logger;
  * sake.</b> {@code service update --network-add} recreates the task, so a hub-and-spoke topology —
  * one network per application, joined after the fact by every hub — would turn a single deployment
  * into a restart storm across the platform. So a service declares its whole membership at create
- * time, and the membership is ONE overlay: {@code qits.platform.deployments.swarm.flat-network}
+ * time, and the membership is ONE overlay: {@code qits.deployments.swarm.flat-network}
  * (attachable, so plain {@code docker run} containers — CI steps, workspaces, agents — keep working
  * on it). {@code qits-platform} was the second, and went with the plane whose services ran on it.
  * The per-application networks the caller asks for are dropped, deliberately and out loud.
@@ -355,25 +355,25 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           "unauthorized",
           "authentication required");
 
-  @ConfigProperty(name = "qits.platform.deployments.container-runtime")
+  @ConfigProperty(name = "qits.deployments.container-runtime")
   String runtime;
 
-  @ConfigProperty(name = "qits.platform.deployments.pull-timeout-seconds")
+  @ConfigProperty(name = "qits.deployments.pull-timeout-seconds")
   long pullTimeoutSeconds;
 
-  @ConfigProperty(name = "qits.platform.deployments.health-interval-seconds")
+  @ConfigProperty(name = "qits.deployments.health-interval-seconds")
   long healthIntervalSeconds;
 
-  @ConfigProperty(name = "qits.platform.deployments.health-retries")
+  @ConfigProperty(name = "qits.deployments.health-retries")
   int healthRetries;
 
-  @ConfigProperty(name = "qits.platform.deployments.health-start-period-seconds")
+  @ConfigProperty(name = "qits.deployments.health-start-period-seconds")
   long healthStartPeriodSeconds;
 
-  @ConfigProperty(name = "qits.platform.deployments.swarm.update-monitor-seconds")
+  @ConfigProperty(name = "qits.deployments.swarm.update-monitor-seconds")
   long updateMonitorSeconds;
 
-  @ConfigProperty(name = "qits.platform.deployments.swarm.flat-network")
+  @ConfigProperty(name = "qits.deployments.swarm.flat-network")
   String flatNetwork;
 
   /**
@@ -382,10 +382,10 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    *
    * <p>See {@link #registryAuthFlag} for what the flag does and why the key exists.
    */
-  @ConfigProperty(name = "qits.platform.deployments.registry-auth")
+  @ConfigProperty(name = "qits.deployments.registry-auth")
   boolean registryAuth;
 
-  @ConfigProperty(name = "qits.platform.deployments.output-max-chars")
+  @ConfigProperty(name = "qits.deployments.output-max-chars")
   int outputMaxChars;
 
   /**
@@ -580,7 +580,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * "update rolled back due to failure…"}) says that something failed without saying what. It
    * cost a whole investigation of the 2026-09-14 dev-qits-projects rollback, which could not
    * establish what state the task had been left in. So it captures the same two things, in the same
-   * order — both bounded by {@code qits.platform.deployments.output-max-chars}, which every {@link
+   * order — both bounded by {@code qits.deployments.output-max-chars}, which every {@link
    * #run} already truncates to, on top of the {@code --tail} the log capture asks for.
    */
   @Override
@@ -1566,7 +1566,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
           "aliases "
               + aliases
               + " are declared, and this service joins no shared network to hold them: an alias is"
-              + " an address on qits.platform.deployments.swarm.flat-network");
+              + " an address on qits.deployments.swarm.flat-network");
     }
   }
 
@@ -1679,7 +1679,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * The gate, enforced by docker inside the container — either the repository's own command,
    * passed through as ONE argv element, or the curl template over an allowlist-validated path.
    *
-   * <p>The three timings are the {@code qits.platform.deployments.health-*} keys, and they describe
+   * <p>The three timings are the {@code qits.deployments.health-*} keys, and they describe
    * the probe alone. The deadline is not among them: the window is these plus {@code
    * --update-monitor}, and both want measuring per application rather than deriving from one
    * platform-wide number.
@@ -1710,7 +1710,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   /**
    * {@code --with-registry-auth}, on a create and on an update alike, when {@code
-   * qits.platform.deployments.registry-auth} says so. Unset — the shipped state — this writes
+   * qits.deployments.registry-auth} says so. Unset — the shipped state — this writes
    * nothing and both argvs are what they were byte for byte.
    *
    * <p><b>What the flag does.</b> It serialises the credential the CLI holds for the registry into

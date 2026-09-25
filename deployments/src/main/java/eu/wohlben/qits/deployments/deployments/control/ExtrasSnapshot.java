@@ -87,7 +87,7 @@ public final class ExtrasSnapshot {
    * base}, which is whatever {@link #over(Config, String)} already produced.
    *
    * <p>The map arrives in the full prefixed spelling — {@code
-   * qits.platform.deployments.extras.<app>.<key>} — so it is layered rather than translated, and
+   * qits.deployments.extras.<app>.<key>} — so it is layered rather than translated, and
    * {@link ServiceExtras} stays the single parser of that grammar.
    *
    * <p><b>{@code base} is the boot config, never the file.</b> An authoritative source is the SOLE

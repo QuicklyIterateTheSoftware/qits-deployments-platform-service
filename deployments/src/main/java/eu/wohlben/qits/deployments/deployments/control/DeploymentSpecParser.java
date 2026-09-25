@@ -40,7 +40,7 @@ import java.util.Set;
  * been: the swarm service and its wire alias, the container name, the image reference {@code
  * qits/<application>:<sha>}, the provisioned database ({@code qits_} plus the name without its
  * prefix), the derived {@code host} label, the catalogue key, the extras family {@code
- * qits.platform.deployments.extras.<application>.*}, the {@code QITS_APPLICATION} the container
+ * qits.deployments.extras.<application>.*}, the {@code QITS_APPLICATION} the container
  * boots with, and the name every {@code Deployment*} event carries. The parser only reads and
  * validates it — the substitution happens in {@code DeployService.deploy}, which is the first place
  * that holds both the spec and the announcement it was read for.
@@ -165,7 +165,7 @@ import java.util.Set;
  *
  * <p><b>HOST BINDS ARE DELIBERATELY NOT IN THIS GRAMMAR, and completing it later would be a
  * mistake.</b> {@code bind:/var/run/docker.sock:…} stays in deployment config
- * ({@code qits.platform.deployments.extras.<app>.mounts[i]}, see {@link ServiceExtras}) and belongs
+ * ({@code qits.deployments.extras.<app>.mounts[i]}, see {@link ServiceExtras}) and belongs
  * there: a host path is a statement about the MACHINE — which socket exists, which directory the
  * operator laid out — and it is true of a platform rather than of an application. That is the line
  * this key draws. A repository that could name a host path could mount any of it.

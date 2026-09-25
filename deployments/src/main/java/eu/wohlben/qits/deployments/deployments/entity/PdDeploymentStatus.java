@@ -61,7 +61,7 @@ public enum PdDeploymentStatus {
    * release whose single deploy attempt met an intermittent 403 from qits-githost stranded until
    * somebody replayed it by hand; three did, for 13 to 17 minutes each, on 2026-09-04. A row that
    * says this is re-read on the deployment observation's own cadence ({@code
-   * qits.platform.deployments.observe-interval-seconds}) until the file answers — at which point
+   * qits.deployments.observe-interval-seconds}) until the file answers — at which point
    * the release deploys for real and this row becomes history — or until a newer version of the
    * same application supersedes it, which is the ordinary exit.
    *

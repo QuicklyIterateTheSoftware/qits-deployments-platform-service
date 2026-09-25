@@ -63,7 +63,7 @@ import org.jboss.logging.Logger;
  * with no such file gets the defaults and behaves exactly as it did before the file existed.
  *
  * <p><b>There is ONE plane and one shape of deployment.</b> A release lands in {@code
- * pd_environment.platform}, the designated entry environment, and everything about the deployment
+ * pd_environment.designated}, the designated entry environment, and everything about the deployment
  * names it: the row, the labels, {@code QITS_ENVIRONMENT}, the wire alias {@code <env>-<app>}, the
  * container name and all four events. The platform plane — one instance for the whole platform,
  * carrying no link, reached under its bare name from every tier — is deleted, and with it the two
@@ -223,14 +223,14 @@ public class DeployService implements ReleaseAnnouncements {
    * The last resort at deploy time, for a service row that carries no path. Registration writes
    * {@link #conventionHealthPath} now, so this only reaches rows nothing has registered since.
    */
-  @ConfigProperty(name = "qits.platform.deployments.default-health-path")
+  @ConfigProperty(name = "qits.deployments.default-health-path")
   String defaultHealthPath;
 
-  @ConfigProperty(name = "qits.platform.deployments.health-timeout-seconds")
+  @ConfigProperty(name = "qits.deployments.health-timeout-seconds")
   long healthTimeoutSeconds;
 
   /** How often the observation pass is enqueued; {@code 0} switches the observer off entirely. */
-  @ConfigProperty(name = "qits.platform.deployments.observe-interval-seconds")
+  @ConfigProperty(name = "qits.deployments.observe-interval-seconds")
   long observeIntervalSeconds;
 
   /**
@@ -243,7 +243,7 @@ public class DeployService implements ReleaseAnnouncements {
    * so the flip's own spelling ({@code QITS_PLATFORM_DEPLOYMENTS_LEGACY_NETWORK=}) would fail this
    * bean's injection if the field were a plain String.
    */
-  @ConfigProperty(name = "qits.platform.deployments.legacy-network")
+  @ConfigProperty(name = "qits.deployments.legacy-network")
   Optional<String> legacyNetwork;
 
   private final ExecutorService worker =
@@ -338,7 +338,7 @@ public class DeployService implements ReleaseAnnouncements {
   private void startObserving() {
     if (observeIntervalSeconds <= 0) {
       LOG.info(
-          "Deployment observation is off (qits.platform.deployments.observe-interval-seconds=0):"
+          "Deployment observation is off (qits.deployments.observe-interval-seconds=0):"
               + " a row's status will be whatever the deployment that wrote it said, and a release"
               + " held on an unreadable spec is never re-read");
       return;
@@ -1830,7 +1830,7 @@ public class DeployService implements ReleaseAnnouncements {
    * <p>A build used to name a branch, and the tiers listening to that branch were where it went. A
    * release names no branch — it names a tag — so the tier a version lands in is a property of the
    * PLATFORM rather than of the thing being deployed. The designated platform environment
-   * ({@code pd_environment.platform}, of which there is exactly one) is that tier: it is already
+   * ({@code pd_environment.designated}, of which there is exactly one) is that tier: it is already
    * the row that says which tier this install deploys from, and there is nothing else in this
    * schema that could answer the question.
    *
@@ -1975,7 +1975,7 @@ public class DeployService implements ReleaseAnnouncements {
    *
    * <p>What this replaces: registration once had no source for the path at all, so every row was
    * written null, every deployment fell back to {@code
-   * qits.platform.deployments.default-health-path} ({@code /q/health/ready}), and every service
+   * qits.deployments.default-health-path} ({@code /q/health/ready}), and every service
    * mounted under its own prefix — all of them but the gateway — failed a health gate against a URL
    * that 404s while the container was fine.
    */
@@ -2677,7 +2677,7 @@ public class DeployService implements ReleaseAnnouncements {
    * declares at create time or joins after the start, whichever its orchestrator can do.
    *
    * <ul>
-   *   <li>the legacy network, while {@code qits.platform.deployments.legacy-network} names one —
+   *   <li>the legacy network, while {@code qits.deployments.legacy-network} names one —
    *       the transition membership that keeps today's direct cross-application URLs resolving;
    *   <li>a public node ({@code availableOnEnv}) additionally joins its environment's bundle and
    *       <b>every</b> per-application network of that environment: that is the hub, and it is how

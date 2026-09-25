@@ -60,7 +60,7 @@ public interface DeploymentDriver {
    * The config key that has to say {@code swarm}. It picked between two implementations once and is
    * a guard now — see {@code orchestration/DeploymentDrivers}.
    */
-  String ORCHESTRATOR_KEY = "qits.platform.deployments.orchestrator";
+  String ORCHESTRATOR_KEY = "qits.deployments.orchestrator";
 
   /**
    * The prefix of the per-application family that says what one application needs beyond its image
@@ -73,7 +73,21 @@ public interface DeploymentDriver {
    * — and a second spelling of the key would let the two disagree about which application's
    * arguments they are.
    */
-  String EXTRAS_PREFIX = "qits.platform.deployments.extras.";
+  String EXTRAS_PREFIX = "qits.deployments.extras.";
+
+  /**
+   * The prefix this family had while the namespace carried the retired {@code platform} qualifier.
+   *
+   * <p><b>It is still read, and that is a migration window rather than a courtesy.</b> The keys
+   * reaching an argv come from two places this component does not release: qits-configuration's
+   * served entries, which compose the prefix at resolve time, and the extras FILE on the deployment
+   * host's config volume, which qits-bootstrap-cli rendered at the last bootstrap. Neither moves
+   * when this repository does, so a build reading only the new spelling would find no extras at all
+   * for every application on the estate — no mounts, no published ports, no environment.
+   *
+   * <p>Delete it once both of those render {@link #EXTRAS_PREFIX}, and not before.
+   */
+  String LEGACY_EXTRAS_PREFIX = "qits.platform.deployments.extras.";
 
   /** The environment a service belongs to. Every service has one. */
   String ENVIRONMENT_LABEL = "qits.platform.deployments.environment";

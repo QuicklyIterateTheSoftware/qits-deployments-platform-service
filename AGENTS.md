@@ -18,7 +18,7 @@ the second resource type.
 
 **One seam, `DeploymentExtrasSource`, has no `@Mock` fake and that is deliberate** — it
 returns a `Config` rather than holding a conversation, so a test states one in a lambda. Nothing
-about it reaches the network in the shipped state either: `qits.platform.deployments.extras-url` is
+about it reaches the network in the shipped state either: `qits.deployments.extras-url` is
 unset, so the suite reads the same config it always read. See the extras section below.
 **`DeclarationSeed` is the same peer and takes the opposite shape**, which is the distinction worth
 keeping: it POSTs a body and is answered with a decision, and the two decisions end a deployment
@@ -203,7 +203,7 @@ Serial execution is load-bearing twice over:
   holds it.
 
 The cost is that the spec's HTTP read sits in the queue too;
-`qits.platform.deployments.git-host-timeout-seconds` bounds it. `awaitIdle()` is public for the suite, because "nothing was registered" can only be
+`qits.deployments.git-host-timeout-seconds` bounds it. `awaitIdle()` is public for the suite, because "nothing was registered" can only be
 asserted after the worker has had the event.
 
 Transactions are programmatic everywhere in `control`, never `@Transactional` — partly for the
@@ -303,7 +303,7 @@ work leaves a live container with no row that admits it. Never a business failur
 one visible failure turned into a slow one.
 
 **The REST reads are patient too, and the wrap is in the CONTROLLERS.** `PdReadPatience` (in `api`)
-spends `qits.platform.deployments.db-retry-deadline` — 15S shipped, not the worker's 30 — on every
+spends `qits.deployments.db-retry-deadline` — 15S shipped, not the worker's 30 — on every
 read of this surface: the service listing, the applications, the environment listing and aggregate,
 the link query, and the deployment listing's tier check. **A new read endpoint joins it in the
 commit that adds it; no write ever joins it** — a write's patience lives one layer down, below.
@@ -346,7 +346,7 @@ back. `DeploymentObserver` is that second half, and the mirror image it also clo
 whose container died an hour after the gate passed, with nothing ever noticing.
 
 - **It runs on the deploy worker**, enqueued by a bare daemon ticker (`pd-observation-ticker`) every
-  `qits.platform.deployments.observe-interval-seconds` (30; `0` is off). Not quarkus-scheduler: the
+  `qits.deployments.observe-interval-seconds` (30; `0` is off). Not quarkus-scheduler: the
   ticker's whole job is `worker.submit`, and a scheduler extension would put a second concurrency
   model beside a component whose entire ordering story is "one worker, in queue order". An observer
   thread of its own would take away the invariant serial execution buys — "the previous ACTIVE
@@ -516,7 +516,7 @@ the successor, join it to every other network, poll the gate, roll back on failu
 `dockerhost/` with it. What is left is `swarmhost/SwarmDeploymentDriver`, the only implementation of
 `DeploymentDriver`, resolved by ordinary injection.
 
-**`qits.platform.deployments.orchestrator` survives as a GUARD**, not a choice:
+**`qits.deployments.orchestrator` survives as a GUARD**, not a choice:
 `orchestration/DeploymentDrivers` fails the boot unless it says `swarm`. A deployment still carrying
 `docker` from before the migration names an orchestrator this build does not have, and failing loudly
 naming the key beats deploying the platform with whatever is left. `DeploymentDriversTest` holds it.
@@ -565,7 +565,7 @@ Three things about the shape, each easy to undo by accident:
 
 **Under swarm the topology is flat and that is a decision, not a simplification**: every
 `--network-add` recreates the task, so a service declares its whole membership at create time —
-`qits.platform.deployments.swarm.flat-network` (an *attachable* overlay, which is what keeps CI
+`qits.deployments.swarm.flat-network` (an *attachable* overlay, which is what keeps CI
 step, workspace and agent containers working on it) — and that overlay alone. `qits-platform` was the
 second and went with the plane whose services ran on it. The per-application networks the state
 machine still computes are dropped by the swarm driver, out loud. A service update keeps the mounts, networks and ports it was created with: changing the shape
@@ -573,7 +573,7 @@ of a service is a `service rm` and a redeploy, not a deployment.
 
 ### Network aliases: the vhost names docker's DNS cannot make up
 
-**`qits.platform.deployments.extras.<app>.aliases[N]`** is a plain DNS name the application also
+**`qits.deployments.extras.<app>.aliases[N]`** is a plain DNS name the application also
 answers to on the **shared** network — the flat overlay every service joins. It exists because the
 edge proxy carries the platform's vhost names (`registry.dev.localhost` and its siblings) and
 docker's embedded DNS **cannot synthesize a `*.localhost`**: a container asking for one gets
@@ -635,7 +635,7 @@ deployment.
 
 ### The registry credential, and the outcome it used to be mistaken for
 
-**`qits.platform.deployments.registry-auth`** (boolean, `false` shipped) adds
+**`qits.deployments.registry-auth`** (boolean, `false` shipped) adds
 `--with-registry-auth` to the service **create and the update alike**. The flag serialises the
 CLI's stored credential into the service SPEC, which is what the swarm agent pulls with; without
 it only this component's own warm-up `docker pull` is authenticated — that one runs as this
@@ -755,7 +755,7 @@ Four things that are decisions rather than details:
 
 `HealthGate` (in `deployments/control`, polled by the driver) ends early on exactly two verdicts:
 **healthy**, and a container docker cannot inspect at all. **Restarting is PENDING. Running-but-
-unhealthy is PENDING.** The deadline — `qits.platform.deployments.health-timeout-seconds`, unchanged
+unhealthy is PENDING.** The deadline — `qits.deployments.health-timeout-seconds`, unchanged
 — is what fails a deployment, and the verdict then reads `container still <state> after <n>s` with
 the log tail under it.
 
@@ -796,7 +796,7 @@ is not half of one word. It was `qits.cd.*` in the ancestor and `qits.pd.*` for 
 deployment carrying an old spelling configures nothing and fails loudly at boot (SmallRye rejects an
 unsatisfied `@ConfigProperty`), which is the intended failure. The env form is
 `QITS_PLATFORM_DEPLOYMENTS_*` — every wrapper and compose file that injects config moves with it.
-The one family read in the DOTTED spelling only is `qits.platform.deployments.extras.<app>.*`, and
+The one family read in the DOTTED spelling only is `qits.deployments.extras.<app>.*`, and
 `ServiceExtras` says why: an underscore cannot tell `qits-ci`'s keys from `qits-ci-daemon`'s.
 
 ## Adopting what qits-cd left behind
@@ -869,7 +869,7 @@ Hub and spoke, as README describes. Two things to leave alone unless you mean it
   container, so it passes perfectly well on a network nobody else is on, and the cutover would then
   remove the predecessor under an unreachable successor. The *reconciliation's* joins stay
   best-effort — those are a self-heal, not this deployment's own reachability.
-- **`qits.platform.deployments.legacy-network`** (default `qits-net`, `Optional<String>` because
+- **`qits.deployments.legacy-network`** (default `qits-net`, `Optional<String>` because
   SmallRye reads an empty value as absent) is the transition membership. **Emptying it is the enforcement flip**, a
   later phase that needs every direct cross-application URL migrated first. `LegacyNetworkOffTest`
   already runs that posture. An environment teardown never disconnects anything from it and never
@@ -921,7 +921,7 @@ is its only copy.
 **Provisioning speaks SQL, not shell.** `CREATE ROLE` / `CREATE DATABASE` / `REVOKE` / `ALTER …
 OWNER` over plain JDBC — no `psql`, no `docker exec`, no process. `exec` is still not in the docker
 vocabulary and must not enter it. The postgres superuser password comes from
-`qits.platform.deployments.postgres.admin-password` (deployment config, the domain that already
+`qits.deployments.postgres.admin-password` (deployment config, the domain that already
 holds the socket), has no default, is never stored in a row and never reaches an argv. **There is no
 `DROP` and none is coming**: marking a resource obsolete is future work, and it will be a mark.
 
@@ -938,7 +938,7 @@ Argvs are assembled for `ProcessBuilder`, which never re-splits — but do not l
 validation stays at the boundary and the belt stays at the argv.
 
 Mounts, published ports, groups, network aliases and extra env in a *started* container's argv come
-from the **deployment's own config and nowhere else** (`qits.platform.deployments.extras.<application>.*`,
+from the **deployment's own config and nowhere else** (`qits.deployments.extras.<application>.*`,
 read by `ServiceExtras`). **Nothing PUSHED over HTTP may contribute to a `docker run`**; this
 component's own API is deliberately open on the platform's networks, so nothing arriving on it may
 shape an argv. `ServiceExtrasTest.anotherApplicationsKeysAreNeverRead`, plus
@@ -963,20 +963,20 @@ deployment re-stamped the boot snapshot onto the service it updated, which rever
 `service update --env-add` fix on 2026-08-16 and cost a day. Both argv builders take **one**
 snapshot — that file layered over the boot config, at a higher ordinal — and hand it to every
 reading, because `ServiceExtras` rests on "every reading agrees" and that is only true of a fixed
-`Config`. `qits.platform.deployments.extras-file` names the path. **Absent is the boot config
+`Config`. `qits.deployments.extras-file` names the path. **Absent is the boot config
 itself**, byte for byte what a dev run and the clone-alone suite always had; **present and
 unreadable is a REFUSED deployment naming the path**, because a fall-back to boot values is the
 stale value the whole thing exists to kill and would ship a green deployment carrying it.
 
 ### The file is the cold-boot source, and qits-configuration is the source
 
-**`qits.platform.deployments.extras-url` is optional and UNSET SHIPPED**, and unset is the file
+**`qits.deployments.extras-url` is optional and UNSET SHIPPED**, and unset is the file
 behaviour above byte for byte: no request, no parse, nothing to configure — and, since the
 declaration seed, nothing seeded either: unset means there is no store at all. Set — a deployment
 sends `QITS_PLATFORM_DEPLOYMENTS_EXTRAS_URL=http://qits-configuration:8080` — **that service is
 AUTHORITATIVE**, read once per argv build at
 `GET <url>/configuration/api/applications/<app>/envs/<env>/resolved?version=<version>`, whose
-`properties` map arrives in the full `qits.platform.deployments.extras.<app>.*` spelling.
+`properties` map arrives in the full `qits.deployments.extras.<app>.*` spelling.
 `ServiceExtras` stays the single parser of the grammar — nothing in `confighost` translates a key.
 
 **The address grew a tier and a version, and the example lost its tier prefix in the same change.**
@@ -1281,7 +1281,7 @@ only in which statement runs — a fake there would be asserting the test's own 
 `.config/qits/deployments.yml` is the `resources:` statement applied to storage. A volume mount is a
 property of what an application IS — it needs a place to keep its data, in every environment it is
 ever deployed into — so it belongs in the repository's own file rather than in
-`qits.platform.deployments.extras.<app>.mounts[i]`, where it was an indexed list, authored in
+`qits.deployments.extras.<app>.mounts[i]`, where it was an indexed list, authored in
 **another repository** (`qits-bootstrap-cli`'s `ComposeTemplate.java`), identical everywhere, and
 whose only identity was the index. Four things decide how it behaves:
 
@@ -1512,7 +1512,7 @@ to undo by accident:
   bus library warns about, one layer down.
 
 **The tick is the belt and the boot pass is the cure**
-(`qits.platform.deployments.owed-release-sweep-seconds`, 60; `0` keeps the boot pass and switches
+(`qits.deployments.owed-release-sweep-seconds`, 60; `0` keeps the boot pass and switches
 the tick off). It is a plain daemon thread — `pd-owed-release-sweep`, the observation ticker's shape
 — and not `quarkus-scheduler`, for the reason `DeploymentObserver` gives: this component's whole
 ordering story is "one worker, in queue order". Nothing is done on that thread but the reading and
@@ -1987,7 +1987,7 @@ version nothing will deploy. And a repository that carries the spec and no decla
 ordinary case for a long while — every repository predates the file — so that costs **one** 404 on
 the name route and it is an answer, not a hold.
 
-**`qits.platform.deployments.git-host-url` shipped a WRONG default for several releases**
+**`qits.deployments.git-host-url` shipped a WRONG default for several releases**
 (`http://qits-platform-artifacts:8080/artifacts`, the address the byte plane answered on before the
 git host was split out of it). It is `http://qits-githost:8080` now, the sibling qits-ci's spelling.
 Every deployment overrides the key, which is why it cost nothing and hid this long — and it is why
@@ -2002,7 +2002,7 @@ the application name is the repository's name. Present, that string IS the appli
 everywhere the repository's would have been, and the list is the same one: the catalogue key, the
 swarm service and its wire alias, the container name, the image `qits/<application>:<version>`, the
 provisioned database and role, the derived `host` label, the extras family
-`qits.platform.deployments.extras.<application>.*`, the `QITS_APPLICATION` the container boots with,
+`qits.deployments.extras.<application>.*`, the `QITS_APPLICATION` the container boots with,
 and the name every `Deployment*` event carries.
 
 It exists so a repository can be **renamed** with nothing on the platform moving: `qits-ci` becomes
@@ -2453,7 +2453,7 @@ against.
   both domains round-tripping in one process against one database. Its embedded postgres reaches
   the profile through a **system property**, because a `QuarkusTestProfile` is instantiated in two
   classloaders and a static field is not shared between them. It points
-  `qits.platform.deployments.container-runtime` at a binary that does not exist, which keeps it
+  `qits.deployments.container-runtime` at a binary that does not exist, which keeps it
   free of host side effects and proves every driver call degrades to a warning rather than a
   failure.
 - **`PdPackagedSurfaceIT` is also the only test that ever sees the client.** Quinoa is disabled in
@@ -2503,7 +2503,7 @@ Six things about how they are built, each easy to undo by accident:
   edge's initiator, because a bearer cannot say whether the caller is qits-ci or an impostor.
 - **The orchestrator hop is EVIDENCE, not a claim.** `PdProcess` spawns the docker CLI, so
   `StorySwarm` writes a recording POSIX-sh executable and the profile points
-  `qits.platform.deployments.container-runtime` at it. It keeps enough state — services, their
+  `qits.deployments.container-runtime` at it. It keeps enough state — services, their
   environment, and *when an update was issued*, stamped in Go's own `time.Time.String()` spelling —
   that `awaitConverged`'s `StartedAt` matching runs for real against it. Labels are **summaries**
   (`service create story-tier-story-web -> 0`), never argvs: a `service create` carries a generated

@@ -30,6 +30,6 @@ public class PdEnvironmentRepository implements PanacheRepositoryBase<PdEnvironm
    * Ordered, so the answer is at least stable if one ever appears.
    */
   public List<PdEnvironment> listPlatform() {
-    return list("platform = true order by createdAt, id");
+    return list("designated = true order by createdAt, id");
   }
 }

@@ -17,6 +17,6 @@ public class DbPatienceShortProfile implements QuarkusTestProfile {
 
   @Override
   public Map<String, String> getConfigOverrides() {
-    return Map.of("qits.platform.deployments.db-retry-deadline", "1S");
+    return Map.of("qits.deployments.db-retry-deadline", "1S");
   }
 }

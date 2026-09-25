@@ -454,7 +454,7 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void teardownLeavesTheLegacyNetworkAloneWhenItIsTheEnvironmentsBundle() {
-    // The dev tier's shape exactly: its bundle IS qits.platform.deployments.legacy-network. That
+    // The dev tier's shape exactly: its bundle IS qits.deployments.legacy-network. That
     // network is the transition membership of every container on the host — platform services
     // included — so it is not this environment's to take away. Disconnecting them from it would cut
     // qits-idp off from the platform, and this component would be doing it to itself mid-request.

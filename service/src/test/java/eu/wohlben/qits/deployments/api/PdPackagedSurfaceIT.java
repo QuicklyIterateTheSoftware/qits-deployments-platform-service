@@ -102,7 +102,7 @@ public class PdPackagedSurfaceIT {
           "QITS_RESOURCE_EVENTSTREAM_USERNAME", EmbeddedPg.USER,
           "QITS_RESOURCE_EVENTSTREAM_PASSWORD", EmbeddedPg.PASSWORD,
           // No docker on purpose: every driver call must degrade to a warning, never a failure.
-          "qits.platform.deployments.container-runtime", "docker-absent-for-this-it");
+          "qits.deployments.container-runtime", "docker-absent-for-this-it");
     }
 
     /**

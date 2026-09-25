@@ -1,0 +1,14 @@
+-- `platform` stops borrowing the retired word.
+--
+-- The column is NOT the plane — that was deleted in V13. It is the designation of the tier a release
+-- ENTERS at, which is still a real question with one environment as much as with five, so the column
+-- survives the epic and only its name changes.
+--
+-- A plain rename: same type, same default, same absence of a constraint. V1's header declines a
+-- partial unique index on it and that reasoning is untouched — an index would forbid the
+-- intermediate state of the two statements that MOVE the designation, which is exactly what
+-- EnvironmentService.designate performs in one transaction.
+--
+-- No backfill and nothing to decide: every row keeps the value it had, under the name it should
+-- have had.
+alter table pd_environment rename column platform to designated;

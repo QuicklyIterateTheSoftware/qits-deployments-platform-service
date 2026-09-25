@@ -39,7 +39,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * REST layer, outside every transaction and every monitor. A new read endpoint on this surface
  * belongs in it.
  *
- * <p>The deadline is {@code qits.platform.deployments.db-retry-deadline} (15S shipped) — a request
+ * <p>The deadline is {@code qits.deployments.db-retry-deadline} (15S shipped) — a request
  * held that long is the trade being made, and it stays under any sane client timeout. Connection-
  * class failures only: a 404 or a validation failure is rethrown on the first attempt.
  */
@@ -51,7 +51,7 @@ public class PdReadPatience {
    * purpose — the shipped value is a line in {@code application.properties}, so there is one
    * spelling of it and a deployment overrides it by env like every other key.
    */
-  @ConfigProperty(name = "qits.platform.deployments.db-retry-deadline")
+  @ConfigProperty(name = "qits.deployments.db-retry-deadline")
   Duration deadline;
 
   /**

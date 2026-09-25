@@ -63,7 +63,7 @@ public class EnvironmentService {
    * <p>No {@code defaultValue}, for the reason {@code PdReadPatience} has none: the shipped value is
    * one line in the deployable's {@code application.properties}, so there is one spelling of it.
    */
-  @ConfigProperty(name = "qits.platform.deployments.db-retry-deadline")
+  @ConfigProperty(name = "qits.deployments.db-retry-deadline")
   Duration writeDeadline;
 
   /**
@@ -96,7 +96,7 @@ public class EnvironmentService {
           environment.id = UUID.randomUUID().toString();
           environment.name = name;
           environment.network = effectiveNetwork;
-          environment.platform = platform;
+          environment.designated = platform;
           environment.createdAt = Instant.now();
           environments.persist(environment);
           if (platform) {
@@ -151,7 +151,7 @@ public class EnvironmentService {
           }
           if (Boolean.TRUE.equals(platform)) {
             designate(environment);
-          } else if (Boolean.FALSE.equals(platform) && environment.platform) {
+          } else if (Boolean.FALSE.equals(platform) && environment.designated) {
             throw new ConflictException(
                 "The platform environment cannot be cleared, only moved: designate another"
                     + " environment instead of undesignating "
@@ -187,12 +187,12 @@ public class EnvironmentService {
   private void designate(PdEnvironment environment) {
     for (PdEnvironment holder : environments.listPlatform()) {
       if (!holder.id.equals(environment.id)) {
-        holder.platform = false;
+        holder.designated = false;
         LOG.infof(
             "The platform environment moves from %s to %s", holder.name, environment.name);
       }
     }
-    environment.platform = true;
+    environment.designated = true;
   }
 
   /**

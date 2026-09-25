@@ -48,7 +48,7 @@ import java.util.Map;
  *   <li><b>{@code quarkus.oidc.auth-server-url}</b> — where the idp is. Discovery stays off and
  *       {@code jwks-path} stays {@code jwks}, joined onto this URL, so the shipped boot-time fetch
  *       is exercised rather than replaced.
- *   <li><b>{@code qits.platform.deployments.container-runtime}</b> — {@link StorySwarm}, a recording
+ *   <li><b>{@code qits.deployments.container-runtime}</b> — {@link StorySwarm}, a recording
  *       executable. This is the seam that makes the orchestrator hop evidence instead of a claim.
  *   <li><b>{@code git-host-url} and {@code extras-url}</b> — {@link StoryPeers}. The extras url being
  *       SET is itself the posture under test: qits-configuration is then authoritative, meaning
@@ -120,17 +120,17 @@ public class StoryProfile extends PdPackagedSurfaceIT.PackagedUnderTarget {
     overrides.put("qits.eventstream.enabled", "false");
 
     // The orchestrator: a recording executable rather than a daemon this container cannot reach.
-    overrides.put("qits.platform.deployments.container-runtime", runtime);
+    overrides.put("qits.deployments.container-runtime", runtime);
 
     // The two peers a deployment reads from, and the credential it presents to the second.
-    overrides.put("qits.platform.deployments.git-host-url", peers);
-    overrides.put("qits.platform.deployments.extras-url", peers);
+    overrides.put("qits.deployments.git-host-url", peers);
+    overrides.put("qits.deployments.extras-url", peers);
     overrides.put("quarkus.oidc-client.configuration.client-enabled", "true");
     overrides.put("quarkus.oidc-client.configuration.auth-server-url", peers + "/idp");
     overrides.put("quarkus.oidc-client.configuration.credentials.secret", CLIENT_SECRET);
 
     // The timer whose pass a recording cannot tell from a deployment's own. See the class javadoc.
-    overrides.put("qits.platform.deployments.observe-interval-seconds", "0");
+    overrides.put("qits.deployments.observe-interval-seconds", "0");
     return overrides;
   }
 }

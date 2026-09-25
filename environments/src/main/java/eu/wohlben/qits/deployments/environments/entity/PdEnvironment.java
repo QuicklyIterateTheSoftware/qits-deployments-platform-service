@@ -90,7 +90,7 @@ public class PdEnvironment extends PanacheEntityBase implements CausedRow {
    * reached about null rows.
    */
   @Column(nullable = false)
-  public boolean platform;
+  public boolean designated;
 
   @Column(name = "created_at", nullable = false)
   public Instant createdAt;

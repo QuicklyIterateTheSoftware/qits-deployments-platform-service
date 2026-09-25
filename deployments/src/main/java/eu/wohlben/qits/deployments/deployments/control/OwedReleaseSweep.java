@@ -80,7 +80,7 @@ public class OwedReleaseSweep {
   @Inject PdDeploymentRequestRepository requests;
 
   /** How often owed work is looked for; {@code 0} switches the tick off and keeps the boot pass. */
-  @ConfigProperty(name = "qits.platform.deployments.owed-release-sweep-seconds")
+  @ConfigProperty(name = "qits.deployments.owed-release-sweep-seconds")
   long sweepIntervalSeconds;
 
   private volatile Thread ticker;
