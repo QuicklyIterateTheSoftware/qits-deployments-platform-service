@@ -26,7 +26,7 @@ import org.jboss.logging.Logger;
  *
  * <pre>
  * GET &lt;extras-url&gt;/configuration/api/applications/&lt;app&gt;/envs/&lt;env&gt;/resolved?version=&lt;version&gt;
- *   → {"headRevision": 7, "properties": {"qits.platform.deployments.extras.&lt;app&gt;.&lt;key&gt;": "…"}}
+ *   → {"headRevision": 7, "properties": {"qits.deployments.extras.&lt;app&gt;.&lt;key&gt;": "…"}}
  * </pre>
  *
  * <p><b>The read is addressed by the PLACE and the RELEASE now, and the body is the same body.</b>
@@ -45,7 +45,7 @@ import org.jboss.logging.Logger;
  * version-less form the store documents as the transitional one, with a WARN naming them — see
  * {@link #versionlessBecauseNothingWasDeclared}.
  *
- * <p><b>{@code qits.platform.deployments.extras-url} unset is today's behaviour byte for byte.</b>
+ * <p><b>{@code qits.deployments.extras-url} unset is today's behaviour byte for byte.</b>
  * No request is made, nothing is parsed, and the answer is {@link ExtrasSnapshot#over(Config,
  * String)} — which is what a dev run, the clone-alone suite and every platform that has not adopted
  * the service still get.
@@ -69,8 +69,8 @@ import org.jboss.logging.Logger;
  * through the driver's own refusal arm — the argv is never built, so the deployment changed nothing.
  *
  * <p><b>The patience is the spec read's, stated as two keys.</b> {@code
- * qits.platform.deployments.extras-timeout-seconds} bounds the connect and the read, {@code
- * qits.platform.deployments.extras-attempts} is the whole retry budget — a service being redeployed
+ * qits.deployments.extras-timeout-seconds} bounds the connect and the read, {@code
+ * qits.deployments.extras-attempts} is the whole retry budget — a service being redeployed
  * is seconds of refusals and no deployment should die of one, while an outage that outlasts the
  * budget must be a loud refusal rather than an unbounded wait on the deploy worker, which is
  * single-threaded and has everything else queued behind it.
@@ -95,7 +95,7 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
   /** Looked up per key rather than {@code @ConfigProperty}: the key carries the application name. */
   @Inject Config config;
 
-  @ConfigProperty(name = "qits.platform.deployments.extras-file")
+  @ConfigProperty(name = "qits.deployments.extras-file")
   String extrasFile;
 
   /**
@@ -103,13 +103,13 @@ public class ConfigHostExtrasSource implements DeploymentExtrasSource {
    * as absent, so a deployment turns the service back off by emptying the variable rather than by
    * having to unset it.
    */
-  @ConfigProperty(name = "qits.platform.deployments.extras-url")
+  @ConfigProperty(name = "qits.deployments.extras-url")
   Optional<String> extrasUrl;
 
-  @ConfigProperty(name = "qits.platform.deployments.extras-timeout-seconds")
+  @ConfigProperty(name = "qits.deployments.extras-timeout-seconds")
   long timeoutSeconds;
 
-  @ConfigProperty(name = "qits.platform.deployments.extras-attempts")
+  @ConfigProperty(name = "qits.deployments.extras-attempts")
   int attempts;
 
   @Inject ExtrasBearer bearer;

@@ -127,7 +127,7 @@ public class PdSchemaTest {
       // Named columns, not positional: a later migration that adds one must not become a change to
       // this file.
       sql.execute(
-          "insert into pd_environment (id, name, network, platform, created_at) values"
+          "insert into pd_environment (id, name, network, designated, created_at) values"
               + " ('env-1', 'dev', 'qits-net', true, timestamp with time zone"
               + " '2026-08-06 10:00:00Z')");
       sql.execute(

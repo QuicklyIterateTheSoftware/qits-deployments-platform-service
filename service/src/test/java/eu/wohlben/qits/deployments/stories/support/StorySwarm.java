@@ -24,7 +24,7 @@ import java.util.Set;
  *
  * <p>This component does not speak to dockerd over a socket: {@code deployments/control/PdProcess}
  * <b>spawns the docker CLI</b> and reads its pipes, and which binary that is arrives as one runtime
- * key, {@code qits.platform.deployments.container-runtime}. So the honest stand-in for the one
+ * key, {@code qits.deployments.container-runtime}. So the honest stand-in for the one
  * dependency a deployment has is not a stubbed endpoint — it is an executable. Pointing that key at
  * the script this class writes makes the orchestrator hop <b>observable</b> rather than declared:
  * every call lands in a file with the exit code it answered, and enough state lives under {@code
@@ -114,7 +114,7 @@ public final class StorySwarm {
 
   /**
    * Write the stand-in, wipe whatever an earlier run left, and answer the path to hand {@code
-   * qits.platform.deployments.container-runtime}.
+   * qits.deployments.container-runtime}.
    *
    * <p>Idempotent per JVM through the parked property: the profile is instantiated more than once
    * and only the first copy has any business truncating the recording, since by the time the second
@@ -518,7 +518,7 @@ public final class StorySwarm {
       #!/bin/sh
       # A RECORDING DOCKER/SWARM STAND-IN. Written by StorySwarm; never edited by hand.
       #
-      # qits-platform-deployments shells out to whatever `qits.platform.deployments.container-runtime`
+      # qits-platform-deployments shells out to whatever `qits.deployments.container-runtime`
       # names, element by element, through PdProcess. Pointing that key here makes the orchestrator
       # hop observable: every call is appended to calls.log with the exit code it answered, and
       # enough state lives under state/ for SwarmDeploymentDriver's own reasoning to run for real.

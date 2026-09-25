@@ -222,7 +222,7 @@ A failed deployment — image missing, the daemon refused, the update never conv
 world as it was and says why on the row.
 
 **A status is written by the deployment that earned it, and then observed.** Every thirty seconds
-(`qits.platform.deployments.observe-interval-seconds`, `0` to switch it off) the **latest** row of
+(`qits.deployments.observe-interval-seconds`, `0` to switch it off) the **latest** row of
 each (application, tier) is read back against the container it names, on the same worker the
 deployments run on. A row that says `FAILED` about a container that is running and healthy becomes
 `ACTIVE` — with the original failure text kept under the recovery stamp — and a row that says
@@ -245,7 +245,7 @@ served for hours. The connections are retried now; the row needed reading back t
   hub: cross-application traffic is meant to flow app → gateway → target app;
 - a **platform** service runs on `qits-platform` and joins every per-application network of every
   environment, which is what makes it locally reachable everywhere without a gateway route;
-- `qits.platform.deployments.legacy-network` (default `qits-net`) is the transition membership
+- `qits.deployments.legacy-network` (default `qits-net`) is the transition membership
   every container also joins, while the platform still holds direct cross-application URLs. **Emptying it is the
   enforcement flip** — a later phase, after the last direct URL has moved to a gateway route.
 
@@ -282,7 +282,7 @@ nothing at all is a deployment a restart interrupted.
 **A self-update needs an arbiter outside both instances**, and the swarm manager is one: it lives in
 the daemon rather than in a container this process owns. The by-hand docker path had no such thing —
 it launched a detached referee container, then refused the deployment outright once the referee was
-retired — and it is deleted. `qits.platform.deployments.orchestrator` must say `swarm` or the boot
+retired — and it is deleted. `qits.deployments.orchestrator` must say `swarm` or the boot
 fails.
 
 ### Renaming this component is one deploy and one hand step, in both directions
@@ -343,7 +343,7 @@ serving, and the sha a rollback would put back.
   domain that already holds the docker socket, and is never written into a row and never put in an
   argv. There is no `DROP` in the vocabulary and none is coming.
 - **Argv contributions come from deployment config and from this component itself.**
-  `qits.platform.deployments.extras.<app>.*` is how a stateful application gets its volume, its
+  `qits.deployments.extras.<app>.*` is how a stateful application gets its volume, its
   published port, its extra env and the extra DNS names it answers to on the shared network — a
   structured family each driver renders in its own
   orchestrator's words (`ServiceExtras`); the `QITS_RESOURCE_<NAME>_*` triple is generated here and
@@ -351,7 +351,7 @@ serving, and the sha a rollback would put back.
   the same sentence as before, now that a credential is a thing this component holds: what a
   repository can NAME is a database of its own, and the VALUES injected for it are ones this
   component generated. The family may be **pulled** from qits-configuration where a deployment sets
-  `qits.platform.deployments.extras-url` — this process reading a named service with its own machine
+  `qits.deployments.extras-url` — this process reading a named service with its own machine
   identity, which changes the source and not the guard; unset (the shipped state) the config volume's
   file is the whole of it.
 - **Untrusted strings are validated at the boundary.** Names become network names, aliases and image

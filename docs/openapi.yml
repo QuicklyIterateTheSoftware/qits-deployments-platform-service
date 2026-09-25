@@ -29,8 +29,11 @@ components:
           pattern: \S
         network:
           type: string
+        designated:
+          type: boolean
         platform:
           type: boolean
+          deprecated: true
         applications:
           type: array
           deprecated: true
@@ -203,6 +206,8 @@ components:
           type: string
         network:
           type: string
+        designated:
+          type: boolean
         platform:
           type: boolean
         createdAt:
@@ -283,8 +288,11 @@ components:
       properties:
         name:
           type: string
+        designated:
+          type: boolean
         platform:
           type: boolean
+          deprecated: true
     UpsertServiceRequest:
       type: object
       properties:

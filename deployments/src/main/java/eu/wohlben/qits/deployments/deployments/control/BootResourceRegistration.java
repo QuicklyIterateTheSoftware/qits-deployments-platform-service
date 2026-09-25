@@ -50,7 +50,7 @@ import org.jboss.logging.Logger;
  * designated platform environment now and is started with the variable like everything else, so the
  * absence means only one thing: <b>this container was started by the old code</b>, in the window
  * between the deploy that ships this file and the one after it. The tier is then resolved from the
- * database — {@code pd_environment.platform}, the same designation the deploying instance used to
+ * database — {@code pd_environment.designated}, the same designation the deploying instance used to
  * choose where to put this container — and the row is written under that name, which is the key the
  * next self-deploy will look it up by. Recording null there instead would send that deploy down the
  * reconcile arm and rotate the passwords this process's pools are holding open.

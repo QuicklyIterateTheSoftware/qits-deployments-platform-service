@@ -25,11 +25,11 @@ public class EnvironmentMapper {
   }
 
   public PdEnvironmentDto toDto(PdEnvironment environment, List<ApplicationView> applications) {
-    return new PdEnvironmentDto(
+    return PdEnvironmentDto.of(
         environment.id,
         environment.name,
         environment.network,
-        environment.platform,
+        environment.designated,
         environment.createdAt,
         applications == null ? null : applications.stream().map(this::toDto).toList());
   }

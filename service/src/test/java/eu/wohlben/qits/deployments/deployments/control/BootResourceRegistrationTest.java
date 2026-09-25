@@ -161,7 +161,7 @@ public class BootResourceRegistrationTest {
     // designated tier, and ResourceProvisioning looks the credential up by that name. A row left at
     // null would miss, the provisioner would take its reconcile arm, and both of this component's
     // own passwords would be rotated while its pools hold the old ones open. So the absence is
-    // RESOLVED — from pd_environment.platform, the same designation that chose where to deploy it.
+    // RESOLVED — from pd_environment.designated, the same designation that chose where to deploy it.
     QuarkusTransaction.requiringNew()
         .run(() -> environments.create("boot-designated", "qits-net", true));
 

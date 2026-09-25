@@ -18,7 +18,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * What emptying {@code qits.platform.deployments.legacy-network} changes: the membership a
+ * What emptying {@code qits.deployments.legacy-network} changes: the membership a
  * deployment declares, and nothing else.
  *
  * <p>The claim survived the docker path it was written for. There it was a join after the start;

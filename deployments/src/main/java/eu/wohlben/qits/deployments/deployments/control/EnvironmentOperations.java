@@ -41,7 +41,7 @@ public class EnvironmentOperations {
    * <p>{@code Optional} for the same reason it is there — SmallRye reads the enforcement flip's own
    * empty value as ABSENT rather than as an empty string.
    */
-  @ConfigProperty(name = "qits.platform.deployments.legacy-network")
+  @ConfigProperty(name = "qits.deployments.legacy-network")
   Optional<String> legacyNetwork;
 
   /**
@@ -81,7 +81,7 @@ public class EnvironmentOperations {
    * the tier itself.
    *
    * <p><b>Docker first, the rows last</b>, and the order is the contract. The teardown is
-   * label-driven — it reaps by {@code qits.platform.deployments.environment} and removes the
+   * label-driven — it reaps by {@code qits.designated.deployments.environment} and removes the
    * networks carrying that id — so it needs nothing from the topology, but deleting the tier first
    * would leave a failed teardown with no row to retry it from. Deleting last means a half-finished
    * teardown is still addressable.
@@ -99,7 +99,7 @@ public class EnvironmentOperations {
    * environment it serves.
    *
    * <p><b>The legacy network is never one of them.</b> An environment may have been created with
-   * {@code qits.platform.deployments.legacy-network} as its bundle — the dev tier IS that case, its
+   * {@code qits.deployments.legacy-network} as its bundle — the dev tier IS that case, its
    * bundle is {@code qits-net} — and it is not that environment's to take away: it is the
    * transition membership of every container on the host, platform services included. Disconnecting
    * them from it would cut qits-idp off from the platform, and this component would be doing it to
@@ -121,7 +121,7 @@ public class EnvironmentOperations {
    */
   public void delete(String environmentId) {
     PdEnvironment environment = environments.require(environmentId);
-    if (environment.platform) {
+    if (environment.designated) {
       throw new ConflictException(
           "Environment "
               + environment.name

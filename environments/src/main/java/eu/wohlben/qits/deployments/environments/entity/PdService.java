@@ -95,7 +95,7 @@ public class PdService extends PanacheEntityBase implements CausedRow {
   /**
    * The path the health gate probes on a fresh container, at port 8080 (the platform's one exposed
    * port). Null means the deploy-time default ({@code
-   * qits.platform.deployments.default-health-path}) — registration writes the derived convention
+   * qits.deployments.default-health-path}) — registration writes the derived convention
    * path instead, so null only ever reaches a row nothing has registered since.
    */
   @Column(name = "health_path")

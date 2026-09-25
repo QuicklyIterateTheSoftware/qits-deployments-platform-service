@@ -13,7 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * The shipped state: {@code qits.platform.deployments.postgres.admin-password} has no default, so a
+ * The shipped state: {@code qits.deployments.postgres.admin-password} has no default, so a
  * deployment nobody configured it for cannot provision anything.
  *
  * <p>It is its own class because the value is injected as an {@code Optional<String>} at bean
@@ -47,7 +47,7 @@ public class ResourceProvisioningWithoutAdminPasswordTest {
     // The one actionable sentence there is: an authentication error from postgres would read like
     // anything but "nothing configured this".
     assertTrue(
-        refused.getMessage().contains("qits.platform.deployments.postgres.admin-password"),
+        refused.getMessage().contains("qits.deployments.postgres.admin-password"),
         refused.getMessage());
     assertEquals(List.of(), provisioner.requests(), "and no connection was attempted");
   }

@@ -9,7 +9,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /**
- * The guard on {@code qits.platform.deployments.orchestrator}: it must say {@code swarm}.
+ * The guard on {@code qits.deployments.orchestrator}: it must say {@code swarm}.
  *
  * <p><b>It used to be a producer that picked between two drivers</b>, and it is a guard because the
  * docker path is gone: there is one implementation, so ordinary injection resolves {@code @Inject

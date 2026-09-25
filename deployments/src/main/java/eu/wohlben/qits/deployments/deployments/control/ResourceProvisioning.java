@@ -84,7 +84,7 @@ public class ResourceProvisioning {
   @Inject ResourceProvisioner provisioner;
   @Inject IdpClientProvisioner idpClients;
 
-  @ConfigProperty(name = "qits.platform.deployments.postgres.admin-username")
+  @ConfigProperty(name = "qits.deployments.postgres.admin-username")
   String adminUsername;
 
   /**
@@ -94,7 +94,7 @@ public class ResourceProvisioning {
    * naming the key — which is the only actionable thing to say. Read only when a postgres resource
    * is actually declared: an idp-only declaration never touches it.
    */
-  @ConfigProperty(name = "qits.platform.deployments.postgres.admin-password")
+  @ConfigProperty(name = "qits.deployments.postgres.admin-password")
   Optional<String> adminPassword;
 
   /**
@@ -220,7 +220,7 @@ public class ResourceProvisioning {
             () ->
                 new ResourceException(
                     "this deployment declares resources and nothing configured"
-                        + " qits.platform.deployments.postgres.admin-password"));
+                        + " qits.deployments.postgres.admin-password"));
   }
 
   private DeploymentDriver.ResourceBinding ensurePostgres(

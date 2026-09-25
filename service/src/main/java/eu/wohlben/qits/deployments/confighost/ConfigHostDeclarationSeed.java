@@ -34,7 +34,7 @@ import org.jboss.logging.Logger;
  * peer, and the peer count here is one.
  *
  * <p><b>The url unset is a no-op, and it has to be.</b> {@code
- * qits.platform.deployments.extras-url} is unset shipped, which is a platform whose extras come from
+ * qits.deployments.extras-url} is unset shipped, which is a platform whose extras come from
  * the config volume's file — there is no store to seed, so a deployment that refused itself for
  * lacking one would be every file-mode platform failing every deployment. It logs at debug and
  * returns, and the deployment proceeds exactly as it did.
@@ -87,13 +87,13 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
   /** What the store is told about the plane, which is the only thing there is to tell it. */
   private static final String DEPLOYMENT_TARGET = "environment";
 
-  @ConfigProperty(name = "qits.platform.deployments.extras-url")
+  @ConfigProperty(name = "qits.deployments.extras-url")
   Optional<String> extrasUrl;
 
-  @ConfigProperty(name = "qits.platform.deployments.extras-timeout-seconds")
+  @ConfigProperty(name = "qits.deployments.extras-timeout-seconds")
   long timeoutSeconds;
 
-  @ConfigProperty(name = "qits.platform.deployments.extras-attempts")
+  @ConfigProperty(name = "qits.deployments.extras-attempts")
   int attempts;
 
   @Inject ExtrasBearer bearer;
@@ -137,7 +137,7 @@ public class ConfigHostDeclarationSeed implements DeclarationSeed {
       // No store named, so there is nothing to seed and nothing to refuse. Every file-mode platform
       // is this case, and it deploys exactly as it did.
       LOG.debugf(
-          "No qits.platform.deployments.extras-url, so the declaration of %s@%s is not seeded"
+          "No qits.deployments.extras-url, so the declaration of %s@%s is not seeded"
               + " anywhere — this platform's configuration is the config volume's file",
           applicationName, version);
       return;

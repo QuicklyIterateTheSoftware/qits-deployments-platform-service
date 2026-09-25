@@ -57,7 +57,7 @@
 # what wins the argv — so the one change that removes the hazard is deleting the stored row once the
 # orphan-delete UI ships, which is exactly what leaving it undeclared invites. QITS_RESOURCE_EVENTSTREAM_*
 # carries no such row today: it is handed to the very first cold-boot container directly by the seed
-# stack's own compose environment (never through `qits.platform.deployments.extras.qits-deployments.*`,
+# stack's own compose environment (never through `qits.deployments.extras.qits-deployments.*`,
 # confirmed against ComposeTemplate.java), so qits-configuration's import never picked it up and there
 # is nothing to flag either way.
 #   * mounts[0] / mounts[1] / groups[0] are declared below, as `string`, exactly as the store already

@@ -3,11 +3,11 @@ package eu.wohlben.qits.deployments.deployments.control;
 import org.eclipse.microprofile.config.Config;
 
 /**
- * Where one argv build reads {@code qits.platform.deployments.extras.<application>.*} from.
+ * Where one argv build reads {@code qits.deployments.extras.<application>.*} from.
  *
  * <p><b>It is a seam because the answer may be another service's.</b> The extras were the config
  * volume's properties file and nothing else, re-read per argv by {@link ExtrasSnapshot}; a platform
- * that sets {@code qits.platform.deployments.extras-url} moves the authority to qits-configuration,
+ * that sets {@code qits.deployments.extras-url} moves the authority to qits-configuration,
  * which is an HTTP call and therefore belongs in {@code service/} — the {@code SpecSource} rule
  * applied a fourth time.
  *

@@ -14,7 +14,7 @@ import org.eclipse.microprofile.config.Config;
  * environment — as deployment config states it, and as a driver reads it.
  *
  * <p><b>This is the contract, and it is structured rather than free-form.</b> It
- * replaces {@code qits.platform.deployments.run-args.<application>}, a free-form {@code docker run}
+ * replaces {@code qits.deployments.run-args.<application>}, a free-form {@code docker run}
  * argv that was whitespace split and appended verbatim. That was justified by "the argv is docker's
  * vocabulary"; it stopped being true the moment a service create had to render the same intent —
  * {@code -v} is {@code --mount}, {@code --group-add} is {@code --group}, and a publish is a
@@ -24,12 +24,12 @@ import org.eclipse.microprofile.config.Config;
  * <h2>The grammar</h2>
  *
  * <pre>
- * qits.platform.deployments.extras.&lt;application&gt;.mounts[&lt;i&gt;]    = volume:&lt;name&gt;:&lt;target&gt;[:ro]
+ * qits.deployments.extras.&lt;application&gt;.mounts[&lt;i&gt;]    = volume:&lt;name&gt;:&lt;target&gt;[:ro]
  *                                                                 | bind:&lt;host-path&gt;:&lt;target&gt;[:ro]
- * qits.platform.deployments.extras.&lt;application&gt;.publishes[&lt;i&gt;] = [&lt;ip&gt;:]&lt;host-port&gt;:&lt;port&gt;[/tcp|/udp]
- * qits.platform.deployments.extras.&lt;application&gt;.groups[&lt;i&gt;]    = &lt;gid&gt;
- * qits.platform.deployments.extras.&lt;application&gt;.aliases[&lt;i&gt;]   = &lt;dns-name&gt;
- * qits.platform.deployments.extras.&lt;application&gt;.env.&lt;KEY&gt;      = &lt;value&gt;
+ * qits.deployments.extras.&lt;application&gt;.publishes[&lt;i&gt;] = [&lt;ip&gt;:]&lt;host-port&gt;:&lt;port&gt;[/tcp|/udp]
+ * qits.deployments.extras.&lt;application&gt;.groups[&lt;i&gt;]    = &lt;gid&gt;
+ * qits.deployments.extras.&lt;application&gt;.aliases[&lt;i&gt;]   = &lt;dns-name&gt;
+ * qits.deployments.extras.&lt;application&gt;.env.&lt;KEY&gt;      = &lt;value&gt;
  * </pre>
  *
  * <p>The index orders a list and means nothing else. Environment is keyed by the variable instead,
@@ -156,17 +156,35 @@ public record ServiceExtras(
    */
   public static ServiceExtras of(Config config, String application) {
     String prefix = DeploymentDriver.EXTRAS_PREFIX + application + ".";
+    // The retired spelling is read too, and the NEW one wins key by key. Neither qits-configuration
+    // nor the config volume's file moves when this repository does, so during the namespace
+    // migration every application's extras still arrive under the old prefix; reading only the new
+    // one would give every service on the estate an argv with no mounts, ports or environment.
+    String legacyPrefix = DeploymentDriver.LEGACY_EXTRAS_PREFIX + application + ".";
     Map<Integer, Mount> mounts = new TreeMap<>();
     Map<Integer, Publish> publishes = new TreeMap<>();
     Map<Integer, String> groups = new TreeMap<>();
     Map<Integer, String> aliases = new TreeMap<>();
     // Sorted by variable name, so one application's argv is the same argv every time it is built.
     Map<String, String> env = new TreeMap<>();
+    // The new spelling first, so a key present under both wins from the new one: the loop below
+    // overwrites, and a legacy key read second would undo the migration one application at a time.
+    java.util.List<String> names = new java.util.ArrayList<>();
     for (String name : config.getPropertyNames()) {
-      if (!name.startsWith(prefix)) {
-        continue;
+      if (name.startsWith(legacyPrefix)) {
+        names.add(name);
       }
-      String element = name.substring(prefix.length());
+    }
+    for (String name : config.getPropertyNames()) {
+      if (name.startsWith(prefix)) {
+        names.add(name);
+      }
+    }
+    for (String name : names) {
+      String element =
+          name.startsWith(prefix)
+              ? name.substring(prefix.length())
+              : name.substring(legacyPrefix.length());
       // An empty value is absent to SmallRye's Optional conversion, which is right for a port and
       // wrong for `-e FLAG=`; the empty string is what that means.
       String value = config.getOptionalValue(name, String.class).orElse("");
