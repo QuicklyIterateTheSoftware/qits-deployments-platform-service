@@ -8,8 +8,9 @@ package eu.wohlben.qits.deployments.deployments.control;
  *   <li>{@code service.version} — the deployment's commit sha. This component deploys sha-addressed
  *       images, so the sha IS the released identity; it is not a version number and is not dressed
  *       up as one.
- *   <li>{@code deployment.environment.name} — the environment this container belongs to, or {@value
- *       #PLATFORM_ENVIRONMENT} for a platform service, which belongs to all of them.
+ *   <li>{@code deployment.environment.name} — the environment this container belongs to. Every
+ *       container has one now; {@value #NO_ENVIRONMENT} is a fallback that marks a bug rather than
+ *       the platform plane it was named for.
  *   <li>{@code service.instance.id} — the name this component assigned, which is unique per
  *       deployment and stable for the process' lifetime.
  * </ul>
@@ -47,8 +48,21 @@ package eu.wohlben.qits.deployments.deployments.control;
  */
 public final class DeployedIdentity {
 
-  /** What {@code deployment.environment.name} says for a container that is in every environment. */
-  public static final String PLATFORM_ENVIRONMENT = "platform";
+  /**
+   * The sentinel {@code deployment.environment.name} falls back to when a deployment reaches here
+   * with no environment.
+   *
+   * <p><b>It used to mean something and now marks a bug.</b> A PLATFORM service belonged to every
+   * environment rather than one, so it genuinely had no tier and {@code platform} was "the one true
+   * thing there is to say". That plane is deleted: every application is an ordinary service in one
+   * environment, so a null here is not a kind of service, it is a deployment that lost its tier
+   * somewhere upstream.
+   *
+   * <p>The guard stays, because stamping nothing would be worse than stamping a word. But the word
+   * is now a signal: {@code deployment.environment.name=platform} appearing in telemetry is
+   * something to chase, not a service class to look up.
+   */
+  public static final String NO_ENVIRONMENT = "platform";
 
   /** The vendor-neutral variable every OpenTelemetry SDK reads. */
   public static final String OTEL_VARIABLE = "OTEL_RESOURCE_ATTRIBUTES";
@@ -61,8 +75,9 @@ public final class DeployedIdentity {
   /**
    * The {@code k=v,k=v} list both variables carry.
    *
-   * @param environmentName null for a platform service, which is told {@value
-   *     #PLATFORM_ENVIRONMENT} instead — the one true thing there is to say
+   * @param environmentName the environment this deployment belongs to; null is not expected any
+   *     more and falls back to {@value #NO_ENVIRONMENT} — see that constant for why that is a bug
+   *     marker rather than a service class
    * @param instanceName the container or service name this deployment assigned
    */
   public static String resourceAttributes(
@@ -73,7 +88,7 @@ public final class DeployedIdentity {
     String version = DeploymentIdentifiers.requireAttributeValue(commitSha, "commit sha");
     String environment =
         DeploymentIdentifiers.requireAttributeValue(
-            environmentName == null ? PLATFORM_ENVIRONMENT : environmentName, "environment name");
+            environmentName == null ? NO_ENVIRONMENT : environmentName, "environment name");
     String instance = DeploymentIdentifiers.requireAttributeValue(instanceName, "container name");
     return "service.version="
         + version
