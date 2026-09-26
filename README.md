@@ -324,18 +324,22 @@ All under `/deployments/api`. The client is served at `/` — this service has a
 `/deployments/q/health/ready` — which is also, and now exactly, what this component's own
 health-path convention derives from its application name.
 
-**The segment was `/platform-deployments` until 2026-09-26, and nothing answers the old prefix any
-more.** It was answered for exactly one release by `api/LegacyPrefixReroute`, which rewrote a leading
-`/platform-deployments/` onto `/deployments/` and WARNed once per request naming the path and the
-caller, while `routes:` declared both prefixes so the edge kept routing the old one here and
-`quarkus.quinoa.ignored-path-prefixes` listed both so a legacy path naming no route answered 404
-rather than the client. That WARN was the inventory: the last caller on it was this service's own
-SPA, the frontend was released with the new path as `2026.926.151155`, and the reroute, both second
-entries and the `health_path:` override in the spec all went together. The segment is now spelled in
-**four** places, all of them in this repository: `quarkus.rest.path`,
-`quarkus.http.non-application-root-path`, `quarkus.quinoa.ignored-path-prefixes` and `routes:` in
-the spec. The health path is derived, not declared — the convention run on the application name
-`qits-deployments` gives `/deployments/q/health/ready`, which is the path served.
+**The segment was `/platform-deployments` until 2026-09-26, and the old prefix now answers 404.** It
+was rewritten onto the live one for exactly one release by `api/LegacyPrefixReroute`, which WARNed
+once per request naming the path and the caller, while `routes:` declared both prefixes so the edge
+kept routing the old one here. That WARN was the inventory: the last caller on it was this service's
+own SPA, the frontend was released with the new path as `2026.926.151155`, and the reroute, the
+second `routes:` entry and the `health_path:` override in the spec went together.
+
+**`quarkus.quinoa.ignored-path-prefixes` still lists both, and that entry is permanent.** It went
+with the others for one release and had to come back: with nothing rewriting the prefix, every path
+under it names no route, and Quinoa's SPA fallback answers a path naming no route with `index.html`
+at 200 — so the retired prefix served the client instead of failing, which is the defect this whole
+change was about. The live segment is spelled in **four** places, all of them in this repository:
+`quarkus.rest.path`, `quarkus.http.non-application-root-path`,
+`quarkus.quinoa.ignored-path-prefixes` and `routes:` in the spec; the retired one survives in the
+second value of that one key. The health path is derived, not declared — the convention run on the
+application name `qits-deployments` gives `/deployments/q/health/ready`, which is the path served.
 
 **The pins are read off deployment rows alone.** qits-platform-artifacts deletes an image tag only
 when no pin names it, and deletes nothing when it cannot get an answer, so the keep-set must not
