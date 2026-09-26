@@ -107,9 +107,9 @@ next to `…qits.deployments.environments`. The repetition was the price of a qu
 plane and is now just the price of a module called `deployments` inside a component called
 `deployments` — the pairing with `environments` is what it buys, and renaming either to dodge it
 would cost that. **The REST path has since followed**: it is `/deployments/api` as of 2026-09-26,
-with the retired prefix answered for one release by `api/LegacyPrefixReroute` — see *Addressing and
-auth*. The artifactIds (`qits-platform-deployments-*`) and `quarkus.package.output-name` did NOT
-follow and are deliberately untouched: those are published coordinates that the Dockerfile's `COPY`
+and the retired prefix is answered by nothing — the one-release `api/LegacyPrefixReroute` that
+rewrote it is deleted. See *Addressing and auth*. The artifactIds (`qits-platform-deployments-*`)
+and `quarkus.package.output-name` did NOT follow and are deliberately untouched: those are published coordinates that the Dockerfile's `COPY`
 line and `service/pom.xml`'s native image path agree on, and neither is an address anybody dials.
 
 **`deployments` depends on `environments` and never the reverse.** That is the partition, and it is
@@ -1337,22 +1337,29 @@ throughout; only the route lagged, and the pairing is what the whole change is: 
 exactly what `DeployService.conventionHealthPath` derives from the application name, so this
 component stopped being the one exception to its own convention.
 
-It moved in **one commit**, which is safe for a reason worth keeping: the served prefix is baked into
-the image and `health_path:` is read from the spec at the released tag, so both halves of a
-self-deploy's gate come from the same commit — a rollback to an older tag is self-consistent for the
-same reason. **Do not delete the `health_path:` line** as the tidy-up it now looks like:
+It moved in **one commit**, which was safe for a reason worth keeping: the served prefix is baked
+into the image and the spec is read at the released tag, so both halves of a self-deploy's gate come
+from the same commit — a rollback to an older tag is self-consistent for the same reason. The move
+carried a `health_path:` override in `.config/qits/deployments.yml` for exactly one release, because
 `resolveHealthPath` asks the spec, then the STORED `pd_service.health_path` row, then the convention,
-and that row still holds the old path, so removing the key gates every self-deploy against a path
-this image 404s.
+and that row still held the old path and beat the convention. **The key is gone now and must not come
+back**: the row was re-registered with the served path (`GET /deployments/api/services` answers
+`"healthPath":"/deployments/q/health/ready"`, which is exactly what `conventionHealthPath` derives),
+so an override would only be a second spelling free to drift from the route. `OwnSpecTest` asserts
+the absence.
 
-**The retired prefix is answered for one release**, by `api/LegacyPrefixReroute` — a `Filters` entry
-at priority 1000 (above Quarkus' authentication handler, so the rewrite is one pass rather than two)
-that rewrites a leading `/platform-deployments` onto `/deployments` and logs **one WARN per request**
-naming the path and the caller. A filter rather than a duplicated `@Path` tree because half of what
-lives under the segment is not JAX-RS at all: `/deployments/q` is Quarkus' own non-application root,
-and the readiness endpoint under it is what a self-deploy's gate curls. **That WARN is the cutover's
-inventory** — the day the log falls silent, the class, the second entry in
-`quarkus.quinoa.ignored-path-prefixes` and the second prefix in `routes:` all go together.
+**The retired prefix is answered by nothing, and that is the end of the cutover.** It was answered
+for exactly one release by `api/LegacyPrefixReroute` — a `Filters` entry at priority 1000 (above
+Quarkus' authentication handler, so the rewrite was one pass rather than two) that rewrote a leading
+`/platform-deployments` onto `/deployments` and logged **one WARN per request** naming the path and
+the caller. A filter rather than a duplicated `@Path` tree because half of what lives under the
+segment is not JAX-RS at all: `/deployments/q` is Quarkus' own non-application root, and the
+readiness endpoint under it is what a self-deploy's gate curls. **That WARN was the cutover's
+inventory**, and the last caller on it was this service's own SPA; the frontend was released with the
+new path as `2026.926.151155`, so the class, the second entry in
+`quarkus.quinoa.ignored-path-prefixes` and the second prefix in `routes:` went together on
+2026-09-26. Do not re-add a compatibility rewrite here: a prefix answered by a filter is a prefix
+nobody has to migrate off.
 
 **Nothing on this surface is open, and the role says who a caller is meant to be.** Every endpoint
 carries a `@RolesAllowed`, and there are exactly three roles:
@@ -1403,41 +1410,49 @@ call with no credential at all is 401. `MachineGuardEnforcedTest` pins all three
 
 The intake path is a **cross-repo contract**: qits-ci POSTs
 `/deployments/api/events/software-released` fire-and-forget (and the bus is the ordinary door). A
-mismatch raises no error anywhere. Move one, move both — and note that qits-ci has NOT moved: its
-configured intake url still names the old prefix, which the reroute is what covers.
+mismatch raises no error anywhere. Move one, move both — **and note that the contract has no live
+sender on that side today**: qits-ci carries neither an intake url nor a release notifier any more
+(its own `application.properties` says so in as many words — nothing in it calls the deployer, so
+there is no address of the deployer in that file at all), and the ordinary door is the bus. So the
+path is a contract with whatever replays it — the bootstrap and an operator — rather than with a
+configured client, and there is no compatibility rewrite standing behind it any more.
 
 **A new machine surface outside `/deployments` needs a line in
 `quarkus.quinoa.ignored-path-prefixes`, in the same commit.** Quinoa's SPA fallback is a catch-all
 registered near-last, so a real route still wins — but a path matching *no* route is rerouted to
 `index.html` and answers `200 text/html`, which a machine client parses as data. Setting the key
 **replaces** Quinoa's derivation rather than extending it, and the values are matched **after**
-`ui-root-path` is stripped — which is `/` here, so they are written **absolutely**. The first entry,
-`/deployments`, covers `/api` and `/q` by prefix; a route outside that segment needs its own.
-`@WebSocket` or anything on the Vert.x router takes a literal path and needs one too.
+`ui-root-path` is stripped — which is `/` here, so they are written **absolutely**. There is exactly
+one entry, `/deployments`, and it covers `/api` and `/q` by prefix; a route outside that segment
+needs its own. `@WebSocket` or anything on the Vert.x router takes a literal path and needs one too.
 
-**The second entry is `/platform-deployments`, and it is the one failure the reroute cannot cover.**
-The reroute rewrites the prefix and nothing else, so a legacy path naming no route becomes a live
-path naming no route — which is precisely what Quinoa's catch-all answers with `index.html` at 200.
-It goes in the commit that deletes the reroute.
+**There was a second entry, `/platform-deployments`, and it covered the one failure the reroute could
+not.** The reroute rewrote the prefix and nothing else, so a legacy path naming no route became a
+live path naming no route — which is precisely what Quinoa's catch-all answers with `index.html` at
+200. It went in the commit that deleted the reroute, and what makes its absence safe is that the
+prefix is not this service's ground any more at all: it is out of `routes:` too, so the edge
+path-routes nothing under it here and no caller is left addressing it. This list is the wire surfaces
+a machine really dials, and there is one of those.
 
-## The client, and where the segment still lives
+## The client, and where the segment lives
 
 `service/src/main/webui` is the **qits-deployments-frontend** submodule. This service has a host of
 its own, so the client is served at `/` and its `angular.json` sets `baseHref: /` — there is no
-segment in the client at all. Its calls, however, are `/platform-deployments/api/…` **hardcoded in
-`api/cd-api.ts`**, and that repository did not move with this one. It keeps working only because
-`api/LegacyPrefixReroute` rewrites the prefix, so **every page load of the client is WARNs in this
-service's log** until the frontend is released with the new path and its gitlink is bumped here.
-That is the first entry on the reroute's inventory, and the reroute cannot be deleted before it.
+segment in the client at all. Its calls in `api/cd-api.ts` were `/platform-deployments/api/…`
+**hardcoded**, and that repository did not move with this one: for one release every page load of the
+client was a WARN in this service's log, which is what `api/LegacyPrefixReroute` existed to count. It
+was the last entry on that inventory, and the frontend was released with the new path as
+`2026.926.151155` — which is what let the reroute be deleted. The gitlink here is bumped by the
+ordinary maintenance path, not by this change.
 
-The segment is spelled in **five** places for this one release, all of them in this repository:
-`quarkus.quinoa.ignored-path-prefixes` (both values), `quarkus.rest.path`,
-`quarkus.http.non-application-root-path`, `routes:` + `health_path:` in
-`.config/qits/deployments.yml`, and `api/LegacyPrefixReroute`. It drops to **four** when the reroute
-goes. `PdPackagedSurfaceIT` probes the served base href, the scoped deep link, `/deployments/`
-answering 404 rather than a second copy of the client, the legacy prefix being rewritten onto the
-live one on BOTH surfaces under it, and a legacy path naming no route answering 404 rather than the
-client.
+The segment is spelled in **four** places, all of them in this repository:
+`quarkus.quinoa.ignored-path-prefixes`, `quarkus.rest.path`,
+`quarkus.http.non-application-root-path` and `routes:` in `.config/qits/deployments.yml`. Four more
+existed for the length of the cutover and every one of them came out on 2026-09-26: the second
+ignored prefix, the second `routes:` entry, the `health_path:` override and
+`api/LegacyPrefixReroute`. `PdPackagedSurfaceIT` probes the served base href, the scoped deep link,
+`/deployments/` answering 404 rather than a second copy of the client, and a path under the live
+prefix naming no route answering 404 rather than the client on BOTH surfaces under it.
 
 ## The event side: a RELEASE is the only trigger
 
@@ -1922,7 +1937,8 @@ after the release is published and before it is announced to this component:
 
 **Which prefix that probe names depends on which version you are moving.** The route moved to
 `/deployments` on 2026-09-26; a version cut before that serves `/platform-deployments` and only
-that, and a version cut after it serves both (the second by way of `api/LegacyPrefixReroute`). So
+that, the single release in between served both (the second by way of `api/LegacyPrefixReroute`),
+and everything from the release that deleted the reroute on serves `/deployments` and only that. So
 the line above is right for anything current and wrong for a rollback — check the version before
 believing the path, the same way every other command in this section checks the service name.
 

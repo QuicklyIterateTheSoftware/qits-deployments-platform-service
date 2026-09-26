@@ -2006,11 +2006,12 @@ public class DeployService implements ReleaseAnnouncements {
    *
    * <p>This component was the last exception to its own convention and is no longer one: it served
    * {@code /platform-deployments} while the plane that word named was already deleted. Both are the
-   * same string now, which makes the {@code health_path:} line in its own {@code
-   * .config/qits/deployments.yml} redundant with the convention and <b>still load-bearing</b> — see
-   * {@link #resolveHealthPath}: the stored {@code pd_service.health_path} row holds the old path and
-   * beats the convention, so the file's override is the only thing standing between a self-deploy
-   * and a gate against a path the image 404s.
+   * same string now, and all three sources {@link #resolveHealthPath} asks agree on it — so its own
+   * {@code .config/qits/deployments.yml} carries <b>no</b> {@code health_path:} key. That override
+   * was load-bearing for exactly one release, while the stored {@code pd_service.health_path} row
+   * still held the retired path and beat the convention; the row has since been re-registered with
+   * the served path and the key was removed. Do not re-add one to restate this method's answer: a
+   * spec that spells the path again is a second place for it to drift from the route.
    */
   static String conventionHealthPath(String applicationName) {
     String segment =

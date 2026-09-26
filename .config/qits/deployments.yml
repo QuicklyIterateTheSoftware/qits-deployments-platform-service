@@ -60,32 +60,33 @@ application: qits-deployments
 # that finds a registry row per resource, takes the no-op arm, and injects the credentials the
 # instance is already connected with. Without those rows it would rotate its own passwords out from
 # under its own connection pools.
-# THE ROUTE HAS MOVED AND THIS LINE STILL HAS TO BE HERE. The convention derives the health path
-# from the APPLICATION name — DeployService.conventionHealthPath("qits-deployments") is exactly
-# /deployments/q/health/ready — so this override now states what the convention would have derived
-# anyway, and deleting it looks like a tidy simplification. It is not.
+# THERE IS NO health_path: KEY HERE, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT.
+# resolveHealthPath asks three sources in order: this file, then the STORED pd_service.health_path
+# row, then the convention — and all three name /deployments/q/health/ready now, so an override
+# would only restate what the convention derives from the APPLICATION name
+# (DeployService.conventionHealthPath("qits-deployments") is exactly that string).
 #
-# resolveHealthPath asks three sources in order: this line, then the STORED pd_service.health_path
-# row, then the convention. That row still holds /platform-deployments/q/health/ready — it was
-# written when the route really was there — and it beats the convention. So without this line every
-# self-deploy would curl a path the new image 404s, never converge, and roll back as unhealthy, and
-# an operator-corrected row is not durable across a re-bootstrap. CHANGE THE VALUE, KEEP THE KEY.
-#
-# It becomes removable once no pd_service row for this application names the old path any more —
-# which is the same moment the legacy reroute can go, and belongs in that commit or later.
-health_path: /deployments/q/health/ready
+# It was here for one release and it was load-bearing then: the stored row held
+# /platform-deployments/q/health/ready, written when the route really was there, and a stored row
+# beats the convention — so without the key every self-deploy would have curled a path the new image
+# 404s, never converged, and rolled back as unhealthy. The route moved on 2026-09-26, the row was
+# re-registered with the served path (measured live: GET /deployments/api/services answers
+# "healthPath":"/deployments/q/health/ready"), and the override became redundant with the two
+# sources behind it. DO NOT RE-ADD IT to state the convention: it would be a second place for this
+# path to be edited out of step with the route, which is the whole defect it once covered for.
 
 # The edge reads this declaration from DeploymentActive. `routes:` is the WIRE prefix — the API and
 # the health endpoints — path-routed on every vhost. The client is not under it: it is served at the
 # root of this service's own host, which the edge derives from the application name.
 #
-# TWO PREFIXES FOR ONE RELEASE, comma-separated the way qits-artifacts declares `/artifacts,/v2`.
-# The first is the route this service serves; the second is the retired spelling, declared so the
-# edge keeps path-routing it here while api/LegacyPrefixReroute rewrites it onto the first. Without
-# the declaration the edge would stop routing the old prefix the moment this deploys, and the
-# reroute would never see a request to WARN about — which is the inventory the cutover is measured
-# with. It goes in the commit that deletes the reroute.
-routes: /deployments,/platform-deployments
+# ONE PREFIX, and it is the one this service serves. There were two for exactly one release: the
+# retired /platform-deployments was declared beside it so the edge kept path-routing the old
+# spelling here while api/LegacyPrefixReroute rewrote it onto the first and WARNed once per request
+# — the inventory the cutover was measured with. The last caller on that inventory was this
+# service's own SPA, which has been released with the new path, so the reroute and this declaration
+# went together. A prefix declared here that nothing serves is a route the edge advertises into a
+# 404.
+routes: /deployments
 
 # WHERE THE EDGE APPEARS THIS APPLICATION IN THE SIDEBAR. One entry per `<slot>.<Label>` pair — an
 # application may hang several rows under one heading, and this one hangs two rows in two different

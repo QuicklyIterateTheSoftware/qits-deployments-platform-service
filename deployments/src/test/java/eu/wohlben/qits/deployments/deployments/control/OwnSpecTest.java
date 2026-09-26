@@ -2,6 +2,7 @@ package eu.wohlben.qits.deployments.deployments.control;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.deployments.deployments.control.SpecSource.DeploymentSpec;
@@ -22,18 +23,18 @@ import org.junit.jupiter.api.Test;
  * {@link DeploymentSpecParser} is this component's own, a spec is fetched at the released tag, and an
  * unknown key fails a deployment. So parsing it here is not a second opinion, it is the only opinion.
  *
- * <p><b>What it pins is the self-deploy's health gate, and it is a trap rather than a tidiness
- * rule.</b> {@link DeployService#resolveHealthPath} asks the spec, then the STORED {@code
- * pd_service.health_path} row, then {@link DeployService#conventionHealthPath}. The convention now
- * derives exactly what this file states — the route segment and the application name finally agree —
- * which makes the {@code health_path:} line look like a redundant override somebody could delete as
- * a simplification. It is not: the stored row on the live platform still holds
- * {@code /platform-deployments/q/health/ready}, written when the route really was there, and the row
- * beats the convention. Delete the key and every self-deploy curls a path the new image 404s, never
- * converges, and rolls back — and an operator-corrected row is not durable across a re-bootstrap.
+ * <p><b>What it pins is the self-deploy's health gate.</b> {@link DeployService#resolveHealthPath}
+ * asks the spec, then the STORED {@code pd_service.health_path} row, then {@link
+ * DeployService#conventionHealthPath} — and the three agree now that the route segment and the
+ * application name do. So this file states NO {@code health_path:}, and the assertion is that it
+ * states none and that the convention derives the path the service actually serves. A key here would
+ * be a second spelling of that string, free to drift from the route the image bakes in.
  *
- * <p>So the assertion is deliberately the awkward one: the key must be PRESENT, and its value must
- * equal what the convention derives. Either half alone would pass the edit that breaks a deployment.
+ * <p>The key was present for exactly one release and was load-bearing then: the stored row held
+ * {@code /platform-deployments/q/health/ready}, written when the route really was there, and a
+ * stored row beats the convention. The route moved on 2026-09-26, the row was re-registered with the
+ * served path, and the override came out. <b>Re-adding it is the regression this test names</b>, not
+ * removing it.
  */
 class OwnSpecTest {
 
@@ -65,36 +66,35 @@ class OwnSpecTest {
   }
 
   @Test
-  void theHealthPathIsSTATEDAndIsWhatTheConventionDerives() throws IOException {
-    String stated = parsed().healthPath();
+  void noHealthPathIsSTATEDAndTheConventionDerivesTheServedOne() throws IOException {
+    // ABSENT: the three sources resolveHealthPath asks agree now, so an override would only restate
+    // the convention — and a restatement is a second place for the path to drift from the route.
+    assertNull(
+        parsed().healthPath(),
+        "health_path: must stay OUT of .config/qits/deployments.yml — the convention derives the"
+            + " served path and the stored pd_service row names it too, so a key here is a second"
+            + " spelling free to drift from the route this image bakes in");
 
-    // PRESENT: the stored pd_service.health_path row still names the retired prefix and beats the
-    // convention, so the override is what stands between a self-deploy and a gate against a 404.
-    assertNotNull(
-        stated,
-        "health_path: must stay in .config/qits/deployments.yml — the stored pd_service row holds"
-            + " the retired path and beats the convention, so removing the key gates every"
-            + " self-deploy against a path this image 404s");
-
-    // AND EQUAL TO THE CONVENTION: the route segment and the application name agree now, so a
-    // value that does not match the convention is a value that does not match the served route.
+    // …and what the convention derives is the path this service actually serves, which is the half
+    // the absence relies on: with no override and no stored row, the convention IS the gate.
     assertEquals(
+        "/deployments/q/health/ready",
         DeployService.conventionHealthPath(APPLICATION),
-        stated,
-        "the stated health path and the convention derived from the application name are the same"
-            + " string now; a difference means one of the two moved without the other");
+        "the health-path convention and the served non-application root are the same string; a"
+            + " difference means one of the two moved without the other");
   }
 
   @Test
-  void theRoutesDeclareTheServedPrefixAndTheRetiredOne() throws IOException {
+  void theRoutesDeclareTheServedPrefixAlone() throws IOException {
     // The edge projects its route table from `routes:`, so the live prefix has to be there or the
-    // API is reachable on no vhost at all. The retired one is there for one release, which is what
-    // keeps the edge routing it here while api/LegacyPrefixReroute rewrites it — remove that entry
-    // in the commit that removes the reroute, not before.
+    // API is reachable on no vhost at all — and nothing else may be, because a declared prefix this
+    // service does not serve is a route the edge advertises into a 404. The retired
+    // /platform-deployments was the second entry for exactly one release, while
+    // api/LegacyPrefixReroute rewrote it; both went on 2026-09-26.
     assertEquals(
-        java.util.List.of("/deployments", "/platform-deployments"),
+        java.util.List.of("/deployments"),
         parsed().routes(),
-        "the served prefix first, the retired one behind it for one release");
+        "the served prefix, and only the served prefix");
   }
 
   @Test

@@ -22,8 +22,9 @@
          into the lifecycle so it cannot be silently misplaced (the migration-deployables-plan.md
          reasoning, verbatim from the siblings). It serves its own client: src/main/webui is the
          qits-spa-deployments submodule, which Quinoa builds into this artifact during augmentation, so one
-         process answers /platform-deployments/ and /platform-deployments/api and the gateway needs
-         no second upstream.
+         process answers / (the client) and /deployments/api (the wire surface) and the gateway needs
+         no second upstream. The wire segment was /platform-deployments until 2026-09-26; only the
+         published coordinates below still carry that word, and they are not addresses.
 
          NEVER let quarkus-undertow onto this classpath. Its presence breaks Quinoa's production
          static serving — the client 404s from a build that was green — and it arrives transitively

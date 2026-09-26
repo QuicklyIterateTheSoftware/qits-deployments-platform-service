@@ -324,15 +324,18 @@ All under `/deployments/api`. The client is served at `/` — this service has a
 `/deployments/q/health/ready` — which is also, and now exactly, what this component's own
 health-path convention derives from its application name.
 
-**The segment was `/platform-deployments` until 2026-09-26, and the old prefix is answered for one
-release.** `api/LegacyPrefixReroute` rewrites a leading `/platform-deployments/` onto
-`/deployments/` and WARNs once per request, naming the path and the caller; `routes:` in
-`.config/qits/deployments.yml` declares both prefixes so the edge keeps routing the old one here,
-and `quarkus.quinoa.ignored-path-prefixes` lists both so a legacy path naming no route answers 404
-rather than the client. The day that log falls silent, all three go. Until then the segment is
-spelled in **five** places, all of them in this repository: `quarkus.rest.path`,
-`quarkus.http.non-application-root-path`, `quarkus.quinoa.ignored-path-prefixes`, `routes:` +
-`health_path:` in the spec, and the reroute itself. After the reroute goes it is four.
+**The segment was `/platform-deployments` until 2026-09-26, and nothing answers the old prefix any
+more.** It was answered for exactly one release by `api/LegacyPrefixReroute`, which rewrote a leading
+`/platform-deployments/` onto `/deployments/` and WARNed once per request naming the path and the
+caller, while `routes:` declared both prefixes so the edge kept routing the old one here and
+`quarkus.quinoa.ignored-path-prefixes` listed both so a legacy path naming no route answered 404
+rather than the client. That WARN was the inventory: the last caller on it was this service's own
+SPA, the frontend was released with the new path as `2026.926.151155`, and the reroute, both second
+entries and the `health_path:` override in the spec all went together. The segment is now spelled in
+**four** places, all of them in this repository: `quarkus.rest.path`,
+`quarkus.http.non-application-root-path`, `quarkus.quinoa.ignored-path-prefixes` and `routes:` in
+the spec. The health path is derived, not declared — the convention run on the application name
+`qits-deployments` gives `/deployments/q/health/ready`, which is the path served.
 
 **The pins are read off deployment rows alone.** qits-platform-artifacts deletes an image tag only
 when no pin names it, and deletes nothing when it cannot get an answer, so the keep-set must not
