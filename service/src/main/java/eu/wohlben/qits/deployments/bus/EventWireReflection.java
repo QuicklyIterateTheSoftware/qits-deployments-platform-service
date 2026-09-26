@@ -7,6 +7,9 @@ import eu.wohlben.qits.deployments.events.DeploymentEndpoint;
 import eu.wohlben.qits.deployments.events.DeploymentFailed;
 import eu.wohlben.qits.deployments.events.DeploymentQueued;
 import eu.wohlben.qits.deployments.events.DeploymentStarted;
+import eu.wohlben.qits.deployments.events.EnvironmentChanged;
+import eu.wohlben.qits.deployments.events.EnvironmentCreated;
+import eu.wohlben.qits.deployments.events.EnvironmentDeleted;
 import eu.wohlben.qits.deployments.events.NavigationEntry;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
@@ -47,6 +50,12 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  *   <li>{@link DeploymentQueued}, {@link DeploymentStarted}, {@link DeploymentActive}, {@link
  *       DeploymentEndpoint}, {@link NavigationEntry} and {@link DeploymentFailed} — what {@code
  *       DeployEventAnnouncer} serializes. Unregistered, the binary publishes an empty payload rather than failing.
+ *   <li>{@link EnvironmentCreated}, {@link EnvironmentChanged} and {@link EnvironmentDeleted} — a
+ *       TIER's lifecycle rather than a deployment's, what {@code EnvironmentEventAnnouncer}
+ *       serializes. They fail the way the four above would, and quieter: an environment is created
+ *       once and renamed rarely, so an empty payload here is a frame nobody is watching at the
+ *       moment it is published, read weeks later by a consumer that has no way to tell it apart
+ *       from an environment that never existed.
  *   <li>{@link EventEnvelope} — the wrapper every publish is sent as.
  *   <li>The {@code CanonicalJson$QitsEventMixin}, by string name because it is a nested type inside
  *       the library. <b>This is the quiet one</b>, and qits-ci paid for it: the mix-in is what keeps
@@ -66,7 +75,10 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
       DeploymentActive.class,
       DeploymentEndpoint.class,
       NavigationEntry.class,
-      DeploymentFailed.class
+      DeploymentFailed.class,
+      EnvironmentCreated.class,
+      EnvironmentChanged.class,
+      EnvironmentDeleted.class
     },
     classNames = {
       "eu.wohlben.qits.eventstream.control.EventPage",

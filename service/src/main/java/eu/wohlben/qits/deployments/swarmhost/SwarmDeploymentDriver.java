@@ -233,6 +233,19 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   static final String APPLICATION_VARIABLE = "QITS_APPLICATION";
 
   /**
+   * The platform's domain, stated once and handed to every container — the one fact a service needs
+   * in order to derive its own public names.
+   *
+   * <p>It used to be fanned out by the bootstrap into five per-service composed spellings — the
+   * edge's ACME domain, the idp's cookie domain, two browser-host lists, the webauthn origins and
+   * the canonical origin — each of which could go stale on its own. The edge's copy and the idp's
+   * did diverge, and sign-in on the live platform broke. So the domain travels the way {@link
+   * #ENVIRONMENT_VARIABLE} already does: one value, written by the deployer, derived from by
+   * whoever needs a hostname. No service carries a hostname in its configuration.
+   */
+  static final String DOMAIN_VARIABLE = "QITS_DOMAIN";
+
+  /**
    * What {@code ResourceProvisioning} injects, as the generic contract: {@code
    * QITS_RESOURCE_<NAME>_URL} and its two siblings. Config states none of them — the registry row
    * is the single authority for the credential — so the update diff must not be able to remove one.
@@ -240,17 +253,24 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
   static final String RESOURCE_PREFIX = "QITS_RESOURCE_";
 
   /**
-   * This component's own four, written on every argv before the deployment's own and therefore
+   * This component's own five, written on every argv before the deployment's own and therefore
    * never stated by config. They are the exception the update diff needs: measured against the
-   * extras alone, every deployment would remove and immediately re-add all four.
+   * extras alone, every deployment would remove and immediately re-add all five.
    *
-   * <p>{@code QITS_RESOURCE_*} is the fifth member of the family and is a PREFIX rather than a
+   * <p>{@link #DOMAIN_VARIABLE} is the newest member and belongs here for exactly the reason the
+   * other four do — the deployer writes it and config states it nowhere, so a diff against config
+   * alone would {@code --env-rm} the domain off every live service on its next deployment. That it
+   * is written CONDITIONALLY changes nothing: membership protects a key from removal, it does not
+   * assert that the key is present.
+   *
+   * <p>{@code QITS_RESOURCE_*} is the sixth member of the family and is a PREFIX rather than a
    * name, which is why it is {@link #RESOURCE_PREFIX} beside this set rather than in it.
    */
   static final Set<String> DEPLOYER_OWN_VARIABLES =
       Set.of(
           ENVIRONMENT_VARIABLE,
           APPLICATION_VARIABLE,
+          DOMAIN_VARIABLE,
           DeployedIdentity.OTEL_VARIABLE,
           DeployedIdentity.QUARKUS_OTEL_VARIABLE);
 
@@ -375,6 +395,18 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
 
   @ConfigProperty(name = "qits.deployments.swarm.flat-network")
   String flatNetwork;
+
+  /**
+   * The platform's one domain, handed to every container as {@link #DOMAIN_VARIABLE}. See that
+   * constant for why it is one value rather than five composed spellings.
+   *
+   * <p>{@code Optional} because the key ships with an empty default and SmallRye reads an empty
+   * value as absent — an installation that has not stated its domain must get no variable rather
+   * than a wrong one, so that every consumer falls back to whatever default it ships. See {@link
+   * #environment} for the guard.
+   */
+  @ConfigProperty(name = "qits.deployments.platform-domain")
+  Optional<String> platformDomain;
 
   /**
    * Whether a service create and a service update carry {@code --with-registry-auth}. False
@@ -1777,7 +1809,7 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
    * Who and where this service is, plus whatever was provisioned for it. Deliberately minimal —
    * application config (datasources, peers) is the image's and the environment's own story.
    */
-  private static List<String> environment(ServiceSpec spec) {
+  private List<String> environment(ServiceSpec spec) {
     List<String> variables = new ArrayList<>();
     // QITS_ENVIRONMENT is written for EVERY service, the platform plane included. It used to be
     // withheld from a platform service on the reasoning that it serves every environment and being
@@ -1793,6 +1825,22 @@ public class SwarmDeploymentDriver implements DeploymentDriver {
       variables.add(ENVIRONMENT_VARIABLE + "=" + spec.environmentName());
     }
     variables.add(APPLICATION_VARIABLE + "=" + spec.applicationName());
+    // QITS_DOMAIN is written for EVERY service too, and for the same reason QITS_ENVIRONMENT is:
+    // the platform's domain is ONE fact, and a service that has to know a hostname derives it from
+    // this rather than carrying a composed copy of it in its own configuration. The five composed
+    // spellings the bootstrap used to fan out — the edge's ACME domain, the idp's cookie domain,
+    // the two browser-host lists, the webauthn origins and the canonical origin — could each go
+    // stale on their own, and two of them did, which broke sign-in on the live platform. One value
+    // written here cannot diverge from itself.
+    //
+    // The blank guard is the ENVIRONMENT guard exactly, one word further on: an installation that
+    // has not stated its domain gets NO VARIABLE, because QITS_DOMAIN= is worse than the variable's
+    // absence. A consumer reading an empty string has been told something — an empty hostname — and
+    // will compose nonsense out of it; a consumer finding nothing falls back to the default it
+    // ships, which is the behaviour every service had before this line existed.
+    platformDomain
+        .filter(domain -> !domain.isBlank())
+        .ifPresent(domain -> variables.add(DOMAIN_VARIABLE + "=" + domain.trim()));
     String identity =
         DeployedIdentity.resourceAttributes(
             spec.commitSha(), spec.environmentName(), spec.wireAlias());
