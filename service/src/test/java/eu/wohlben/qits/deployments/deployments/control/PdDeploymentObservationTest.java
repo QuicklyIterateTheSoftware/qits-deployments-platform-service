@@ -336,7 +336,7 @@ public class PdDeploymentObservationTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", "obs-serial", "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201);
     // Two rows of this test's own, so a pass makes more than one observation and an interleaving
@@ -356,7 +356,7 @@ public class PdDeploymentObservationTest {
                 "repoId", "repo-obs-serial",
                 "version", VERSION_B))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
     // The intake has already submitted the event, so this lands strictly behind it in the queue.

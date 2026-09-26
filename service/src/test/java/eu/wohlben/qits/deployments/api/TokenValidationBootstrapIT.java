@@ -57,7 +57,7 @@ import org.junit.jupiter.api.TestMethodOrder;
  * first among the catalogue's packages ({@code …deployments.api} before {@code …deployments.stories})
  * is what keeps it the first story of the run.
  *
- * <p><b>The route both stories drive is {@code GET /platform-deployments/api/pins}</b>, and it is
+ * <p><b>The route both stories drive is {@code GET /deployments/api/pins}</b>, and it is
  * chosen because it is the one guarded read here whose caller is a MACHINE: {@link PdPinController}
  * takes {@code qits:system} rather than the {@code qits:admin} the environment
  * and deployment listings take, its one caller is qits-platform-artifacts' OCI garbage collector,
@@ -103,7 +103,7 @@ public class TokenValidationBootstrapIT {
    * <p>The near side is the framework's own RestAssured tap: every request a story makes becomes
    * {@code <actor> -> qits-platform-deployments}, labelled with the method, the scrubbed path and the
    * status this service answered, and any path carrying a {@code /q/} segment is skipped — which is
-   * right here, because {@code quarkus.http.non-application-root-path=/platform-deployments/q}. This
+   * right here, because {@code quarkus.http.non-application-root-path=/deployments/q}. This
    * repository kept a hand-written copy of that filter for one release; the framework ships it now
    * and the copy is gone.
    *
@@ -151,7 +151,7 @@ public class TokenValidationBootstrapIT {
     story.note(
         "qits-platform-deployments starts with the OIDC tenant on, beside a reachable"
             + " qits-platform-idp");
-    given().get("/platform-deployments/q/health/ready").then().statusCode(200);
+    given().get("/deployments/q/health/ready").then().statusCode(200);
 
     // End (a), the idp side: the JWKS was served during startup — before this story presented any
     // token at all. That is the claim the inlined-key suite cannot make, because it clears

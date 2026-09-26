@@ -106,9 +106,11 @@ Four maven modules, package root `eu.wohlben.qits.deployments`:
 next to `…qits.deployments.environments`. The repetition was the price of a qualifier naming the
 plane and is now just the price of a module called `deployments` inside a component called
 `deployments` — the pairing with `environments` is what it buys, and renaming either to dodge it
-would cost that. The artifactIds (`qits-platform-deployments-*`) and the REST path
-(`/platform-deployments/api`) are a SEPARATE rename and are deliberately untouched here: both are
-published coordinates that consumers and the edge's route table spell out.
+would cost that. **The REST path has since followed**: it is `/deployments/api` as of 2026-09-26,
+with the retired prefix answered for one release by `api/LegacyPrefixReroute` — see *Addressing and
+auth*. The artifactIds (`qits-platform-deployments-*`) and `quarkus.package.output-name` did NOT
+follow and are deliberately untouched: those are published coordinates that the Dockerfile's `COPY`
+line and `service/pom.xml`'s native image path agree on, and neither is an address anybody dials.
 
 **`deployments` depends on `environments` and never the reverse.** That is the partition, and it is
 the thing to defend. Execution reads and writes the topology; the topology knows nothing about
@@ -401,8 +403,8 @@ lever for replacing a container was re-firing `environment/dev` so a rebuild and
 it: a quarter of an hour, a new deployment row and a fresh image build, to restart a process. So a
 restart is an operation here now, and so is stopping an application:
 
-    POST /platform-deployments/api/applications/{applicationId}/scale   {"replicas": 0|1}   → 202
-    POST /platform-deployments/api/applications/{applicationId}/restart                      → 202
+    POST /deployments/api/applications/{applicationId}/scale   {"replicas": 0|1}   → 202
+    POST /deployments/api/applications/{applicationId}/restart                      → 202
 
 Eight things about it, each easy to undo by accident:
 
@@ -465,7 +467,7 @@ that fails when the daemon is busy.
 **The `application:` section below says "CHANGING the value later is a decommission and a new
 application, and nothing here helps". This is the "here".**
 
-    POST /platform-deployments/api/applications/{applicationId}/decommission   → 200
+    POST /deployments/api/applications/{applicationId}/decommission   → 200
 
 A repository that is renamed, or that starts overriding its deployed identity, leaves its old
 application name behind holding whatever its last attempt wrote. Three of them sat on this install —
@@ -1325,10 +1327,32 @@ since a spec is read at the released tag and an unknown key fails a deployment.
 
 ## Addressing and auth
 
-`quarkus.rest.path=/platform-deployments/api` lives in the service module's
-`application.properties` and the suite inherits it — a resource's `@Path` is relative to it and must
-never repeat the segment; tests address the absolute path, which is what makes them catch a prefix
-regression.
+`quarkus.rest.path=/deployments/api` lives in the service module's `application.properties` and the
+suite inherits it — a resource's `@Path` is relative to it and must never repeat the segment; tests
+address the absolute path, which is what makes them catch a prefix regression.
+
+**The segment was `/platform-deployments` until 2026-09-26, and this was the last route on the
+estate spelling a word the platform retired.** The application has been `qits-deployments`
+throughout; only the route lagged, and the pairing is what the whole change is: the segment is now
+exactly what `DeployService.conventionHealthPath` derives from the application name, so this
+component stopped being the one exception to its own convention.
+
+It moved in **one commit**, which is safe for a reason worth keeping: the served prefix is baked into
+the image and `health_path:` is read from the spec at the released tag, so both halves of a
+self-deploy's gate come from the same commit — a rollback to an older tag is self-consistent for the
+same reason. **Do not delete the `health_path:` line** as the tidy-up it now looks like:
+`resolveHealthPath` asks the spec, then the STORED `pd_service.health_path` row, then the convention,
+and that row still holds the old path, so removing the key gates every self-deploy against a path
+this image 404s.
+
+**The retired prefix is answered for one release**, by `api/LegacyPrefixReroute` — a `Filters` entry
+at priority 1000 (above Quarkus' authentication handler, so the rewrite is one pass rather than two)
+that rewrites a leading `/platform-deployments` onto `/deployments` and logs **one WARN per request**
+naming the path and the caller. A filter rather than a duplicated `@Path` tree because half of what
+lives under the segment is not JAX-RS at all: `/deployments/q` is Quarkus' own non-application root,
+and the readiness endpoint under it is what a self-deploy's gate curls. **That WARN is the cutover's
+inventory** — the day the log falls silent, the class, the second entry in
+`quarkus.quinoa.ignored-path-prefixes` and the second prefix in `routes:` all go together.
 
 **Nothing on this surface is open, and the role says who a caller is meant to be.** Every endpoint
 carries a `@RolesAllowed`, and there are exactly three roles:
@@ -1378,31 +1402,42 @@ minted by a client with no `.roles` line authenticates and is refused **403** by
 call with no credential at all is 401. `MachineGuardEnforcedTest` pins all three.
 
 The intake path is a **cross-repo contract**: qits-ci POSTs
-`/platform-deployments/api/events/software-released` fire-and-forget (and the bus is the ordinary
-door). A mismatch raises no error
-anywhere. Move one, move both.
+`/deployments/api/events/software-released` fire-and-forget (and the bus is the ordinary door). A
+mismatch raises no error anywhere. Move one, move both — and note that qits-ci has NOT moved: its
+configured intake url still names the old prefix, which the reroute is what covers.
 
-**A new machine surface outside `/platform-deployments` needs a line in
+**A new machine surface outside `/deployments` needs a line in
 `quarkus.quinoa.ignored-path-prefixes`, in the same commit.** Quinoa's SPA fallback is a catch-all
 registered near-last, so a real route still wins — but a path matching *no* route is rerouted to
 `index.html` and answers `200 text/html`, which a machine client parses as data. Setting the key
 **replaces** Quinoa's derivation rather than extending it, and the values are matched **after**
-`ui-root-path` is stripped — which is `/` here, so they are written **absolutely**. One entry,
-`/platform-deployments`, covers `/api` and `/q` by prefix; a route outside that segment needs its
-own. `@WebSocket` or anything on the Vert.x router takes a literal path and needs one too.
+`ui-root-path` is stripped — which is `/` here, so they are written **absolutely**. The first entry,
+`/deployments`, covers `/api` and `/q` by prefix; a route outside that segment needs its own.
+`@WebSocket` or anything on the Vert.x router takes a literal path and needs one too.
+
+**The second entry is `/platform-deployments`, and it is the one failure the reroute cannot cover.**
+The reroute rewrites the prefix and nothing else, so a legacy path naming no route becomes a live
+path naming no route — which is precisely what Quinoa's catch-all answers with `index.html` at 200.
+It goes in the commit that deletes the reroute.
 
 ## The client, and where the segment still lives
 
-`service/src/main/webui` is the **qits-deployments-platform-frontend** submodule. This service has a
-host of its own, so the client is served at `/` and its `angular.json` sets `baseHref: /` — there is
-no segment in the client at all. Its calls still go to `/platform-deployments/api`, which the edge
-path-routes on every vhost.
+`service/src/main/webui` is the **qits-deployments-frontend** submodule. This service has a host of
+its own, so the client is served at `/` and its `angular.json` sets `baseHref: /` — there is no
+segment in the client at all. Its calls, however, are `/platform-deployments/api/…` **hardcoded in
+`api/cd-api.ts`**, and that repository did not move with this one. It keeps working only because
+`api/LegacyPrefixReroute` rewrites the prefix, so **every page load of the client is WARNs in this
+service's log** until the frontend is released with the new path and its gitlink is bumped here.
+That is the first entry on the reroute's inventory, and the reroute cannot be deleted before it.
 
-The segment is spelled in four places that move together, all of them in this repository:
-`quarkus.quinoa.ignored-path-prefixes`, `quarkus.rest.path`,
-`quarkus.http.non-application-root-path`, and `routes:` in `.config/qits/deployments.yml`.
-`PdPackagedSurfaceIT` probes the served base href, the scoped deep link, and `/platform-deployments/`
-answering 404 rather than a second copy of the client.
+The segment is spelled in **five** places for this one release, all of them in this repository:
+`quarkus.quinoa.ignored-path-prefixes` (both values), `quarkus.rest.path`,
+`quarkus.http.non-application-root-path`, `routes:` + `health_path:` in
+`.config/qits/deployments.yml`, and `api/LegacyPrefixReroute`. It drops to **four** when the reroute
+goes. `PdPackagedSurfaceIT` probes the served base href, the scoped deep link, `/deployments/`
+answering 404 rather than a second copy of the client, the legacy prefix being rewritten onto the
+live one on BOTH surfaces under it, and a legacy path naming no route answering 404 rather than the
+client.
 
 ## The event side: a RELEASE is the only trigger
 
@@ -1416,7 +1451,7 @@ coordinates would deploy one application twice and race each other's cutover. (W
 - **The bus** (`bus/PdSoftwareReleaseSubscriber`), a `QitsDurableEventListener` on qits-ci's
   `SoftwareRelease`. The publisher retries it, the log replays it after a cutover, and the library
   hands it over exactly once per event whichever channel delivered it.
-- **`POST /platform-deployments/api/events/software-released`** (`api/PdEventController`). The
+- **`POST /deployments/api/events/software-released`** (`api/PdEventController`). The
   **manual and bootstrap** door: a bootstrap replays a lost release, an operator redeploys a version
   or deliberately goes back one, and it is the only one that works before qits-events exists. Nobody
   retries it. `/events/build-succeeded` is **gone** and 404s.
@@ -1835,7 +1870,7 @@ tell those two apart.
 corrected.** The qits-350 entries were corrected on 2026-09-24 at roughly 15:30 UTC (qits-configuration
 revisions ~424-451). So:
 
-    GET qits-deployments:8080/platform-deployments/api/deployments?environmentId=<id>
+    GET qits-deployments:8080/deployments/api/deployments?environmentId=<id>
     # for each applicationName, the newest ACTIVE row's createdAt must be AFTER the correction
 
 Any application whose newest deployment predates it is still carrying bare addresses and must be
@@ -1883,7 +1918,13 @@ after the release is published and before it is announced to this component:
 
     # 3. confirm it answers on the new name before anything dials it
     docker run --rm --network qits-net curlimages/curl -sf \
-      http://dev-qits-deployments:8080/platform-deployments/q/health/ready
+      http://dev-qits-deployments:8080/deployments/q/health/ready
+
+**Which prefix that probe names depends on which version you are moving.** The route moved to
+`/deployments` on 2026-09-26; a version cut before that serves `/platform-deployments` and only
+that, and a version cut after it serves both (the second by way of `api/LegacyPrefixReroute`). So
+the line above is right for anything current and wrong for a rollback — check the version before
+believing the path, the same way every other command in this section checks the service name.
 
 Everything that dials the deployer moves with it — the `QITS_PLATFORM_DEPLOYMENTS_*` addresses in
 qits-bootstrap-cli's `ComposeTemplate` and in qits-configuration's entries — and those are the wrapper's
@@ -2224,7 +2265,7 @@ Six things about it, each easy to undo by accident:
   never learns a route for. **This component is that application, every single time** — its own
   self-update is `HANDED_OFF` to the orchestrator, `execute` returns before the cutover that
   announces, and the surviving instance's sweep is where it goes `ACTIVE`. It cost the deployer its
-  own `/platform-deployments` route and its navigation entry on every platform: the old UI was
+  own `/deployments` route and its navigation entry on every platform: the old UI was
   reachable by nobody and missing from the menu, while every other application announced normally.
   An adoption is not a correction — it is the **first** statement anybody makes about a deployment
   that went live. `PdSweepAdoptionPublishTest` holds it.
@@ -2521,7 +2562,7 @@ against.
   test reaches: `MachineGuardEnforcedTest` opens the same gate but **inlines the verification key and
   clears `auth-server-url`**, precisely so it needs no idp — so the boot-time JWKS fetch,
   `discovery-enabled=false` with `jwks-path=jwks` joined onto the URL, and `connection-delay` are
-  exercised here or nowhere. Both its stories drive `GET /platform-deployments/api/pins`, the one
+  exercised here or nowhere. Both its stories drive `GET /deployments/api/pins`, the one
   guarded read whose caller is a machine (`qits:system`, qits-platform-artifacts' image
   collector) and which reads nothing but deployment rows.
 
@@ -2648,7 +2689,7 @@ lockfile keeps the developer-host origin, which is correct locally.
 else. Its `.config/qits/deployments.yml` still carries `deployment_target: platform`, which is read
 and dropped — the key is retired and the tolerance is permanent; the line is swept by a task of its
 own. A release announces this component to itself, and **under swarm** it deploys itself: the manager
-arbitrates the succession, the `/platform-deployments` surface blips mid-cutover (this repo's spec
+arbitrates the succession, the `/deployments` surface blips mid-cutover (this repo's spec
 says `update_order: stop-first`), and a successor that misses its health gate leaves the predecessor
 serving.
 

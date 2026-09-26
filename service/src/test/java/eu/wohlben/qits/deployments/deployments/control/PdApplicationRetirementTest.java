@@ -37,7 +37,7 @@ public class PdApplicationRetirementTest {
 
   private static final String SHA = "d".repeat(40);
 
-  private static final String APPLICATIONS = "/platform-deployments/api/applications/";
+  private static final String APPLICATIONS = "/deployments/api/applications/";
 
   /**
    * The tier the fixtures below name, as a REAL environment row.
@@ -186,7 +186,7 @@ public class PdApplicationRetirementTest {
 
     given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=" + TIER)
+        .get("/deployments/api/deployments?environmentId=" + TIER)
         .then()
         .statusCode(200)
         .body(

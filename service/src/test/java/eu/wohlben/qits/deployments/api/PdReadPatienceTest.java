@@ -33,7 +33,7 @@ import org.junit.jupiter.api.Test;
 @TestProfile(DbPatienceShortProfile.class)
 public class PdReadPatienceTest {
 
-  private static final String SERVICES = "/platform-deployments/api/services";
+  private static final String SERVICES = "/deployments/api/services";
 
   /**
    * The real repository with a scripted number of connection failures in front of one read.

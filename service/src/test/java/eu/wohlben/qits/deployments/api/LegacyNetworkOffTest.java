@@ -48,14 +48,14 @@ public class LegacyNetworkOffTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", "flip", "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201);
     given()
         .contentType(ContentType.JSON)
         .body(Map.of("repoId", "repo-flip", "version", VERSION))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
 

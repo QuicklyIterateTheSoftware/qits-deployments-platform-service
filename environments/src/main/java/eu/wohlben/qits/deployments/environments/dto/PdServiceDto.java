@@ -15,7 +15,7 @@ import java.util.List;
  * PdService.branch}.
  *
  * <p>The ids round-trip: what is read here is what {@code PUT
- * /platform-deployments/api/services/{name}} accepts back, so a caller can read a service, change
+ * /deployments/api/services/{name}} accepts back, so a caller can read a service, change
  * one link and write it whole.
  */
 public record PdServiceDto(

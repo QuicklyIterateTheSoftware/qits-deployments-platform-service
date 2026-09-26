@@ -408,7 +408,7 @@ public class PdOwedReleaseTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()
@@ -424,7 +424,7 @@ public class PdOwedReleaseTest {
                 "application", application,
                 "version", version))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -461,7 +461,7 @@ public class PdOwedReleaseTest {
       List<Map<String, Object>> deployments =
           given()
               .when()
-              .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+              .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
               .statusCode(200)
               .extract()

@@ -28,7 +28,7 @@ class MachineGuardOffTest {
             {"repoId":"unguarded-repo","version":"2026.903.193059"}
             """)
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -39,7 +39,7 @@ class MachineGuardOffTest {
         .contentType(ContentType.JSON)
         .body("{\"name\":\"unguarded-env\"}")
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201);
   }
@@ -50,7 +50,7 @@ class MachineGuardOffTest {
         .contentType(ContentType.JSON)
         .body("{\"deploymentTarget\":\"PLATFORM\",\"branch\":\"main\",\"availableOnEnv\":false}")
         .when()
-        .put("/platform-deployments/api/services/unguarded-service")
+        .put("/deployments/api/services/unguarded-service")
         .then()
         .statusCode(201);
   }

@@ -23,7 +23,7 @@ import java.util.UUID;
  *       SoftwareRelease}, and the door a deployment follows from: the publisher retries it, the log
  *       replays it after a cutover, and the eventstream library hands it over exactly once per
  *       event whichever channel delivered it.
- *   <li>{@code POST /platform-deployments/api/events/software-released} — the direct HTTP intake
+ *   <li>{@code POST /deployments/api/events/software-released} — the direct HTTP intake
  *       ({@code api/PdEventController}). It stays, and it stays the <b>manual and bootstrap</b>
  *       door: a bootstrap replays a lost release through it by hand, an operator redeploys or rolls
  *       back a version with it, and it is the door that still works before qits-events exists. It

@@ -51,14 +51,14 @@ class MachineGuardEnforcedTest {
    */
   private static final String AUDIENCE = "qits-platform";
 
-  private static final String ENVIRONMENTS = "/platform-deployments/api/environments";
-  private static final String SERVICES = "/platform-deployments/api/services";
-  private static final String INTAKE = "/platform-deployments/api/events/software-released";
-  private static final String PINS = "/platform-deployments/api/pins";
-  private static final String REQUESTS = "/platform-deployments/api/deployment-requests";
+  private static final String ENVIRONMENTS = "/deployments/api/environments";
+  private static final String SERVICES = "/deployments/api/services";
+  private static final String INTAKE = "/deployments/api/events/software-released";
+  private static final String PINS = "/deployments/api/pins";
+  private static final String REQUESTS = "/deployments/api/deployment-requests";
 
   /** An application nothing here ever deployed — the operator levers' own three paths. */
-  private static final String APPLICATION = "/platform-deployments/api/applications/platform:guarded-app";
+  private static final String APPLICATION = "/deployments/api/applications/platform:guarded-app";
 
   private static final String SCALE = APPLICATION + "/scale";
   private static final String RESTART = APPLICATION + "/restart";
@@ -132,8 +132,8 @@ class MachineGuardEnforcedTest {
     // anonymous caller is challenged rather than served.
     given().when().get(ENVIRONMENTS).then().statusCode(401);
     given().when().get(SERVICES).then().statusCode(401);
-    given().when().get("/platform-deployments/api/applications").then().statusCode(401);
-    given().when().get("/platform-deployments/api/deployments?environmentId=whatever").then().statusCode(401);
+    given().when().get("/deployments/api/applications").then().statusCode(401);
+    given().when().get("/deployments/api/deployments?environmentId=whatever").then().statusCode(401);
     given().when().get(PINS).then().statusCode(401);
   }
 
@@ -361,10 +361,10 @@ class MachineGuardEnforcedTest {
     admin().when().get(ENVIRONMENTS + "/" + environmentId).then().statusCode(200);
     admin().when().get(ENVIRONMENTS + "/" + environmentId + "/links").then().statusCode(200);
     admin().when().get(SERVICES).then().statusCode(200);
-    admin().when().get("/platform-deployments/api/applications").then().statusCode(200);
+    admin().when().get("/deployments/api/applications").then().statusCode(200);
     admin()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+        .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()
         .statusCode(200);
 
@@ -409,7 +409,7 @@ class MachineGuardEnforcedTest {
     machine().when().get(ENVIRONMENTS).then().statusCode(403);
     machine()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+        .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()
         .statusCode(403);
 

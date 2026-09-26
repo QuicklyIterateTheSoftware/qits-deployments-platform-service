@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
  * assertions is gone with the proxy: there is one service, one transaction, and nothing on the wire
  * between the row and the network. What is left is the two halves that were always real.
  *
- * <p>Tests address the absolute {@code /platform-deployments/api} paths, which is what makes them
+ * <p>Tests address the absolute {@code /deployments/api} paths, which is what makes them
  * catch a prefix regression, and every test names its own environment: the suite shares one
  * in-memory database across classes (Flyway cleans at start, not between tests), so a shared name
  * is a test that passes alone and fails in a run. Assert with {@code hasItem} and {@code find{}}
@@ -45,8 +45,8 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class PdEnvironmentApiTest {
 
-  private static final String ENVIRONMENTS = "/platform-deployments/api/environments";
-  private static final String SERVICES = "/platform-deployments/api/services";
+  private static final String ENVIRONMENTS = "/deployments/api/environments";
+  private static final String SERVICES = "/deployments/api/services";
 
   @Inject FakeDeploymentDriver driver;
 
@@ -204,7 +204,7 @@ public class PdEnvironmentApiTest {
     List<Map<String, Object>> flat =
         given()
             .when()
-            .get("/platform-deployments/api/applications")
+            .get("/deployments/api/applications")
             .then()
             .statusCode(200)
             .extract()
@@ -507,10 +507,10 @@ public class PdEnvironmentApiTest {
 
   @Test
   public void deploymentsListingRequiresAnExistingEnvironment() {
-    given().when().get("/platform-deployments/api/deployments").then().statusCode(400);
+    given().when().get("/deployments/api/deployments").then().statusCode(400);
     given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=no-such")
+        .get("/deployments/api/deployments?environmentId=no-such")
         .then()
         .statusCode(404);
   }
@@ -530,13 +530,13 @@ public class PdEnvironmentApiTest {
     // was after all along, and is why the two filters overlapped.
     given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=platform")
+        .get("/deployments/api/deployments?environmentId=platform")
         .then()
         .statusCode(404);
 
     // Dropping the filter is still a 400, and that is untouched: a listing has to be scoped, and
     // the retired value was never an escape from having a scope.
-    given().when().get("/platform-deployments/api/deployments").then().statusCode(400);
+    given().when().get("/deployments/api/deployments").then().statusCode(400);
   }
 
   // --- the platform environment -----------------------------------------------------------------

@@ -336,7 +336,7 @@ public class PdDeployPublishTest {
         // The entry tier: a release lands in the designated platform environment.
         .body(Map.of("name", name, "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()
@@ -353,7 +353,7 @@ public class PdDeployPublishTest {
     }
     request
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -369,7 +369,7 @@ public class PdDeployPublishTest {
       List<Map<String, Object>> rows =
           given()
               .when()
-              .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+              .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
               .statusCode(200)
               .extract()

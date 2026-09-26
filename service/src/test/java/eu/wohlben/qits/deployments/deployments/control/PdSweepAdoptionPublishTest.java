@@ -82,7 +82,7 @@ public class PdSweepAdoptionPublishTest {
 
   @Test
   public void anAdoptedSelfUpdateAnnouncesItsRoutesAndNavigation() {
-    // The deployer's own shape: one route it still serves under its pre-rename segment, the host
+    // The deployer's own shape: one route it still serves under the segment derived from its application name, the host
     // it is served at, and where it asks to appear. The snapshot is the ROW's, and the git host is
     // scripted to refuse — proving the announcement reaches no peer at all.
     String environmentId = createEnvironment("sweep-pub-nav");
@@ -90,7 +90,7 @@ public class PdSweepAdoptionPublishTest {
     UUID cause = UUID.randomUUID();
     String handedOff =
         deployment("qits-sweep-pub-nav", environmentId, "run-sweep-pub-nav", cause, "new-self");
-    routing(handedOff, "/platform-deployments", 8080, "deployments", "platform.Deployments:4");
+    routing(handedOff, "/deployments", 8080, "deployments", "platform.Deployments:4");
     driver.scriptRunningImage("new-self", image(SHA));
 
     deployService.sweepInFlight();
@@ -105,7 +105,7 @@ public class PdSweepAdoptionPublishTest {
     assertTrue(active.payload.contains("\"containerName\":\"new-self\""), active.payload);
     // The snapshot the edge projects its route table from: the path, the wire alias nobody else can
     // derive, the port, the host it is also served at, and where it asks to appear.
-    assertTrue(active.payload.contains("\"path\":\"/platform-deployments\""), active.payload);
+    assertTrue(active.payload.contains("\"path\":\"/deployments\""), active.payload);
     assertTrue(
         active.payload.contains("\"upstreamHost\":\"sweep-pub-nav-qits-sweep-pub-nav\""),
         active.payload);
@@ -303,7 +303,7 @@ public class PdSweepAdoptionPublishTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", false))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()

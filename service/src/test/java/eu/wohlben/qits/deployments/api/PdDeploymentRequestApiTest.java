@@ -19,7 +19,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@code GET /platform-deployments/api/deployment-requests} over real releases, driven through the
+ * {@code GET /deployments/api/deployment-requests} over real releases, driven through the
  * intake exactly as a release drives it.
  *
  * <p>What this surface exists to say, and what nothing else can: <b>a version was asked for here,
@@ -118,12 +118,12 @@ public class PdDeploymentRequestApiTest {
     // on the instance, and a missing tier must say so rather than answer with an empty list.
     given()
         .when()
-        .get("/platform-deployments/api/deployment-requests")
+        .get("/deployments/api/deployment-requests")
         .then()
         .statusCode(400);
     given()
         .when()
-        .get("/platform-deployments/api/deployment-requests?environmentId=no-such-tier")
+        .get("/deployments/api/deployment-requests?environmentId=no-such-tier")
         .then()
         .statusCode(404);
   }
@@ -135,7 +135,7 @@ public class PdDeploymentRequestApiTest {
     // silently empty list.
     given()
         .when()
-        .get("/platform-deployments/api/deployment-requests?environmentId=platform")
+        .get("/deployments/api/deployment-requests?environmentId=platform")
         .then()
         .statusCode(404);
   }
@@ -189,7 +189,7 @@ public class PdDeploymentRequestApiTest {
     createEnvironment("req-orphan-successor");
     given()
         .when()
-        .delete("/platform-deployments/api/environments/" + environmentId)
+        .delete("/deployments/api/environments/" + environmentId)
         .then()
         .statusCode(204);
 
@@ -210,7 +210,7 @@ public class PdDeploymentRequestApiTest {
     Map<String, Object> answer =
         given()
             .when()
-            .get("/platform-deployments/api/deployment-requests/" + id)
+            .get("/deployments/api/deployment-requests/" + id)
             .then()
             .statusCode(200)
             .extract()
@@ -232,7 +232,7 @@ public class PdDeploymentRequestApiTest {
   public void anIdNothingWroteIsA404() {
     given()
         .when()
-        .get("/platform-deployments/api/deployment-requests/no-such-request")
+        .get("/deployments/api/deployment-requests/no-such-request")
         .then()
         .statusCode(404);
   }
@@ -322,12 +322,12 @@ public class PdDeploymentRequestApiTest {
     // every repository's, so neither is a filter this surface accepts.
     given()
         .when()
-        .get("/platform-deployments/api/deployment-requests?repoId=repo-req-half")
+        .get("/deployments/api/deployment-requests?repoId=repo-req-half")
         .then()
         .statusCode(400);
     given()
         .when()
-        .get("/platform-deployments/api/deployment-requests?version=" + V_A)
+        .get("/deployments/api/deployment-requests?version=" + V_A)
         .then()
         .statusCode(400);
   }
@@ -347,7 +347,7 @@ public class PdDeploymentRequestApiTest {
             + (applicationName == null ? "" : "&applicationName=" + applicationName);
     return given()
         .when()
-        .get("/platform-deployments/api/deployment-requests" + query)
+        .get("/deployments/api/deployment-requests" + query)
         .then()
         .statusCode(200)
         .extract()
@@ -359,7 +359,7 @@ public class PdDeploymentRequestApiTest {
   private List<Map<String, Object>> requestsOfProject(String projectId) {
     return given()
         .when()
-        .get("/platform-deployments/api/deployment-requests?projectId=" + projectId)
+        .get("/deployments/api/deployment-requests?projectId=" + projectId)
         .then()
         .statusCode(200)
         .extract()
@@ -371,7 +371,7 @@ public class PdDeploymentRequestApiTest {
     return given()
         .when()
         .get(
-            "/platform-deployments/api/deployment-requests?repoId="
+            "/deployments/api/deployment-requests?repoId="
                 + repoId
                 + "&version="
                 + version)
@@ -391,7 +391,7 @@ public class PdDeploymentRequestApiTest {
   private List<Map<String, Object>> deployments(String environmentId) {
     return given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+        .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()
         .statusCode(200)
         .extract()
@@ -405,7 +405,7 @@ public class PdDeploymentRequestApiTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()
@@ -451,7 +451,7 @@ public class PdDeploymentRequestApiTest {
         .contentType(ContentType.JSON)
         .body(body)
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
     settle(environmentId, expected);

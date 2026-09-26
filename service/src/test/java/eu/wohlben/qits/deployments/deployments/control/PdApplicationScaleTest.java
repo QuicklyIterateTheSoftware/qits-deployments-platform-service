@@ -41,7 +41,7 @@ public class PdApplicationScaleTest {
 
   private static final String SHA = "c".repeat(40);
 
-  private static final String APPLICATIONS = "/platform-deployments/api/applications/";
+  private static final String APPLICATIONS = "/deployments/api/applications/";
 
   /**
    * The tier the fixtures below name, as a REAL environment row.
@@ -198,7 +198,7 @@ public class PdApplicationScaleTest {
     // ...and the listing a client reads says so rather than claiming the place is serving.
     given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=" + TIER)
+        .get("/deployments/api/deployments?environmentId=" + TIER)
         .then()
         .statusCode(200)
         .body("deployments.find { it.id == '" + id + "' }.status", org.hamcrest.Matchers.equalTo("SCALED_TO_ZERO"));

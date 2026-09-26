@@ -116,8 +116,8 @@ class DeploymentIdentifiersTest {
     assertEquals(
         "/observability/q/health/ready", DeployService.conventionHealthPath("qits-observability"));
     assertEquals(
-        "/platform-deployments/q/health/ready",
-        DeployService.conventionHealthPath("qits-platform-deployments"));
+        "/deployments/q/health/ready",
+        DeployService.conventionHealthPath("qits-deployments"));
     // A name without the prefix keeps the whole name...
     assertEquals("/mongrel/q/health/ready", DeployService.conventionHealthPath("mongrel"));
     // ...and so does one that is nothing BUT the prefix, rather than composing an empty segment.

@@ -285,7 +285,7 @@ public class ReleaseAcceptance {
   void reportExhausted(Owed row) {
     LOG.errorf(
         "The release of %s@%s was accepted %d times and never discharged; it is parked and will"
-            + " NOT deploy. Replay it through POST /platform-deployments/api/events/software-released",
+            + " NOT deploy. Replay it through POST /deployments/api/events/software-released",
         row.accepted().applicationName(), row.accepted().version(), row.attempts());
   }
 }

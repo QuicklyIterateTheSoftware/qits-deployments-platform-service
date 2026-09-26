@@ -15,7 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@code GET /platform-deployments/api/pins} over real deployments, driven through the intake exactly as a green
+ * {@code GET /deployments/api/pins} over real deployments, driven through the intake exactly as a green
  * build drives it — the shape a garbage collector binds to, and the proof that the pins follow the
  * cutover rather than restating it.
  *
@@ -141,7 +141,7 @@ public class PdPinApiTest {
   }
 
   private List<Map<String, Object>> pins() {
-    return given().when().get("/platform-deployments/api/pins").then().statusCode(200).extract().jsonPath().getList("pins");
+    return given().when().get("/deployments/api/pins").then().statusCode(200).extract().jsonPath().getList("pins");
   }
 
   private String createEnvironment(String name) {
@@ -150,7 +150,7 @@ public class PdPinApiTest {
         // The entry tier: creating one moves the designation, and a release lands there.
         .body(Map.of("name", name, "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()
@@ -163,7 +163,7 @@ public class PdPinApiTest {
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-pins", "repoId", repoId, "version", version))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
     settle(environmentId, expected);
@@ -182,7 +182,7 @@ public class PdPinApiTest {
                 "repoName", repoName,
                 "version", version))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
     settle(environmentId, expected);
@@ -194,7 +194,7 @@ public class PdPinApiTest {
       List<Map<String, Object>> deployments =
           given()
               .when()
-              .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+              .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
               .statusCode(200)
               .extract()

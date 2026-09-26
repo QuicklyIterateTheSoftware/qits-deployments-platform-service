@@ -217,7 +217,7 @@ public class PdRegistrationTest {
     // so a client still sending it learns that rather than reading "nothing is deployed".
     given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=platform")
+        .get("/deployments/api/deployments?environmentId=platform")
         .then()
         .statusCode(404);
   }
@@ -288,7 +288,7 @@ public class PdRegistrationTest {
                 "healthPath", "/hand/placed/health",
                 "environmentIds", List.of(environmentId)))
         .when()
-        .put("/platform-deployments/api/services/qits-odd")
+        .put("/deployments/api/services/qits-odd")
         .then()
         .statusCode(201);
 
@@ -450,7 +450,7 @@ public class PdRegistrationTest {
                 "availableOnEnv", false,
                 "environmentIds", List.of(environmentId)))
         .when()
-        .put("/platform-deployments/api/services/repo-fallback")
+        .put("/deployments/api/services/repo-fallback")
         .then()
         .statusCode(201);
     specs.scriptFailure("repo-fallback", "the git host answered 500");
@@ -484,7 +484,7 @@ public class PdRegistrationTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()
@@ -496,7 +496,7 @@ public class PdRegistrationTest {
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-reg", "repoId", repoId, "version", version))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -513,7 +513,7 @@ public class PdRegistrationTest {
                 "repoName", repoName,
                 "version", version))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -522,7 +522,7 @@ public class PdRegistrationTest {
   private Map<String, Object> service(String name) {
     return given()
         .when()
-        .get("/platform-deployments/api/services")
+        .get("/deployments/api/services")
         .then()
         .statusCode(200)
         .extract()
@@ -548,7 +548,7 @@ public class PdRegistrationTest {
       List<Map<String, Object>> deployments =
           given()
               .when()
-              .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+              .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
               .statusCode(200)
               .extract()
@@ -569,7 +569,7 @@ public class PdRegistrationTest {
   private List<Map<String, Object>> tierDeployments(String environmentId) {
     return given()
         .when()
-        .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+        .get("/deployments/api/deployments?environmentId=" + environmentId)
         .then()
         .statusCode(200)
         .extract()

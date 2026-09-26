@@ -312,7 +312,7 @@ components:
       openIdConnectUrl: http://dev-qits-platform-idp:8080/idp/.well-known/openid-configuration
       description: Authentication
 paths:
-  /platform-deployments/api/applications:
+  /deployments/api/applications:
     get:
       summary: Every application deployed here — environment applications and platform
         services
@@ -333,7 +333,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:agent
-  /platform-deployments/api/applications/{applicationId}/decommission:
+  /deployments/api/applications/{applicationId}/decommission:
     post:
       summary: "Retire an application — its current row becomes DECOMMISSIONED, nothing\
         \ is deleted"
@@ -366,7 +366,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
-  /platform-deployments/api/applications/{applicationId}/restart:
+  /deployments/api/applications/{applicationId}/restart:
     post:
       summary: "Restart an application in place — its tasks are replaced, its deployment\
         \ is not"
@@ -394,7 +394,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
-  /platform-deployments/api/applications/{applicationId}/scale:
+  /deployments/api/applications/{applicationId}/scale:
     post:
       summary: "Scale an application's workload — 0 stops it, 1 runs it"
       parameters:
@@ -428,7 +428,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:admin
-  /platform-deployments/api/deployment-requests:
+  /deployments/api/deployment-requests:
     get:
       summary: "Deployment requests, newest-first — by environment, by project, or\
         \ by (repository, version)"
@@ -475,7 +475,7 @@ paths:
         - qits:admin
         - qits:agent
         - qits:system
-  /platform-deployments/api/deployment-requests/{id}:
+  /deployments/api/deployment-requests/{id}:
     get:
       summary: "One deployment request, with the deployment it produced"
       parameters:
@@ -504,7 +504,7 @@ paths:
         - qits:admin
         - qits:agent
         - qits:system
-  /platform-deployments/api/deployments:
+  /deployments/api/deployments:
     get:
       summary: "One tier's recorded deployments, newest-first"
       parameters:
@@ -533,7 +533,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:agent
-  /platform-deployments/api/environments:
+  /deployments/api/environments:
     get:
       summary: List environments
       responses:
@@ -577,7 +577,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:system
-  /platform-deployments/api/environments/{environmentId}:
+  /deployments/api/environments/{environmentId}:
     patch:
       summary: "Rename an environment, or designate it the platform environment"
       parameters:
@@ -666,7 +666,7 @@ paths:
       security:
       - SecurityScheme:
         - qits:system
-  /platform-deployments/api/environments/{environmentId}/links:
+  /deployments/api/environments/{environmentId}/links:
     get:
       summary: "Every service present in this environment: its links, plus every platform\
         \ service"
@@ -695,7 +695,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:agent
-  /platform-deployments/api/pins:
+  /deployments/api/pins:
     get:
       summary: "The image shas deployments pin: what serves, and what a rollback restores"
       responses:
@@ -716,7 +716,7 @@ paths:
       - SecurityScheme:
         - qits:system
         - qits:agent
-  /platform-deployments/api/services:
+  /deployments/api/services:
     get:
       summary: "Every service, with the environments each is linked into"
       responses:
@@ -736,7 +736,7 @@ paths:
       - SecurityScheme:
         - qits:admin
         - qits:agent
-  /platform-deployments/api/services/{name}:
+  /deployments/api/services/{name}:
     put:
       summary: "Register or update one service, replacing its environment links"
       parameters:
