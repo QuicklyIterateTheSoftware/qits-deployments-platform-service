@@ -1080,10 +1080,39 @@ below the driver, so a revision could only ride there by widening `ApplyResult` 
 return type together. Worth doing the day the row's detail is asked to carry more than the
 orchestrator's own words.
 
-This component's own env flags (`QITS_ENVIRONMENT`, `QITS_APPLICATION`, `OTEL_RESOURCE_ATTRIBUTES`
-and its `QUARKUS_`-spelled twin) are written **before** the deployment's own, and docker keeps the
-**last** assignment of a repeated key — measured, not assumed. So they are defaults an operator
-overrides, and the ordering is the precedence rule: never reorder them past the extras.
+This component's own env flags (`QITS_ENVIRONMENT`, `QITS_APPLICATION`, `QITS_DOMAIN`,
+`OTEL_RESOURCE_ATTRIBUTES` and its `QUARKUS_`-spelled twin) are written **before** the deployment's
+own, and docker keeps the **last** assignment of a repeated key — measured, not assumed. So they are
+defaults an operator overrides, and the ordering is the precedence rule: never reorder them past the
+extras.
+
+### `QITS_DOMAIN`: the platform's domain is ONE fact (2026-09-26, qits-387)
+
+**The bootstrap used to fan the domain out into five per-service composed spellings** —
+`QITS_EDGE_ACME_DOMAIN`, `QITS_IDP_BROWSER_SSO_COOKIE_DOMAIN`, two `*_BROWSER_HOSTS`,
+`QITS_IDP_WEBAUTHN_ORIGINS` and `QITS_IDP_BROWSER_SSO_CANONICAL_ORIGIN` — each able to go stale on
+its own. The edge's copy and the idp's **did** diverge, and sign-in on the live platform broke. So
+the domain is stated once, as configuration, and propagated by the deployer to every container
+exactly as `QITS_ENVIRONMENT` is; a service derives its own names from it and **no service carries a
+hostname in its configuration**.
+
+- **`qits.deployments.platform-domain`, read from the bare `QITS_DOMAIN`** — not a
+  `QITS_PLATFORM_DEPLOYMENTS_*` spelling, because it is not this component's setting: it is the
+  platform's one domain, which this component happens to be the thing that hands out. The deployer
+  receives it under the same name it writes.
+- **It has no default, and that is the point.** No hostname this repository could ship would be
+  right for more than one installation, and a baked-in literal would be the sixth stale copy of the
+  fact the change exists to state once. The empty default keeps the no-default rule intact the way
+  `postgres.admin-password` and `extras-url` do: SmallRye reads empty as absent, the field is
+  `Optional<String>`, and blank is filtered at the argv.
+- **Blank or absent writes NO VARIABLE.** `QITS_DOMAIN=` is worse than the variable's absence — a
+  consumer reading an empty string has been told an empty hostname and composes nonsense out of it,
+  where a consumer finding nothing falls back to the default it ships. `QITS_ENVIRONMENT`'s null
+  guard, one word further on.
+- **`DOMAIN_VARIABLE` is in `DEPLOYER_OWN_VARIABLES`**, so the update diff cannot `--env-rm` it.
+  Config states it nowhere, which is exactly the condition that set exists for; that it is written
+  conditionally changes nothing, because membership protects a key from removal rather than
+  asserting it is present.
 
 ### The declaration goes the OTHER way, and it goes before the deployment (2026-09-07)
 
