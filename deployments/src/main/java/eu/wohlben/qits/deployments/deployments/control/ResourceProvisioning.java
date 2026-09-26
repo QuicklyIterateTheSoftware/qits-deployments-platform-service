@@ -36,6 +36,12 @@ import org.jboss.logging.Logger;
  * put back, an idp client nobody remembers is recreated or rotated. A resource the deployment no
  * longer declares is left exactly where it is.
  *
+ * <p><b>One claim can MOVE, and only because a file asked for it by name.</b> {@code renamed_from}
+ * in {@code .config/qits/deployments.yml} names the application this one used to be called, and a
+ * postgres claim held by exactly that application is transferred onto this one instead of refusing
+ * the deployment — see {@link #ensureAll}. Everything the refusal was right about survives: a claim
+ * held by anybody else still throws, and it throws on the same sentence.
+ *
  * <p><b>Two resource types now, dispatched by {@link ResourceSpec.Type}</b>: {@code postgresql} over
  * {@link ResourceProvisioner}, one idempotent {@code ensure} call; {@code idp-client} over {@link
  * IdpClientProvisioner}, a read and up to two writes, because qits-idp's own API has no single call
@@ -186,6 +192,48 @@ public class ResourceProvisioning {
    */
   public List<DeploymentDriver.ResourceBinding> ensureAll(
       String applicationName, String environmentName, List<Resolved> declared) {
+    return ensureAll(applicationName, environmentName, null, declared);
+  }
+
+  /**
+   * The same, for a deployment whose file declares a predecessor — {@code renamed_from} in {@code
+   * .config/qits/deployments.yml}, threaded here by value from {@code DeployService} the way every
+   * other spec value is.
+   *
+   * <p><b>An application name is a key, so renaming one is a new application, and that could not be
+   * different.</b> A swarm service's name is its address and swarm cannot rename one; {@code
+   * pd_service}, {@code pd_deployment} and {@code pd_resource} are keyed by an application NAME and
+   * hold no repository identity at all, by V1's own rule. So the successor deploys beside the
+   * predecessor and the operator retires the predecessor by hand. None of that is what {@code
+   * renamed_from} changes.
+   *
+   * <p><b>What it changes is one row, and the refusal it narrows was right.</b> Before it, a
+   * successor that declared the predecessor's database — which every rename does, because the
+   * alternative is abandoning the data — was refused by {@link #ensurePostgres} with "the database
+   * `X` is already provisioned for Y". That refusal exists because the alternative is provisioning a
+   * second application an <b>empty</b> database and starting it green, which is a data loss nobody
+   * is paged for, and it is unchanged for every caller that does not name the exact application
+   * holding the claim. What is new is that a declared predecessor is not a guess: the file said so,
+   * in a commit somebody reviewed, read at the released tag like every other statement in it.
+   *
+   * <p><b>The transfer is worth more than getting past the refusal, and that is the part to keep.</b>
+   * The claim row is the single authority for the provisioned credential, and it is read one
+   * statement later by {@code findOne(applicationName, …)} to decide whether to send the stored
+   * password or a fresh one. Transferred, that read HITS: the successor is provisioned with the
+   * password the role already has, so the predecessor — still running, still holding open pools on
+   * that role — keeps working. Left alone, the successor would find no row, the reconcile arm would
+   * rotate the role, and the rename would take the predecessor down as a side effect. The transfer
+   * therefore has to happen inside the same bracket and before that read, and it does.
+   *
+   * <p><b>A declared predecessor buys nothing anywhere else, and that is deliberate</b> rather than
+   * an unfinished sweep. The idp-client arm has its own "already provisioned for" and is left exactly
+   * as it was — see {@link #ensureIdpClient}, where the reason is written down beside the check.
+   *
+   * @param renamedFrom the application this one used to be called, or null — which is every file
+   *     that exists today, and which makes every refusal below byte-identical to what it was
+   */
+  public List<DeploymentDriver.ResourceBinding> ensureAll(
+      String applicationName, String environmentName, String renamedFrom, List<Resolved> declared) {
     if (declared == null || declared.isEmpty()) {
       return List.of();
     }
@@ -205,7 +253,8 @@ public class ResourceProvisioning {
       bindings.add(
           switch (resource.type()) {
             case POSTGRESQL ->
-                ensurePostgres(applicationName, environmentName, host, admin, resource);
+                ensurePostgres(
+                    applicationName, environmentName, renamedFrom, host, admin, resource);
             case IDP_CLIENT -> ensureIdpClient(applicationName, environmentName, resource);
           });
     }
@@ -226,20 +275,30 @@ public class ResourceProvisioning {
   private DeploymentDriver.ResourceBinding ensurePostgres(
       String applicationName,
       String environmentName,
+      String renamedFrom,
       String host,
       String admin,
       Resolved resource) {
     String database = PdIdentifiers.requireDatabaseName(resource.database());
     String name = PdIdentifiers.requireResourceName(resource.name());
 
-    // The registry read, and the cross-application check, in one bracket: the worker thread has no
-    // session of its own, and the answer is a plain String that outlives the transaction.
+    // The registry read, the cross-application check and the declared transfer, in one bracket: the
+    // worker thread has no session of its own, and the answer is a plain String that outlives the
+    // transaction. The ORDER inside it is load-bearing — the transfer has to commit before the
+    // findOne below, or the successor reads no row and rotates a password its predecessor is using.
     String stored =
         QuarkusTransaction.requiringNew()
             .call(
                 () -> {
                   for (PdResource claim : resources.listByDatabase(database)) {
-                    if (!claim.applicationName.equals(applicationName)) {
+                    if (claim.applicationName.equals(applicationName)) {
+                      continue;
+                    }
+                    if (!claim.applicationName.equals(renamedFrom)) {
+                      // Unchanged, and the sentence is unchanged with it: a store this deployment
+                      // did not declare a predecessor for belongs to somebody else, and the only
+                      // alternative to refusing is an empty database and a green container. A null
+                      // `renamedFrom` — every file that exists today — reaches exactly here.
                       throw new ResourceException(
                           "the database `"
                               + database
@@ -248,6 +307,7 @@ public class ResourceProvisioning {
                               + " — two repositories cannot share one database, so name a"
                               + " different one in `resources:`");
                     }
+                    transferClaim(claim, applicationName, database);
                   }
                   // Keyed by the tier this deployment goes into. The repository still tests null
                   // rather than comparing it, because rows written before the plane had a tier keep
@@ -313,6 +373,62 @@ public class ResourceProvisioning {
   }
 
   /**
+   * Rewrite one claim's {@code application_name} onto the application that declared itself its
+   * successor. <b>One column, and nothing else in the row is touched</b>: the database, the role, the
+   * password, the created stamp and the last-provisioned stamp are the predecessor's and stay exactly
+   * as they are, because the whole point is that the store and its credential did not change — only
+   * the name of the application that owns them did.
+   *
+   * <p><b>It runs inside the caller's bracket</b>, never in one of its own, for the reason that
+   * bracket exists: the read that decides which password to send happens two statements later and
+   * has to see this. A transaction of its own would also make a failed provisioning leave the claim
+   * moved, which is the one outcome worth avoiding — as it stands, a refusal rolls the transfer back
+   * with it and the next attempt sees the estate it started from.
+   *
+   * <p><b>The tier is deliberately not part of the match.</b> {@code listByDatabase} is unscoped by
+   * tier because the question it asks is "whose is this store", and a rename is a statement about an
+   * application rather than about one tier's copy of it — so a claim in another tier is transferred
+   * too, and the collision check below uses the CLAIM's own tier and resource name, which is what
+   * {@code uq_pd_resource} is keyed on.
+   *
+   * <p><b>A key already taken is a refusal and not a merge.</b> {@code uq_pd_resource} is
+   * {@code (application_name, environment_name, resource_name)}, so if the successor already holds a
+   * resource of that name in that tier the update would violate it — and the honest reading of that
+   * state is that two rows both claim to be this application's, which is not a rename but two
+   * histories that have to be reconciled by somebody who knows which credential is live. Refusing
+   * names both rows; guessing would rotate one of them.
+   */
+  private void transferClaim(PdResource claim, String applicationName, String database) {
+    String predecessor = claim.applicationName;
+    if (resources.findOne(applicationName, claim.environmentName, claim.resourceName).isPresent()) {
+      throw new ResourceException(
+          "the database `"
+              + database
+              + "` is claimed by "
+              + predecessor
+              + ", which "
+              + applicationName
+              + " declares as its predecessor — but "
+              + applicationName
+              + " already has a `"
+              + claim.resourceName
+              + "` resource of its own in "
+              + claim.environmentName
+              + ", so the claim has nowhere to move to. One of the two rows has to go first, and"
+              + " which one depends on whose credential the running containers hold");
+    }
+    claim.applicationName = applicationName;
+    // Flushed here rather than at commit, so the unique constraint answers inside this bracket and
+    // the refusal above is not the only thing standing between a collision and a stack trace from
+    // the transaction manager.
+    resources.flush();
+    LOG.infof(
+        "The database %s was provisioned for %s, which %s declares as `renamed_from`, so the claim"
+            + " and its credential are transferred to %s",
+        database, predecessor, applicationName, applicationName);
+  }
+
+  /**
    * The four-arm idp-client matrix — the registry row crossed with what qits-idp answers for the
    * client id:
    *
@@ -328,6 +444,22 @@ public class ResourceProvisioning {
    *
    * <p>The presence check is one {@code GET} and is always made — it is what tells "nothing to do"
    * apart from "the row is stale", which a caller cannot see from its own registry alone.
+   *
+   * <p><b>This arm has the other "already provisioned for" and deliberately does NOT take a declared
+   * predecessor.</b> It was checked rather than skipped, and the answer comes out of the derivation:
+   * a client id is {@code PdNetworks.alias(environment, application)}, one-to-one with the
+   * application name and never stated by a repository. So a rename produces a DIFFERENT client id,
+   * {@code listByClientId} finds nothing, and the check cannot fire for a rename at all — there is no
+   * refusal here to narrow. A transfer arm would be code no rename can reach, sitting on the one
+   * check whose entire purpose is to be unreachable: as its own comment says, this fires only on a
+   * derivation bug, and the thing to do about a derivation bug is refuse loudly rather than hand one
+   * application's live credential to another's container on the strength of a line in a file.
+   *
+   * <p>What a rename costs here instead is one orphan: the predecessor's idp client and its
+   * {@code pd_resource} row stay, and the successor is issued a client of its own with a fresh
+   * secret. That is the correct outcome and not a gap — a secret is not data, nothing is lost by
+   * minting another, and the predecessor keeps the credential it is running on for as long as it
+   * runs. Retiring the orphan is the same hand step retiring the predecessor's service is.
    */
   private DeploymentDriver.ResourceBinding ensureIdpClient(
       String applicationName, String environmentName, Resolved resource) {

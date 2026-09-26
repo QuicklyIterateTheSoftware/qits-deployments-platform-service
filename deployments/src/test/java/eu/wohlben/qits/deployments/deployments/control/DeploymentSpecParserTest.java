@@ -222,6 +222,68 @@ class DeploymentSpecParserTest {
   }
 
   @Test
+  void aRenamedApplicationNamesWhatItUsedToBeCalled() {
+    // The key's whole job: the six qits-platform-* applications drop a retired prefix, and each
+    // successor says whose resource claim it is inheriting. What that then licenses is exactly one
+    // transfer, in ResourceProvisioning — this parser reads the name and validates it.
+    assertEquals("qits-platform-idp", parse("renamed_from: qits-platform-idp\n").renamedFrom());
+    assertEquals(
+        "qits-platform-idp",
+        parse("application: qits-idp\nrenamed_from: qits-platform-idp\nroutes: /idp\n")
+            .renamedFrom(),
+        "it sits beside every other key and changes none of them");
+    assertEquals("qits-idp", parse("application: qits-idp\nrenamed_from: qits-platform-idp\n").application());
+    assertEquals(
+        "qits-platform-idp", parse("renamed_from: 'qits-platform-idp'\n").renamedFrom(),
+        "quoted like any value");
+  }
+
+  @Test
+  void aFileThatWasNeverRenamedSaysNothingAndThatIsTheAnswer() {
+    // The whole of the compatibility contract for this key, and it is `application`'s word for word:
+    // every file that exists today says nothing, and null is "this application has always been
+    // called what it is called". Null is also what keeps the provisioning refusal byte-identical.
+    assertNull(DeploymentSpec.DEFAULTS.renamedFrom());
+    assertNull(parse("").renamedFrom());
+    assertNull(parse("application: qits-idp\nresources: postgresql:db:qits_idp\n").renamedFrom());
+  }
+
+  @Test
+  void aPredecessorNameIsCheckedLikeEveryOtherStoredName() {
+    // It is never stored and never reaches an argv — it is COMPARED against a stored application
+    // name, so a value outside that charset is a value that could match no row this schema ever
+    // wrote. Refusing it at the line beats a deployment that fails at provisioning saying only that
+    // some database belongs to somebody else.
+    assertTrue(messageOf("renamed_from: Qits-Platform-Idp\n").contains("renamed_from"));
+    assertTrue(messageOf("renamed_from: qits/idp\n").contains("renamed_from"));
+    assertTrue(messageOf("renamed_from: qits idp\n").contains("renamed_from"));
+    assertTrue(messageOf("renamed_from: qits.idp\n").contains("renamed_from"));
+    assertTrue(messageOf("renamed_from: -qits-idp\n").contains("renamed_from"));
+    assertTrue(messageOf("renamed_from: qits-idp-\n").contains("renamed_from"));
+    assertTrue(messageOf("renamed_from:\n").contains("renamed_from"));
+    assertTrue(messageOf("renamed_from: " + "c".repeat(64) + "\n").contains("renamed_from"));
+    // One value and not a list: a chain does not need one — A→B moves the claim to B, so C names B.
+    assertTrue(messageOf("renamed_from: qits-a, qits-b\n").contains("renamed_from"));
+    // And it is one key like any other: stating it twice is the duplicate every key is refused for.
+    assertTrue(
+        messageOf("renamed_from: qits-platform-idp\nrenamed_from: qits-platform-idp\n")
+            .contains("duplicate"));
+  }
+
+  @Test
+  void anApplicationCannotBeRenamedFromItself() {
+    // Two keys saying one thing, which is the shape `navigation`/`navigation-entries` is refused
+    // for. It is caught only where this parser can see both halves: with `application` absent the
+    // effective name is the repository's, which this parser has never been told — and the statement
+    // is then inert downstream, because a claim moves only when it belongs to another application.
+    String message = messageOf("application: qits-idp\nrenamed_from: qits-idp\n");
+    assertTrue(message.contains("renamed from itself"), message);
+    assertTrue(message.contains("qits-idp"), message);
+    // Absent `application`, there is nothing here to compare it against, so it parses.
+    assertEquals("qits-idp", parse("renamed_from: qits-idp\n").renamedFrom());
+  }
+
+  @Test
   void oneApplicationHangsSeveralRowsUnderOneHeading() {
     // The workspaces shape, byte for byte: one application, one container, two rows under the
     // project node. The claim is the (slot, label) pair — keyed on the slot alone this file was
@@ -818,6 +880,7 @@ class DeploymentSpecParserTest {
     assertTrue(message.contains("publish_mode"), message);
     assertTrue(message.contains("navigation-entries"), message);
     assertTrue(message.contains("application"), message);
+    assertTrue(message.contains("renamed_from"), message);
   }
 
   @Test

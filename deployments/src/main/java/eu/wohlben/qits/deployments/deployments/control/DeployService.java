@@ -1205,6 +1205,12 @@ public class DeployService implements ReleaseAnnouncements {
    * is the HTTP probe over {@code healthPath}; an empty resource list is every application that
    * stores nothing; the default order is {@code start-first} and the default publish mode is
    * {@code host}.
+   *
+   * <p>{@code renamedFrom} is the newest of those and the narrowest: the application name this one
+   * used to carry, read straight off the file, threaded here so {@code ResourceProvisioning} can
+   * tell a rename from a collision. Null is every file that exists today. It is carried per-place
+   * rather than once per event for the reason every other spec value is — the provisioning call is
+   * made per target, and a {@link Plan} is plain values.
    */
   record Target(
       String applicationName,
@@ -1222,7 +1228,8 @@ public class DeployService implements ReleaseAnnouncements {
       int upstreamPort,
       String browserHost,
       List<NavigationEntry> navigation,
-      String apiDocs) {}
+      String apiDocs,
+      String renamedFrom) {}
 
   /**
    * One software-release event, start to finish, on the worker thread: read what the repository
@@ -1937,7 +1944,8 @@ public class DeployService implements ReleaseAnnouncements {
               spec.upstreamPort(),
               browserHost(applicationName, spec),
               spec.navigationEntries(),
-              spec.apiDocs()));
+              spec.apiDocs(),
+              spec.renamedFrom()));
     }
     return List.copyOf(targets);
   }
@@ -2079,6 +2087,9 @@ public class DeployService implements ReleaseAnnouncements {
                 DeploymentSpecParser.DEFAULT_UPSTREAM_PORT,
                 null,
                 null,
+                null,
+                // No predecessor either: nothing is provisioned off one of these targets, so there
+                // is no claim for a declared rename to move.
                 null));
       }
     }
@@ -2287,6 +2298,11 @@ public class DeployService implements ReleaseAnnouncements {
       return target.resources();
     }
 
+    /** The application this one used to be called, or null — see {@link Target}. */
+    String renamedFrom() {
+      return target.renamedFrom();
+    }
+
     /** What the repository declared in {@code volumes:}, with every name already resolved. */
     List<DeploymentDriver.VolumeMount> volumes() {
       return target.volumes();
@@ -2405,7 +2421,13 @@ public class DeployService implements ReleaseAnnouncements {
     try {
       bindings =
           resourceProvisioning.ensureAll(
-              plan.applicationName(), plan.environmentName(), plan.resources());
+              plan.applicationName(),
+              plan.environmentName(),
+              // The declared predecessor, if the file named one. It reaches the provisioning call
+              // and nothing else: an application rename is a new application to every keyed thing
+              // here, and the one thing that MOVES is the resource claim.
+              plan.renamedFrom(),
+              plan.resources());
     } catch (RuntimeException e) {
       LOG.warnf(
           "Could not provision the resources of %s: %s", plan.applicationName(), e.getMessage());
