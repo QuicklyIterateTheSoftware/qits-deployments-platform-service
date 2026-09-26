@@ -165,6 +165,105 @@ public class ResourceProvisioningTest {
   }
 
   @Test
+  public void aDeclaredPredecessorTransfersTheClaimAndTheCredentialWithIt() {
+    // The rename: qits-platform-mirror becomes qits-mirror, the file keeps naming the same database
+    // because abandoning the data was never on the table, and the successor says whose it used to be.
+    //
+    // THE ASSERTION THAT MATTERS IS THE STORED PASSWORD, not the absence of the refusal. Getting
+    // past the check is the cheap half; the claim row is the single authority for the provisioned
+    // credential, so a transfer that moved the claim and lost the password would send `null` here,
+    // the reconcile arm would rotate the role, and the predecessor — still running, still holding
+    // open pools on it — would go down as a side effect of its own successor's first deployment.
+    existingRow("prov-renamed-old", "prov-r", "db", "qits_prov_renamed", "the-predecessors-password");
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll(
+            "prov-renamed-new", "prov-r", "prov-renamed-old", one("db", "qits_prov_renamed"));
+
+    assertEquals(
+        "the-predecessors-password",
+        provisioner.requests().get(0).storedPassword(),
+        "the transferred row is read back inside the same bracket, so the stored password is sent");
+    assertEquals("the-predecessors-password", bindings.get(0).value("PASSWORD"));
+
+    PdResource row = row("prov-renamed-new", "prov-r", "db").orElseThrow();
+    assertEquals("qits_prov_renamed", row.databaseName, "the same store, not a fresh one");
+    assertEquals("the-predecessors-password", row.password);
+    assertTrue(
+        row("prov-renamed-old", "prov-r", "db").isEmpty(),
+        "the claim MOVED — a copy would leave two applications claiming one database");
+  }
+
+  @Test
+  public void aPredecessorNobodyDeclaredIsStillRefusedWhenAnotherIsDeclared() {
+    // The narrowing is exact rather than a mood: declaring A does not soften the check against B.
+    // This is the arm a typo in `renamed_from` lands on, and it has to answer the same way a file
+    // with no key at all does.
+    existingRow("prov-renamed-owner", "prov-s", "db", "qits_prov_notyours", "the-owners-password");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                provisioning.ensureAll(
+                    "prov-renamed-thief",
+                    "prov-s",
+                    "prov-somebody-else",
+                    one("db", "qits_prov_notyours")));
+
+    assertTrue(refused.getMessage().contains("prov-renamed-owner"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("cannot share one database"), refused.getMessage());
+    assertEquals(List.of(), provisioner.requests(), "the seam was never even called");
+    assertEquals(
+        "the-owners-password",
+        row("prov-renamed-owner", "prov-s", "db").orElseThrow().password,
+        "and the owner's row is exactly as it was");
+  }
+
+  @Test
+  public void aTransferOntoAKeyTheSuccessorAlreadyHoldsIsRefusedRatherThanGuessedAt() {
+    // uq_pd_resource is (application, environment, resource_name), so a successor that already has
+    // its own `db` row in that tier has nowhere for the claim to move to. Two rows both claiming to
+    // be this application's is not a rename — it is two histories, and which credential is live is
+    // not a question this component can answer from the rows alone.
+    existingRow("prov-both-old", "prov-t", "db", "qits_prov_both", "the-predecessors-password");
+    existingRow("prov-both-new", "prov-t", "db", "qits_prov_own", "its-own-password");
+
+    ResourceException refused =
+        assertThrows(
+            ResourceException.class,
+            () ->
+                provisioning.ensureAll(
+                    "prov-both-new", "prov-t", "prov-both-old", one("db", "qits_prov_both")));
+
+    assertTrue(refused.getMessage().contains("prov-both-old"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("nowhere to move to"), refused.getMessage());
+    assertEquals(List.of(), provisioner.requests(), "the seam was never even called");
+    assertEquals(
+        "prov-both-old",
+        QuarkusTransaction.requiringNew()
+            .call(() -> resources.listByDatabase("qits_prov_both"))
+            .get(0)
+            .applicationName,
+        "and the transfer was rolled back with the refusal");
+  }
+
+  @Test
+  public void declaringYourOwnNameAsThePredecessorChangesNothing() {
+    // Inert rather than refused here: the parser catches it where it can see both keys, and the
+    // transfer arm is only ever reached for a claim belonging to a DIFFERENT application.
+    existingRow("prov-selfnamed", "prov-u", "db", "qits_prov_self", "its-own-password");
+
+    List<DeploymentDriver.ResourceBinding> bindings =
+        provisioning.ensureAll(
+            "prov-selfnamed", "prov-u", "prov-selfnamed", one("db", "qits_prov_self"));
+
+    assertEquals("its-own-password", bindings.get(0).value("PASSWORD"));
+    assertEquals(
+        "its-own-password", row("prov-selfnamed", "prov-u", "db").orElseThrow().password);
+  }
+
+  @Test
   public void aPlatformPlaneResourceIsKeyedByTheTierItIsDeployedInto() {
     // A platform service is deployed INTO the designated environment since V8, so it arrives here
     // with that tier's name like every other application — and this method used to be the one that

@@ -10,12 +10,13 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * The strict reader of {@code .config/qits/deployments.yml}. Sixteen scalar keys, no nesting, no YAML
- * lists — so this is a line reader rather than a YAML library, and being one is what makes every
+ * The strict reader of {@code .config/qits/deployments.yml}. Seventeen scalar keys, no nesting, no
+ * YAML lists — so this is a line reader rather than a YAML library, and being one is what makes every
  * rejection a sentence naming the file and the line.
  *
  * <pre>
  * application: qits-ci                 # optional; the name this deploys as, when it is not the repo's
+ * renamed_from: qits-platform-ci       # optional; the application name this one used to carry
  * deployment_target: environment       # RETIRED, accepted and ignored — see below
  * available_on_env: false              # default; true = public node (bundle + hub joins)
  * health_path: /q/health/ready         # default: /&lt;name without the qits- prefix&gt;/q/health/ready
@@ -67,11 +68,58 @@ import java.util.Set;
  * would take a repository identity on {@code pd_service} and a migration to hold it, which is a
  * decision about foreign identity in this schema rather than a detail of this key.
  *
- * <p><b>CHANGING an application name later is a decommission and a new application, and nothing
- * here helps with it.</b> The old name keeps its service, its alias, its database, its rows and its
- * routes; the new name gets fresh ones and deploys beside it. Editing this key on a live
- * application is that, whether or not anybody meant it — so the rename runbook moves repositories,
- * never applications.
+ * <p><b>CHANGING an application name later is a decommission and a new application</b>, and that
+ * half of the old rule is not softened by anything below: the old name keeps its service, its alias,
+ * its rows and its routes, the new name gets fresh ones and deploys beside it, and editing this key
+ * on a live application is that whether or not anybody meant it. A swarm service's name IS its
+ * address and swarm cannot rename one, so there is no version of this where the running thing moves.
+ *
+ * <p><b>What the rule was wrong about is the word "nothing".</b> It used to end "and nothing here
+ * helps with it", and for as long as an application's rename was a thing the runbook simply avoided,
+ * that was an accurate description rather than a gap. It stopped being one the day six applications
+ * had to drop a retired {@code qits-platform-} prefix: the successor deploys beside the predecessor,
+ * declares the predecessor's database in {@code resources:} because losing the data is not on the
+ * table, and is then refused by {@code ResourceProvisioning} — "the database `qits_platform_mirror`
+ * is already provisioned for qits-platform-mirror". That refusal is <b>right</b>, and it stays: two
+ * unrelated repositories sharing one store is exactly the silent takeover it was written to stop,
+ * and the alternative it prevents is a container that boots green on an empty database. What was
+ * missing was a way for a file to say <em>this application IS the one that used to be called X</em>,
+ * so the check can tell a rename from a collision instead of having to guess which it is looking at.
+ *
+ * <p><b>{@code renamed_from} is that sentence, and the transfer it buys is ONE row.</b> Named, and
+ * only when the conflicting {@code pd_resource} claim is that exact application's, the claim's
+ * {@code application_name} is rewritten to this one — so the successor is provisioned against the
+ * predecessor's database with the <b>stored</b> credential rather than a rotated one, which is the
+ * half that keeps the predecessor's own connections working while both are running. Any other
+ * mismatch throws exactly as it always did. Everything else about a rename is untouched: a fresh
+ * service, a fresh alias, fresh deployment rows, and a predecessor an operator scales to zero when
+ * they are ready. See {@code ResourceProvisioning.ensureAll} for the transfer's own argument.
+ *
+ * <p><b>It is a declaration and never an inference</b>, which is the whole reason it is a key. This
+ * component could have guessed — a prefix rule, a similarity test, the previous holder of the
+ * database — and every one of those guesses is "hand this application somebody else's store" with a
+ * heuristic in front of it. A key is asked for in a commit, reviewed by a person and read at the
+ * released tag, which is the same standard every other statement in this file is held to.
+ *
+ * <p><b>One value and not a list</b>, because a chain does not need one: A→B transfers the claim to
+ * B, so when B→C deploys the claim it finds is B's, and C names B. A file that wants to name two
+ * predecessors is a file describing a transfer that already happened. Stating the key twice is the
+ * duplicate every key here is refused for.
+ *
+ * <p>It is validated as a stored name, exactly as {@code application} is, because it is compared
+ * against one: a value outside that charset could match no row this schema ever wrote, so refusing
+ * it at the line is cheaper than a deployment that fails at provisioning saying nothing useful.
+ * Naming the same application both times is refused where this parser can see it — with {@code
+ * application} present, the two keys then say "renamed from itself", which is a statement about
+ * nothing. With {@code application} absent it cannot be seen here at all (the parser never knows
+ * which repository it is reading for) and is inert downstream: the transfer arm is reached only for
+ * a claim belonging to a <em>different</em> application.
+ *
+ * <p>And, like every key here: <b>it ships in this parser before any repository writes the line</b>
+ * — a spec is read at the released tag, and an unknown key fails a deployment — and once it has
+ * shipped it can never become unknown again, for the reason the paragraph on unknown keys below
+ * gives. A rename is a one-off per application and the line will look inert a month later; leaving
+ * it in the file is correct, and deleting the key from this parser is not.
  *
  * <p><b>{@code navigation-entries} is where an application asks to appear, and it is a list.</b>
  * One application shows up under several headings — a repository's Docs, CI and Workspaces are the
@@ -217,6 +265,14 @@ import java.util.Set;
 public final class DeploymentSpecParser {
 
   private static final String APPLICATION = "application";
+
+  /**
+   * The application name this one used to carry. Snake_case like twelve of the sixteen keys before
+   * it: {@code navigation-entries} and {@code api-docs} are the file's two kebab-case outliers and
+   * neither is defended anywhere, so the majority spelling is the one a new key joins.
+   */
+  private static final String RENAMED_FROM = "renamed_from";
+
   /** Retired, accepted and ignored. Any value at all parses. See the class javadoc. */
   private static final String RETIRED_TARGET = "deployment_target";
   private static final String AVAILABLE_ON_ENV = "available_on_env";
@@ -325,6 +381,7 @@ public final class DeploymentSpecParser {
    */
   public static DeploymentSpec parse(String yaml, String source) {
     String application = null;
+    String renamedFrom = null;
     boolean availableOnEnv = false;
     List<String> deployBranches = List.of();
     String healthPath = null;
@@ -362,6 +419,7 @@ public final class DeploymentSpecParser {
       }
       switch (key) {
         case APPLICATION -> application = application(value, source, lineNumber);
+        case RENAMED_FROM -> renamedFrom = renamedFrom(value, source, lineNumber);
         // Retired: read, dropped, never validated. Any value at all is legal, because a file at an
         // older sha carries whichever word its author wrote and nothing acts on any of them.
         case RETIRED_TARGET -> {}
@@ -388,6 +446,8 @@ public final class DeploymentSpecParser {
                     + key
                     + "` — this file knows "
                     + APPLICATION
+                    + ", "
+                    + RENAMED_FROM
                     + ", "
                     + RETIRED_TARGET
                     + ", "
@@ -431,6 +491,22 @@ public final class DeploymentSpecParser {
               + "` are alternatives — the command replaces the HTTP probe rather than adjusting"
               + " it, so a file setting both says two things about one gate. Keep the one that"
               + " describes this image.");
+    }
+    if (renamedFrom != null && renamedFrom.equals(application)) {
+      // Only visible when `application` is stated: with it absent the effective name is the
+      // repository's, which this parser has never been told. The downstream arm is inert for that
+      // case anyway — a claim is transferred only when it belongs to a DIFFERENT application — so
+      // so this refusal is the half that CAN be seen here, answered where it can be seen.
+      throw new SpecException(
+          source
+              + ": `"
+              + RENAMED_FROM
+              + "` names `"
+              + renamedFrom
+              + "`, which is what `"
+              + APPLICATION
+              + "` already says this deploys as — an application was not renamed from itself. Name"
+              + " the application it USED to be called, or drop the key.");
     }
     if (seen.contains(NAVIGATION) && seen.contains(NAVIGATION_ENTRIES)) {
       throw new SpecException(
@@ -491,7 +567,8 @@ public final class DeploymentSpecParser {
         seen.contains(HOST) || seen.contains(NAVIGATION_ENTRIES),
         navigationEntries,
         apiDocs,
-        application);
+        application,
+        renamedFrom);
   }
 
   /**
@@ -513,6 +590,35 @@ public final class DeploymentSpecParser {
               + "` is one lowercase name — letters, digits and inner dashes, at most 63 characters"
               + " — because it becomes a service name, a network alias, an image path segment and"
               + " a database name. Got: "
+              + value);
+    }
+  }
+
+  /**
+   * The application name this one used to carry — a <b>declared predecessor</b>, and the only thing
+   * that turns "the database is already provisioned for somebody else" from a refusal into a
+   * transfer. See the class javadoc for why it is a declaration rather than an inference.
+   *
+   * <p>Checked with {@link PdIdentifiers#requireName}, the same rule {@code application} takes, and
+   * for a reason that is one step removed from that one: this value is never stored and never
+   * becomes an argv — it is <b>compared</b> against a stored application name. A value the charset
+   * refuses is therefore a value that could match no row this schema has ever written, so a file
+   * carrying one is asking for a transfer that cannot happen. Saying so at the line beats a
+   * deployment that fails at provisioning with the collision message and no hint that the key was
+   * the problem.
+   */
+  private static String renamedFrom(String value, String source, int line) {
+    try {
+      return PdIdentifiers.requireName(value, RENAMED_FROM);
+    } catch (RuntimeException e) {
+      throw error(
+          source,
+          line,
+          "`"
+              + RENAMED_FROM
+              + "` is one lowercase application name — letters, digits and inner dashes, at most 63"
+              + " characters — because it is compared against the application name a resource claim"
+              + " was recorded under. Got: "
               + value);
     }
   }

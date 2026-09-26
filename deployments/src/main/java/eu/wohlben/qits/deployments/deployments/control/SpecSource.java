@@ -235,6 +235,16 @@ public interface SpecSource {
    * the announcement it was read for — see {@code DeploymentSpecParser} for what it costs and what
    * it cannot refuse.
    *
+   * <p>{@code renamedFrom} is the application name this one used to carry, and null is the answer
+   * every file gives today. It is the OTHER half of the sentence above: {@code application} says a
+   * repository may be renamed without the platform noticing, and this one says what to do when the
+   * <b>application</b> is the thing being renamed — which is a new application to every keyed thing
+   * on the platform, and cannot be anything else. What it buys is one transfer and one only: the
+   * successor inherits the predecessor's {@code pd_resource} claim, so the database the predecessor
+   * is still serving from is the database the successor is provisioned against, with the stored
+   * credential rather than a rotated one. Everything else about a rename stays a new application
+   * beside the old one — see {@code ResourceProvisioning.ensureAll}.
+   *
    * <p><b>{@code deployBranches} is read and not used here</b>, and that is deliberate — see {@link
    * #deployBranches()}.
    */
@@ -253,7 +263,8 @@ public interface SpecSource {
       boolean browserHostDeclared,
       List<NavigationEntry> navigationEntries,
       String apiDocs,
-      String application) {
+      String application,
+      String renamedFrom) {
 
     /** A null list and an empty one are the same statement: the file named none. */
     public DeploymentSpec {
@@ -283,7 +294,8 @@ public interface SpecSource {
     /**
      * The pre-routing shape: no routes is the compatible, empty endpoint declaration, and no
      * {@code application} is the repository's own name — both of them what a file that says
-     * nothing has always meant.
+     * nothing has always meant. No {@code renamedFrom} is the third of exactly the same kind: this
+     * application has always been called what it is called.
      */
     public DeploymentSpec(
         boolean availableOnEnv,
@@ -307,6 +319,7 @@ public interface SpecSource {
           null,
           false,
           List.of(),
+          null,
           null,
           null);
     }

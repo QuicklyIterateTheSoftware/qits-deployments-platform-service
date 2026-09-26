@@ -290,6 +290,7 @@ public class PdSweepAdoptionPublishTest {
         false,
         navigationEntries,
         null,
+        null,
         null);
   }
 

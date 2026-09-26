@@ -2045,6 +2045,61 @@ Five things about it, each easy to undo by accident:
   abandoned names carried a red `FAILED` row apiece for a fortnight because of it — there is a door
   now, `POST /applications/{applicationId}/decommission`, and its section is above.
 
+#### `renamed_from:` — the one thing an application rename may move (2026-09-26)
+
+**The bullet above says changing `application:` is a decommission and a new application. That half
+stands.** A swarm service's name IS its address and swarm cannot rename one; `pd_service`,
+`pd_deployment` and `pd_resource` are keyed by an application NAME and hold no repository identity.
+So a renamed application deploys BESIDE its predecessor, gets a fresh service, alias, rows and
+routes, and an operator retires the predecessor by hand. Nothing here changes that and nothing
+should try to.
+
+**What was wrong was "nothing here helped".** Six applications had to drop the retired
+`qits-platform-` prefix (qits-111), each successor declares the predecessor's database in
+`resources:` because abandoning the data is not on the table, and each one was then refused:
+`the database qits_platform_mirror is already provisioned for qits-platform-mirror`. **That refusal
+is right and it stays** — the alternative is provisioning a second application an empty database and
+starting it green — and retiring the predecessor first is not available either (`decommission` is a
+409 while it is deployed, `scale 0` leaves it `SCALED_TO_ZERO` which still counts as deployed, and
+`DELETE /services/{name}` is 403 for a workspace credential).
+
+`renamed_from: <application>` in `.config/qits/deployments.yml` is the missing sentence — the
+seventeenth key, snake_case like the majority, validated with `PdIdentifiers.requireName` because it
+is COMPARED against a stored application name. Five things about it, each easy to undo by accident:
+
+- **It moves ONE column of ONE row**: the conflicting `pd_resource` claim's `application_name`, and
+  only when that claim belongs to the exact application the file named. Every other mismatch throws
+  the same sentence it always did — `renamed_from` narrows the check, it does not weaken it, and a
+  null value (every file that exists today) reaches the throw unchanged.
+- **The transfer is worth more than getting past the refusal, and that is the part to protect.** The
+  claim row is the single authority for the provisioned credential and is read one statement later by
+  `findOne(applicationName, …)` to decide whether to send the stored password or a fresh one.
+  Transferred *inside the same bracket and before that read*, the successor is provisioned with the
+  password the role already has — so the predecessor, still running on open pools against that role,
+  keeps working. Moved later, or moved without the password, the reconcile arm rotates the role and
+  the rename takes the predecessor down as a side effect of its successor's first deployment.
+- **It is a declaration and never an inference.** A prefix rule, a similarity test or "the previous
+  holder of this database" are all "hand this application somebody else's store" with a heuristic in
+  front of it. A key is written in a reviewed commit and read at the released tag, like every other
+  statement in that file.
+- **The idp-client arm deliberately does NOT take one.** A client id is
+  `PdNetworks.alias(environment, application)` — derived, never declared — so a rename produces a
+  different id, `listByClientId` finds nothing, and the check cannot fire for a rename at all. A
+  transfer arm there would be unreachable code on the one check whose whole purpose is to be
+  unreachable (it fires only on a derivation bug). The cost is one orphan client plus its row, and a
+  fresh secret for the successor: a secret is not data, and the predecessor keeps the one it runs on.
+- **`uq_pd_resource` is `(application_name, environment_name, resource_name)`**, so a successor that
+  already holds a resource of that name in that tier has nowhere for the claim to move to. That is a
+  refusal naming both rows, not a merge: two rows both claiming to be this application's is two
+  histories, and which credential is live is not answerable from the rows.
+
+**What a rename still needs and this key does not give it:** the release pipeline must push
+`qits/<new application>` (the image ref follows the application, so a stale pipeline yml is
+`IMAGE_MISSING`), and the two `qits-platform-idp` constants here —
+`ResourceProvisioning.IDP_APPLICATION` (the idp URL handed to every provisioned container) and
+`HttpIdpClientProvisioner.IDP_APPLICATION` (this component's own dial to the service-client API) —
+must move in the release AFTER the idp successor is serving, never before.
+
 **The release door was unaffected**, and that was checked rather than assumed at the time:
 qits-workspaces' `DeploymentSpecReader` **statted** this file and never opened it (a file means
 "it deploys"), so a new key was invisible to it. That door is retired — releasing is a release
