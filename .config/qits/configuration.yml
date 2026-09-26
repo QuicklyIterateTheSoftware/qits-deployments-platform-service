@@ -98,6 +98,10 @@ keys:
 
   # --- the platform's shared wiring -----------------------------------------------------------
 
+  env.QITS_DOMAIN:
+    type: string
+    description: "The platform's domain, stated once for the whole installation. This component propagates it into every container it deploys, beside QITS_ENVIRONMENT, so that every service derives its own browser-facing names from it instead of carrying composed hostnames of its own."
+
   env.QITS_ARTIFACTS_REGISTRY_HOST:
     type: string
     description: "The registry host every image reference on this platform is qualified with."

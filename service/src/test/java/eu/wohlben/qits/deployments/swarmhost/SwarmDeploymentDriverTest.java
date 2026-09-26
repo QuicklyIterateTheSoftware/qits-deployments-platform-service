@@ -118,6 +118,11 @@ class SwarmDeploymentDriverTest {
     driver.updateMonitorSeconds = 60;
     driver.flatNetwork = "qits-net";
     driver.outputMaxChars = 65536;
+    // The SHIPPED state: `qits.deployments.platform-domain` defaults to empty and SmallRye reads an
+    // empty value as absent, so an installation that has not stated its domain hands the driver
+    // nothing. Every other test in this class therefore asserts the argv of a platform that states
+    // no domain, which is the argv byte for byte as it was before the key existed.
+    driver.platformDomain = Optional.empty();
     cli = new ScriptedCli();
     driver.scriptCli(cli);
     return driver;
@@ -336,6 +341,56 @@ class SwarmDeploymentDriverTest {
     assertTrue(
         argv.stream().noneMatch(argument -> argument.startsWith("qits.platform.deployments.target")),
         "no service is labelled with a plane, because there is no plane: " + argv);
+  }
+
+  @Test
+  void everyContainerIsTOLDThePlatformsDomainWhenTheInstallationHasStatedOne() {
+    // The domain is ONE fact and the deployer is what hands it out. It used to be fanned out by the
+    // bootstrap into five per-service composed spellings — the edge's ACME domain, the idp's cookie
+    // domain, the two browser-host lists, the webauthn origins and the canonical origin — and two
+    // of them diverged, which broke sign-in on the live platform. So it travels exactly the way
+    // QITS_ENVIRONMENT does: written into every container, derived from by whoever needs a hostname.
+    SwarmDeploymentDriver driver = driver();
+    driver.platformDomain = Optional.of("wohlben.eu");
+
+    List<String> create = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+
+    assertTrue(create.contains("QITS_DOMAIN=wohlben.eu"), create.toString());
+    // Beside the other two identity variables and not instead of one of them: this is a third fact
+    // about where a container is, not a re-spelling of either.
+    assertTrue(create.contains("QITS_ENVIRONMENT=dev"), create.toString());
+    assertTrue(create.contains("QITS_APPLICATION=qits-gateway"), create.toString());
+
+    // An update carries it too, or the domain would reach only services created after it shipped.
+    SwarmDeploymentDriver updating = driver();
+    updating.platformDomain = Optional.of("wohlben.eu");
+    List<String> update = updating.buildUpdateArgv(spec(), "dev-qits-gateway");
+    assertTrue(update.containsAll(List.of("--env-add", "QITS_DOMAIN=wohlben.eu")), update.toString());
+  }
+
+  @Test
+  void anInstallationThatHasStatedNoDomainWritesNOVARIABLEANDNOTANEMPTYONE() {
+    // The shipped state, and the guard is QITS_ENVIRONMENT's one word further on: `QITS_DOMAIN=` is
+    // WORSE than the variable's absence. A consumer reading an empty string has been told something
+    // — an empty hostname — and composes nonsense out of it; a consumer finding nothing falls back
+    // to the default it ships, which is what every service did before this line existed.
+    //
+    // Both arms are exercised, because they are different absences: Optional.empty() is the key
+    // unset (what SmallRye hands back for the shipped empty default), and a blank string is a
+    // deployment that stated the variable and left it empty.
+    for (Optional<String> stated : List.of(Optional.<String>empty(), Optional.of("   "))) {
+      SwarmDeploymentDriver driver = driver();
+      driver.platformDomain = stated;
+
+      List<String> argv = driver.buildCreateArgv(spec(), "dev-qits-gateway", List.of("qits-net"));
+
+      assertTrue(
+          argv.stream().noneMatch(argument -> argument.startsWith("QITS_DOMAIN")),
+          "no domain stated (" + stated + ") means no variable at all: " + argv);
+      // …and the rest of the argv is untouched, which is what makes the absence free.
+      assertTrue(argv.contains("QITS_ENVIRONMENT=dev"), argv.toString());
+      assertTrue(argv.contains("QITS_APPLICATION=qits-gateway"), argv.toString());
+    }
   }
 
   @Test
@@ -1443,6 +1498,11 @@ class SwarmDeploymentDriverTest {
     // alone would remove and re-add all four on every deployment. QITS_RESOURCE_* is the fifth
     // member and is a PREFIX — ResourceProvisioning injects it from the registry row, and config
     // must not be able to delete a credential it cannot state.
+    //
+    // QITS_DOMAIN is in the family for the same reason and is asserted here with the driver stating
+    // NO domain, deliberately: membership protects a key from removal, it does not assert that the
+    // key is present. Were it outside the set, a live service carrying the domain would have it
+    // env-rm'd on its next deployment by any platform that had since stopped stating one.
     SwarmDeploymentDriver driver = driver();
     cli.script(
         SwarmDeploymentDriver.SPEC_ENV_FORMAT,
@@ -1450,6 +1510,7 @@ class SwarmDeploymentDriverTest {
             0,
             "QITS_ENVIRONMENT=dev\n"
                 + "QITS_APPLICATION=qits-gateway\n"
+                + "QITS_DOMAIN=wohlben.eu\n"
                 + "OTEL_RESOURCE_ATTRIBUTES=service.version=old\n"
                 + "QUARKUS_OTEL_RESOURCE_ATTRIBUTES=service.version=old\n"
                 + "QITS_RESOURCE_DB_URL=jdbc:postgresql://dev-qits-oci-postgresql:5432/qits_gateway\n"
