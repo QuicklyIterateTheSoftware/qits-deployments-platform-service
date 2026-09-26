@@ -1451,17 +1451,24 @@ configured client, and there is no compatibility rewrite standing behind it any 
 registered near-last, so a real route still wins — but a path matching *no* route is rerouted to
 `index.html` and answers `200 text/html`, which a machine client parses as data. Setting the key
 **replaces** Quinoa's derivation rather than extending it, and the values are matched **after**
-`ui-root-path` is stripped — which is `/` here, so they are written **absolutely**. There is exactly
-one entry, `/deployments`, and it covers `/api` and `/q` by prefix; a route outside that segment
-needs its own. `@WebSocket` or anything on the Vert.x router takes a literal path and needs one too.
+`ui-root-path` is stripped — which is `/` here, so they are written **absolutely**. The first entry
+is `/deployments`, and it covers `/api` and `/q` by prefix; a route outside that segment needs its
+own. `@WebSocket` or anything on the Vert.x router takes a literal path and needs one too.
 
-**There was a second entry, `/platform-deployments`, and it covered the one failure the reroute could
-not.** The reroute rewrote the prefix and nothing else, so a legacy path naming no route became a
-live path naming no route — which is precisely what Quinoa's catch-all answers with `index.html` at
-200. It went in the commit that deleted the reroute, and what makes its absence safe is that the
-prefix is not this service's ground any more at all: it is out of `routes:` too, so the edge
-path-routes nothing under it here and no caller is left addressing it. This list is the wire surfaces
-a machine really dials, and there is one of those.
+**The second entry is `/platform-deployments`, the RETIRED prefix, and it is permanent.** This list
+is not "the prefixes this service serves" — it is "the prefixes a machine may dial", and a retired
+one belongs on it while anything might still ask for it. It was removed in the commit that deleted
+the reroute, on the reasoning that it only ever covered the one failure the rewrite could not, and
+**that was wrong and measured wrong on the deployed `2026.926.170022`**: while the reroute existed it
+rewrote the prefix before Quinoa could see it, so only a legacy path naming no route reached the
+catch-all; with the reroute gone, *every* path under the prefix names no route, so the catch-all
+claimed the lot and `/platform-deployments/api/environments` answered `200 text/html` with
+`index.html`. That is precisely the defect qits-380 was filed about, recreated by tidying the line
+away. `routes:` staying single-entry is right — the edge should route nothing there — and it protects
+nothing here, because every machine caller of this service dials the wire alias and never traverses
+the edge. Taking the entry out again needs positive evidence that nothing dials the old prefix, which
+no log can give now that the reroute's WARN is gone.
+`PdPackagedSurfaceIT.aPathUnderTheRetiredPrefixIsNeverTheClient` is the guard.
 
 ## The client, and where the segment lives
 
@@ -1474,14 +1481,17 @@ was the last entry on that inventory, and the frontend was released with the new
 `2026.926.151155` — which is what let the reroute be deleted. The gitlink here is bumped by the
 ordinary maintenance path, not by this change.
 
-The segment is spelled in **four** places, all of them in this repository:
+The LIVE segment is spelled in **four** places, all of them in this repository:
 `quarkus.quinoa.ignored-path-prefixes`, `quarkus.rest.path`,
-`quarkus.http.non-application-root-path` and `routes:` in `.config/qits/deployments.yml`. Four more
-existed for the length of the cutover and every one of them came out on 2026-09-26: the second
-ignored prefix, the second `routes:` entry, the `health_path:` override and
-`api/LegacyPrefixReroute`. `PdPackagedSurfaceIT` probes the served base href, the scoped deep link,
-`/deployments/` answering 404 rather than a second copy of the client, and a path under the live
-prefix naming no route answering 404 rather than the client on BOTH surfaces under it.
+`quarkus.http.non-application-root-path` and `routes:` in `.config/qits/deployments.yml`. Three
+spellings of the RETIRED one existed for the length of the cutover and came out on 2026-09-26 — the
+second `routes:` entry, the `health_path:` override and `api/LegacyPrefixReroute` — and **a fourth
+stays for good**: the second value in `quarkus.quinoa.ignored-path-prefixes`, which is what makes the
+retired prefix a 404 rather than the client now that nothing rewrites it. See the section above for
+why removing it shipped the defect once. `PdPackagedSurfaceIT` probes the served base href, the
+scoped deep link, `/deployments/` answering 404 rather than a second copy of the client, a path under
+the live prefix naming no route answering 404 rather than the client on BOTH surfaces under it, and
+the same of the retired prefix.
 
 ## The event side: a RELEASE is the only trigger
 

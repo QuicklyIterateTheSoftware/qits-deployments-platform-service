@@ -44,14 +44,18 @@ import org.junit.jupiter.api.Test;
  * {@code /deployments/} is a 404 rather than a second door into the client, and an old bookmark is
  * the edge's problem, answered there with a redirect.
  *
- * <p><b>The segment moved to {@code /deployments} on 2026-09-26 and there is one spelling of it
- * again.</b> The retired {@code /platform-deployments} was answered for exactly one release by an
- * {@code api/LegacyPrefixReroute} filter, and this IT held that rewrite; the class, its declaration
- * in {@code routes:} and its entry in {@code quarkus.quinoa.ignored-path-prefixes} are all gone, and
- * so are the two tests that probed them. What remains is the claim only a packaged process can make:
- * the live prefix answering, and a path under it that names no route being a 404 rather than the
- * client — {@code quarkus.rest.path} and {@code quarkus.http.non-application-root-path} are
- * build-time settings baked into the artifact, so nothing else here can check them.
+ * <p><b>The segment moved to {@code /deployments} on 2026-09-26, and the retired one is now answered
+ * by a 404.</b> {@code /platform-deployments} was rewritten onto the live prefix for exactly one
+ * release by an {@code api/LegacyPrefixReroute} filter; that class and its declaration in {@code
+ * routes:} are gone, and the test that probed the rewrite went with them. Its entry in {@code
+ * quarkus.quinoa.ignored-path-prefixes} did NOT go, and {@link
+ * #aPathUnderTheRetiredPrefixIsNeverTheClient} is why: with nothing rewriting the prefix, every path
+ * under it names no route, and Quinoa's catch-all answers a path naming no route with {@code
+ * index.html} at 200. So there are three claims here only a packaged process can make — the live
+ * prefix answering, a path under it naming no route being a 404 rather than the client, and the same
+ * of the retired prefix. {@code quarkus.rest.path} and {@code
+ * quarkus.http.non-application-root-path} are build-time settings baked into the artifact, so
+ * nothing else here can check any of them.
  *
  * <p>No deployment is driven here: that needs a swarm, and the packaged process carries the real
  * {@link eu.wohlben.qits.deployments.swarmhost.SwarmDeploymentDriver}. The container
@@ -64,6 +68,13 @@ import org.junit.jupiter.api.Test;
 public class PdPackagedSurfaceIT {
 
   private static final String SEGMENT = "/deployments";
+
+  /**
+   * The retired spelling. It is here because this service must answer a 404 under it rather than the
+   * client — see {@link #aPathUnderTheRetiredPrefixIsNeverTheClient} — and NOT because anything
+   * serves it. Deleting this constant is deleting that claim.
+   */
+  private static final String LEGACY_SEGMENT = "/platform-deployments";
 
   /** What the client's index.html spells now that it is mounted at the root of its own host. */
   private static final String BASE_HREF = "<base href=\"/\">";
@@ -170,6 +181,42 @@ public class PdPackagedSurfaceIT {
     String body = given().when().get(SEGMENT + "/").then().statusCode(404).extract().asString();
     assertFalse(
         body.contains(BASE_HREF), "the wire segment must not serve the client; got: " + body);
+  }
+
+  /**
+   * A path under the RETIRED prefix is a 404 and never the client, which is the second entry in
+   * {@code quarkus.quinoa.ignored-path-prefixes} doing the only job it has left.
+   *
+   * <p>This is the assertion that was missing when the reroute was deleted, and its absence shipped
+   * the defect qits-380 was filed about. While {@code api/LegacyPrefixReroute} existed it rewrote
+   * the prefix before Quinoa's catch-all could see it, so the entry only mattered for a legacy path
+   * naming no route. With the reroute gone, EVERY path under the retired prefix names no route — so
+   * the catch-all claims the whole prefix, and {@code /platform-deployments/api/environments} came
+   * back {@code 200 text/html} carrying index.html on the deployed {@code 2026.926.170022}. A
+   * machine parses that as data, and every machine caller of this service dials the wire alias
+   * directly, so nothing in front of the process would catch it.
+   *
+   * <p>Both surfaces are probed because the one prefix covers both, and the assertion is "404, and
+   * not the CLIENT" for the reason its live-prefix sibling gives: what answers is Vert.x' own stock
+   * page, which is {@code text/html} and correct.
+   */
+  @Test
+  public void aPathUnderTheRetiredPrefixIsNeverTheClient() {
+    String index = given().when().get("/").then().statusCode(200).extract().asString();
+
+    for (String path :
+        List.of(
+            LEGACY_SEGMENT + "/api/environments",
+            LEGACY_SEGMENT + "/api/nope",
+            LEGACY_SEGMENT + "/q/health/ready")) {
+      String body = given().when().get(path).then().statusCode(404).extract().asString();
+      assertFalse(
+          body.equals(index),
+          "the retired prefix must not be answered with the client at " + path + "; got: " + body);
+      assertFalse(
+          body.contains(BASE_HREF),
+          "the retired prefix must not be answered with the client at " + path + "; got: " + body);
+    }
   }
 
   @Test
