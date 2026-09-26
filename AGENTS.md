@@ -2280,6 +2280,59 @@ Six things about it, each easy to undo by accident:
 The vocabulary jar is `qits-platform-deployments-events`. It depends on `qits-eventstream` and
 nothing else — see the partition above for why it is a module.
 
+### A TIER announces too, and it is a second port (2026-09-26, qits-387)
+
+**Four events described a deployment's lifecycle and nothing described an ENVIRONMENT's.** qits-edge
+learned its tier list from static configuration (`qits.edge.environments`), which drifts the moment
+anybody creates or renames one, and the rows live here. So `EnvironmentCreated`, `EnvironmentChanged`
+and `EnvironmentDeleted` join the vocabulary jar, published through `EnvironmentAnnouncer`
+(`deployments/control`) by `bus/EnvironmentEventAnnouncer`, from the three operations in
+`EnvironmentOperations`.
+
+**Deriving the set from `DeploymentActive` was considered and REJECTED.** That event says "a change
+is live", not "this tier exists": a tier created this morning would be invisible until something
+deployed into it — which may be never — and a tier deleted or renamed would go on existing in every
+consumer's projection for ever. The set of environments is a lifecycle fact and needs lifecycle
+events.
+
+Six things about it, each easy to undo by accident:
+
+- **`environmentId` is the identity on all three, and that is the decision that matters.**
+  `PdEnvironment.id` is assigned at creation and never changes; `name` is mutable, because
+  `PATCH /deployments/api/environments/{id}` renames a tier. A consumer keyed by id handles a rename
+  as an in-place update of one row; one keyed by name would carry the old name for ever, with no
+  `EnvironmentDeleted` ever coming for a tier that was renamed rather than deleted.
+- **There is no `previousName` and there must not be.** It is the repair for the name-keyed
+  projection the stable id exists to make unnecessary, and carrying it would invite exactly that
+  design.
+- **The tier's name is spelled `environmentName` and CANNOT be `name`.** `QitsEvent` declares
+  `name()` as the event's own label, so a record component called `name` overrides it — the log would
+  show `preprod` where it should show `EnvironmentCreated`, and because the interface's four methods
+  are excluded from the canonical payload, the tier's name would be stripped out of the payload
+  entirely. Neither is a compile error; `EnvironmentEventsTest` is what catches it. It is also the
+  spelling the four `Deployment*` events already use.
+- **A second PORT rather than three more methods on `DeployAnnouncer`**, and it takes **no `cause`
+  argument**. Those four are one statement made four times about one deployment, on
+  `pd-deploy-worker`, behind a queue hop where `CausationScope` is empty and the cause has to travel
+  as data. These three are about the tier, made on the request thread of the environment door with
+  the filter's restored scope still standing — so `publish(event)` reads the ambient cause itself.
+- **Every announcement happens AFTER the transaction that made it true**, and none of them can change
+  the operation's outcome: `EnvironmentOperations.announce` wraps each call in a try/catch with a
+  WARN, `Instance<EnvironmentAnnouncer>` so zero implementations is supported, exactly as
+  `DeployService.announce` does. A create announces **between** the row and the bundle network, not
+  after both: the tier exists when the row commits, and a driver call that threw would otherwise
+  leave a committed tier nobody is ever told about.
+- **The tier that LOSES the designation announces nothing**, and `pd_environment` gains no lifecycle
+  column — the deletion stays a hard row delete and the tombstone is the consumer's projection's,
+  where qits-projects puts it too. A consumer that tracks the flag reads `designated: true` as "this
+  one, and therefore no other", which is safe because at most one row is ever true.
+
+**`bus/PdEventWireRegistrationTest` is new with them and is the assertion `EventWireReflection` never
+had**: every `QitsEvent` on the events jar must be in that annotation, as a closure check rather than
+a count. Unregistered, a record publishes an **empty payload** in the native binary and `publish`
+does not fail — a green JVM suite, and a consumer reading a frame of the right name with no fields in
+it.
+
 
 ## Adding a dependency on another context
 
