@@ -3,12 +3,18 @@ package eu.wohlben.qits.deployments.deployments.control;
 import eu.wohlben.qits.deployments.environments.control.EnvironmentService;
 import eu.wohlben.qits.deployments.environments.entity.PdEnvironment;
 import eu.wohlben.qits.deployments.environments.error.ConflictException;
+import eu.wohlben.qits.deployments.events.EnvironmentChanged;
+import eu.wohlben.qits.deployments.events.EnvironmentCreated;
+import eu.wohlben.qits.deployments.events.EnvironmentDeleted;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -35,6 +41,19 @@ public class EnvironmentOperations {
   @Inject DeploymentDriver driver;
 
   /**
+   * Where a tier's lifecycle leaves this component ({@link EnvironmentAnnouncer}). An {@code
+   * Instance} for the reason {@code DeployService}'s is one: zero implementations is a supported
+   * configuration, and a component without the bus manages tiers exactly as before and says
+   * nothing.
+   *
+   * <p>It is injected HERE and not into {@link EnvironmentService}, which owns the rows, and the
+   * split is the same one the class exists for. The row service is the transaction; an announcement
+   * must happen after it, and a port injected inside it would sit under the bracket where the only
+   * available moment is the wrong one.
+   */
+  @Inject Instance<EnvironmentAnnouncer> announcers;
+
+  /**
    * The transition network every container also joins ({@link DeployService}). Read here for one
    * reason only: a teardown must never take it down. See {@link #delete}.
    *
@@ -50,9 +69,24 @@ public class EnvironmentOperations {
    * <p>The docker half is best-effort and happens <b>after</b> the row: an environment whose
    * network could not be created yet is still an environment (the driver re-ensures every network
    * before every deployment), so a momentarily unreachable docker must not make the create fail.
+   *
+   * <p><b>The announcement goes out between the two halves, not after both</b>, and the order is
+   * deliberate for the same reason the docker half is best-effort: the tier exists the moment the
+   * row commits, and a {@code driver} call that threw on its way to the network would otherwise
+   * leave a committed tier that no consumer is ever told about — a permanent gap, where a missing
+   * network is a self-healing one.
    */
   public PdEnvironment create(String name, String network, boolean platform) {
     PdEnvironment environment = environments.create(name, network, platform);
+    announce(
+        environment.id,
+        announcer ->
+            announcer.onCreated(
+                new EnvironmentCreated(
+                    environment.id,
+                    environment.name,
+                    environment.designated,
+                    environment.createdAt)));
     driver.ensureNetwork(
         new DeploymentDriver.Network(
             environment.network, environment.id, DeploymentDriver.NetworkKind.BUNDLE, null));
@@ -71,9 +105,22 @@ public class EnvironmentOperations {
    * peer reaches it under the same name whichever tier is designated. What the move changes is the
    * tier the plane's <em>next</em> deployment names — its row, its labels and its
    * {@code QITS_ENVIRONMENT}.
+   *
+   * <p><b>It is a pass-through no longer, and the one thing added is the announcement</b> — after
+   * the update's transaction, carrying the row as it now stands. {@code changedAt} is read from the
+   * clock rather than from the row, because there is no {@code updated_at} column and this change
+   * does not add one: the moment a tier's name moved is a fact about the event, and the row's job
+   * is to say what the name IS.
    */
   public PdEnvironment update(String environmentId, String name, Boolean platform) {
-    return environments.update(environmentId, name, platform);
+    PdEnvironment environment = environments.update(environmentId, name, platform);
+    announce(
+        environment.id,
+        announcer ->
+            announcer.onChanged(
+                new EnvironmentChanged(
+                    environment.id, environment.name, environment.designated, Instant.now())));
+    return environment;
   }
 
   /**
@@ -153,6 +200,11 @@ public class EnvironmentOperations {
     }
 
     environments.delete(environmentId);
+    announce(
+        environmentId,
+        announcer ->
+            announcer.onDeleted(
+                new EnvironmentDeleted(environmentId, environment.name, Instant.now())));
   }
 
   public PdEnvironment require(String environmentId) {
@@ -161,5 +213,29 @@ public class EnvironmentOperations {
 
   public List<PdEnvironment> list() {
     return environments.list();
+  }
+
+  /**
+   * The belt every announcement is fastened with, and it is the rule rather than caution — {@code
+   * DeployService.announceQueued} argues it at length and nothing here differs.
+   *
+   * <p>An announcement is a statement ABOUT an environment operation, never part of it. A bus that
+   * is unreachable, a serializer that refuses a value, an implementation with a bug must cost the
+   * log line below and nothing else: a tier that was created is created whether or not anybody was
+   * told, and failing the caller's request would invite a retry that then conflicts on the name it
+   * just took. Every announcer is offered the event — {@code Instance} is a set, usually of one and
+   * validly of none — and one that throws does not stop the next.
+   *
+   * <p>{@code RuntimeException} and no wider, which is exactly what the deployment side catches: an
+   * {@code Error} is not this method's to swallow.
+   */
+  private void announce(String environmentId, Consumer<EnvironmentAnnouncer> announcement) {
+    for (EnvironmentAnnouncer announcer : announcers) {
+      try {
+        announcement.accept(announcer);
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Announcing environment %s failed", environmentId);
+      }
+    }
   }
 }
