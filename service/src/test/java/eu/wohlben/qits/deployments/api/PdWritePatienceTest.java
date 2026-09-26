@@ -40,7 +40,7 @@ import org.junit.jupiter.api.Test;
 @TestProfile(DbPatienceShortProfile.class)
 public class PdWritePatienceTest {
 
-  private static final String ENVIRONMENTS = "/platform-deployments/api/environments";
+  private static final String ENVIRONMENTS = "/deployments/api/environments";
 
   /** The real repository, failing a scripted number of times at the read that follows the insert. */
   static final class FlakyEnvironmentRepository extends PdEnvironmentRepository {

@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
  * than believed.
  *
  * <p><b>The path is this component's own health gate's.</b> {@code
- * /platform-deployments/q/health/ready} is what a peer's {@code --health-cmd} curls and what the
+ * /deployments/q/health/ready} is what a peer's {@code --health-cmd} curls and what the
  * health-path convention derives for this service's own name, so a check that goes DOWN here takes
  * this instance out of rotation — which is the honest statement a stalled consumer can make, and
  * the reason the library ships {@code @Readiness} and deliberately not {@code @Liveness}.
@@ -41,7 +41,7 @@ public class PdCatchupReadinessTest {
   public void theReadinessDocumentNamesTheCatchupCheck() {
     given()
         .when()
-        .get("/platform-deployments/q/health/ready")
+        .get("/deployments/q/health/ready")
         .then()
         .statusCode(200)
         .body("status", equalTo("UP"))

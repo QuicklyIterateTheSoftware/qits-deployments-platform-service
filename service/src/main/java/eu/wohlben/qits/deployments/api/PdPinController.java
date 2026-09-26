@@ -26,7 +26,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
  * and the rollback target are one definition rather than two that drift, and drift here deletes an
  * image a container is about to pull.
  *
- * <p><b>Not a deployment listing.</b> {@code GET /platform-deployments/api/deployments} is history,
+ * <p><b>Not a deployment listing.</b> {@code GET /deployments/api/deployments} is history,
  * scoped to one environment and reporting every attempt. This answers the smaller question a
  * collector asks: across the whole instance, what is serving and what would come back. It reads
  * nothing but the deployment rows, which is what keeps it answerable regardless of what the

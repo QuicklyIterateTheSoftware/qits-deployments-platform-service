@@ -161,7 +161,7 @@ never a guess, because a guessed topology is a container on the wrong networks u
 ## The deployment flow
 
     green build ──┬─▶ BuildSuccessful on qits-events ─▶ the durable subscriber (the ordinary door)
-                  └─▶ POST /platform-deployments/api/events/build-succeeded (manual / bootstrap)
+                  └─▶ POST /deployments/api/events/build-succeeded (manual / bootstrap)
                         (runId, repoId, [projectId, repoName], branch, commitSha)
                           │
                           ▼   the application name is settled here: repoName, or repoId when the
@@ -319,10 +319,20 @@ Two more things such a move does once, neither of them an error:
 | `GET /pins` | qits-platform-artifacts' OCI garbage collector, fail-closed |
 | `POST /events/build-succeeded` | qits-ci, fire-and-forget; the manual and bootstrap door |
 
-All under `/platform-deployments/api`. The client is served at `/` — this service has a host of its
-own, `deployments.<env>.<domain>`, and the segment is the wire surface alone. Health is at
-`/platform-deployments/q/health/ready` — which is also what this component's own health-path
-convention derives for its own name.
+All under `/deployments/api`. The client is served at `/` — this service has a host of its own,
+`deployments.<env>.<domain>`, and the segment is the wire surface alone. Health is at
+`/deployments/q/health/ready` — which is also, and now exactly, what this component's own
+health-path convention derives from its application name.
+
+**The segment was `/platform-deployments` until 2026-09-26, and the old prefix is answered for one
+release.** `api/LegacyPrefixReroute` rewrites a leading `/platform-deployments/` onto
+`/deployments/` and WARNs once per request, naming the path and the caller; `routes:` in
+`.config/qits/deployments.yml` declares both prefixes so the edge keeps routing the old one here,
+and `quarkus.quinoa.ignored-path-prefixes` lists both so a legacy path naming no route answers 404
+rather than the client. The day that log falls silent, all three go. Until then the segment is
+spelled in **five** places, all of them in this repository: `quarkus.rest.path`,
+`quarkus.http.non-application-root-path`, `quarkus.quinoa.ignored-path-prefixes`, `routes:` +
+`health_path:` in the spec, and the reroute itself. After the reroute goes it is four.
 
 **The pins are read off deployment rows alone.** qits-platform-artifacts deletes an image tag only
 when no pin names it, and deletes nothing when it cannot get an answer, so the keep-set must not

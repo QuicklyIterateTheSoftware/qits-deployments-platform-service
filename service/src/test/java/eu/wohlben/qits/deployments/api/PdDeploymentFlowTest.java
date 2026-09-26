@@ -91,7 +91,7 @@ public class PdDeploymentFlowTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", platform))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()
@@ -107,7 +107,7 @@ public class PdDeploymentFlowTest {
         .contentType(ContentType.JSON)
         .body(Map.of("runId", runId, "repoId", repoId, "version", version))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -118,7 +118,7 @@ public class PdDeploymentFlowTest {
       List<Map<String, Object>> deployments =
           given()
               .when()
-              .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+              .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
               .statusCode(200)
               .extract()
@@ -448,7 +448,7 @@ public class PdDeploymentFlowTest {
     Map<String, Object> registered =
         given()
             .when()
-            .get("/platform-deployments/api/applications")
+            .get("/deployments/api/applications")
             .then()
             .statusCode(200)
             .extract()
@@ -539,7 +539,7 @@ public class PdDeploymentFlowTest {
     List<Map<String, Object>> inTier =
         given()
             .when()
-            .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+            .get("/deployments/api/deployments?environmentId=" + environmentId)
             .then()
             .statusCode(200)
             .extract()
@@ -723,7 +723,7 @@ public class PdDeploymentFlowTest {
     List<Map<String, Object>> rows =
         given()
             .when()
-            .get("/platform-deployments/api/applications")
+            .get("/deployments/api/applications")
             .then()
             .statusCode(200)
             .extract()
@@ -943,7 +943,7 @@ public class PdDeploymentFlowTest {
         given()
             .when()
             .get(
-                "/platform-deployments/api/deployment-requests?environmentId="
+                "/deployments/api/deployment-requests?environmentId="
                     + environmentId
                     + "&applicationName=repo-declaration-request")
             .then()
@@ -984,7 +984,7 @@ public class PdDeploymentFlowTest {
         .contentType(ContentType.JSON)
         .body(Map.of("repoId", "repo-norunid", "version", V_A))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
 
@@ -1005,7 +1005,7 @@ public class PdDeploymentFlowTest {
                 "repoId", "repo-bigrun",
                 "version", V_A))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(400);
   }
@@ -1021,7 +1021,7 @@ public class PdDeploymentFlowTest {
                 "repoId", "repo-x",
                 "version", "latest; docker run --privileged evil"))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(400);
   }

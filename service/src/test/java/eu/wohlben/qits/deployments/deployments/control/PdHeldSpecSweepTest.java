@@ -200,7 +200,7 @@ public class PdHeldSpecSweepTest {
         .contentType(ContentType.JSON)
         .body(Map.of("name", name, "platform", true))
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201)
         .extract()
@@ -212,7 +212,7 @@ public class PdHeldSpecSweepTest {
         .contentType(ContentType.JSON)
         .body(Map.of("runId", "run-" + version, "repoId", repoId, "version", version))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
   }
@@ -224,7 +224,7 @@ public class PdHeldSpecSweepTest {
       List<Map<String, Object>> rows =
           given()
               .when()
-              .get("/platform-deployments/api/deployments?environmentId=" + environmentId)
+              .get("/deployments/api/deployments?environmentId=" + environmentId)
               .then()
               .statusCode(200)
               .extract()

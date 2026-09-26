@@ -43,8 +43,8 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 public class PdServiceApiTest {
 
-  private static final String ENVIRONMENTS = "/platform-deployments/api/environments";
-  private static final String SERVICES = "/platform-deployments/api/services";
+  private static final String ENVIRONMENTS = "/deployments/api/environments";
+  private static final String SERVICES = "/deployments/api/services";
 
   @Test
   void registeringAServiceForTheFirstTimeIsCreated() {

@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 class AgentReadAccessTest {
 
-  private static final String BASE = "/platform-deployments/api";
+  private static final String BASE = "/deployments/api";
 
   private static RequestSpecification asAgent() {
     return given()

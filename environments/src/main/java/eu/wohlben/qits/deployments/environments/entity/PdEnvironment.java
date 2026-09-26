@@ -30,7 +30,7 @@ import java.util.UUID;
  * created after it — and it deploys into <b>this</b> one when this is the platform environment.
  *
  * <p><b>A {@link CausedRow}, and the one entity here the stamp itself fills.</b> A tier is created
- * deliberately, over {@code POST /platform-deployments/api/environments}, and there is no hop
+ * deliberately, over {@code POST /deployments/api/environments}, and there is no hop
  * between the request thread and {@code persist()} — so the scope {@code CausationServerFilter}
  * restored from the caller's {@code X-Qits-Causation-Id} is still standing and {@link
  * CausationStamp} records it. A bootstrap creating a tier as one step of a longer chain therefore

@@ -6,8 +6,8 @@ import eu.wohlben.qits.userflows.Labels;
  * The one launched process, addressed the way every one of its surfaces is addressed — and named
  * the way a diagram names it.
  *
- * <p>{@code quarkus.rest.path=/platform-deployments/api} is the JSON API and {@code
- * quarkus.http.non-application-root-path=/platform-deployments/q} is what Quarkus itself serves, so
+ * <p>{@code quarkus.rest.path=/deployments/api} is the JSON API and {@code
+ * quarkus.http.non-application-root-path=/deployments/q} is what Quarkus itself serves, so
  * the framework's shipped RestAssured tap — which skips any path carrying a {@code /q/}
  * <i>segment</i> rather than a leading one — is exactly right here and no story class overrides the
  * predicate. That is the line to re-read when this class is copied: a service whose probe root is
@@ -38,8 +38,8 @@ public final class StoryTarget {
   /** How every diagram in this catalogue names the service under test, on both sides of an edge. */
   public static final String SERVICE = "qits-platform-deployments";
 
-  /** {@code /platform-deployments/api} — {@code quarkus.rest.path}. A resource's {@code @Path} is relative. */
-  public static final String API_PATH = "/platform-deployments/api";
+  /** {@code /deployments/api} — {@code quarkus.rest.path}. A resource's {@code @Path} is relative. */
+  public static final String API_PATH = "/deployments/api";
 
   /** The release intake: the manual and bootstrap door a released version is announced through. */
   public static final String SOFTWARE_RELEASED_PATH = API_PATH + "/events/software-released";

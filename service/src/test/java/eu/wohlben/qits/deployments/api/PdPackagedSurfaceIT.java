@@ -41,8 +41,16 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>The client is served at the root</b> since this service got a host of its own
  * ({@code deployments.<env>.<domain>}). The segment survives only as the wire prefix, so
- * {@code /platform-deployments/} is a 404 rather than a second door into the client, and an old
- * bookmark is the edge's problem, answered there with a redirect.
+ * {@code /deployments/} is a 404 rather than a second door into the client, and an old bookmark is
+ * the edge's problem, answered there with a redirect.
+ *
+ * <p><b>The segment moved to {@code /deployments} and the retired one is answered for one
+ * release</b>, by {@link LegacyPrefixReroute}. Both halves are asserted here and nowhere else: this
+ * is the only test in the repository that runs the packaged artifact, and {@code quarkus.rest.path}
+ * and {@code quarkus.http.non-application-root-path} are build-time settings baked into it. So the
+ * live prefix answering, the legacy prefix being rewritten onto it rather than 404ing, and a legacy
+ * path that names no route being a 404 rather than the client are three claims only a packaged
+ * process can make.
  *
  * <p>No deployment is driven here: that needs a swarm, and the packaged process carries the real
  * {@link eu.wohlben.qits.deployments.swarmhost.SwarmDeploymentDriver}. The container
@@ -54,7 +62,14 @@ import org.junit.jupiter.api.Test;
 @TestProfile(PdPackagedSurfaceIT.PackagedUnderTarget.class)
 public class PdPackagedSurfaceIT {
 
-  private static final String SEGMENT = "/platform-deployments";
+  private static final String SEGMENT = "/deployments";
+
+  /**
+   * The retired spelling, served for one release by {@link LegacyPrefixReroute}. It is a constant of
+   * its own rather than a literal so that deleting the reroute is a compiler-guided sweep: the field
+   * and the two tests below go together.
+   */
+  private static final String LEGACY_SEGMENT = "/platform-deployments";
 
   /** What the client's index.html spells now that it is mounted at the root of its own host. */
   private static final String BASE_HREF = "<base href=\"/\">";
@@ -154,12 +169,96 @@ public class PdPackagedSurfaceIT {
   }
 
   @Test
-  public void theOldSegmentIsNoLongerADoorIntoTheClient() {
-    // The whole /platform-deployments prefix is in quarkus.quinoa.ignored-path-prefixes, so nothing
-    // under it is rerouted to index.html.
+  public void theWireSegmentIsNoDoorIntoTheClient() {
+    // The whole /deployments prefix is in quarkus.quinoa.ignored-path-prefixes, so nothing under it
+    // is rerouted to index.html.
     given().when().get(SEGMENT).then().statusCode(404);
     String body = given().when().get(SEGMENT + "/").then().statusCode(404).extract().asString();
-    assertFalse(body.contains(BASE_HREF), "the old segment must not serve the client; got: " + body);
+    assertFalse(
+        body.contains(BASE_HREF), "the wire segment must not serve the client; got: " + body);
+  }
+
+  /**
+   * The legacy prefix still answers, and it answers as the API rather than as a redirect or a page —
+   * which is the whole promise {@link LegacyPrefixReroute} makes to the callers that have not moved
+   * yet: the SPA on its own gitlink, qits-ci's fire-and-forget release notifier, qits-artifacts'
+   * image collector.
+   *
+   * <p>Two reads, because the two surfaces under the segment are served by different machinery and a
+   * reroute has to carry both. The readiness probe is Quarkus' own, under {@code
+   * quarkus.http.non-application-root-path} — and it is the one the deployer's health gate curls, so
+   * a rewrite that missed it would leave an old stored {@code health_path} row gating against
+   * nothing. The environments listing is JAX-RS under {@code quarkus.rest.path}, and asserting it
+   * with the person's role is what proves the restart re-runs the authentication handler on the
+   * rewritten path rather than losing the identity across the reroute.
+   */
+  @Test
+  public void theRetiredPrefixIsRewrittenOntoTheLiveOne() {
+    given()
+        .when()
+        .get(LEGACY_SEGMENT + "/q/health/ready")
+        .then()
+        .statusCode(200)
+        .contentType(ContentType.JSON)
+        .body("status", org.hamcrest.Matchers.equalTo("UP"));
+
+    person()
+        .when()
+        .get(LEGACY_SEGMENT + "/api/environments")
+        .then()
+        .statusCode(200)
+        .contentType(ContentType.JSON)
+        .body("environments", org.hamcrest.Matchers.notNullValue());
+  }
+
+  /**
+   * A legacy path naming no route is a 404 and not the client, which is the second entry in {@code
+   * quarkus.quinoa.ignored-path-prefixes} doing its job.
+   *
+   * <p>The reroute rewrites the prefix and nothing else, so a mistyped legacy path becomes a
+   * mistyped live path — and a path matching NO route is exactly what Quinoa's catch-all would hand
+   * {@code index.html} at 200. A machine caller parses that as data.
+   *
+   * <p>The assertion is "404, and not the CLIENT" rather than "404, never HTML", for the reason its
+   * sibling {@link #aMistypedMachinePathIsNeverTheClient} gives — and it was <b>measured</b> here
+   * rather than assumed: this request comes back {@code text/html; charset=utf-8}, because what
+   * answers it is Vert.x' own stock {@code <h1>Resource not found</h1>} page, which is correct.
+   * Asserting "never {@code text/html}" would therefore fail against the right behaviour while
+   * still passing against the wrong one — the SPA's index is {@code text/html} too. The content
+   * type cannot tell the two apart; only the body can.
+   */
+  @Test
+  public void aMistypedLegacyPathIsNeverTheClient() {
+    String index = given().when().get("/").then().statusCode(200).extract().asString();
+
+    String body =
+        given()
+            .when()
+            .get(LEGACY_SEGMENT + "/api/nope")
+            .then()
+            .statusCode(404)
+            .extract()
+            .asString();
+    assertFalse(
+        body.equals(index),
+        "a mistyped legacy machine path must not be answered with the client; got: " + body);
+    assertFalse(
+        body.contains(BASE_HREF),
+        "a mistyped legacy machine path must not be answered with the client; got: " + body);
+
+    // …and the other half of what the prefix covers, the framework's own root.
+    String underQ =
+        given()
+            .when()
+            .get(LEGACY_SEGMENT + "/q/health/nope")
+            .then()
+            .statusCode(404)
+            .extract()
+            .asString();
+    assertFalse(
+        underQ.contains(BASE_HREF),
+        "a mistyped legacy non-application path must not be answered with the client; got: "
+            + underQ);
   }
 
   @Test

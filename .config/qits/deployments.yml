@@ -60,17 +60,32 @@ application: qits-deployments
 # that finds a registry row per resource, takes the no-op arm, and injects the credentials the
 # instance is already connected with. Without those rows it would rotate its own passwords out from
 # under its own connection pools.
-# The convention would derive the health path from the repository name, but the route path
-# deliberately did not move with the rename — the service still serves /platform-deployments.
-# Without this line the successor's probe curls /deployments/… into a 404 and every self-update
-# rolls back as unhealthy. The old platform survived on an operator-corrected pd_service row;
-# a row is not durable across a re-bootstrap — this line is.
-health_path: /platform-deployments/q/health/ready
+# THE ROUTE HAS MOVED AND THIS LINE STILL HAS TO BE HERE. The convention derives the health path
+# from the APPLICATION name — DeployService.conventionHealthPath("qits-deployments") is exactly
+# /deployments/q/health/ready — so this override now states what the convention would have derived
+# anyway, and deleting it looks like a tidy simplification. It is not.
+#
+# resolveHealthPath asks three sources in order: this line, then the STORED pd_service.health_path
+# row, then the convention. That row still holds /platform-deployments/q/health/ready — it was
+# written when the route really was there — and it beats the convention. So without this line every
+# self-deploy would curl a path the new image 404s, never converge, and roll back as unhealthy, and
+# an operator-corrected row is not durable across a re-bootstrap. CHANGE THE VALUE, KEEP THE KEY.
+#
+# It becomes removable once no pd_service row for this application names the old path any more —
+# which is the same moment the legacy reroute can go, and belongs in that commit or later.
+health_path: /deployments/q/health/ready
 
 # The edge reads this declaration from DeploymentActive. `routes:` is the WIRE prefix — the API and
 # the health endpoints — path-routed on every vhost. The client is not under it: it is served at the
 # root of this service's own host, which the edge derives from the application name.
-routes: /platform-deployments
+#
+# TWO PREFIXES FOR ONE RELEASE, comma-separated the way qits-artifacts declares `/artifacts,/v2`.
+# The first is the route this service serves; the second is the retired spelling, declared so the
+# edge keeps path-routing it here while api/LegacyPrefixReroute rewrites it onto the first. Without
+# the declaration the edge would stop routing the old prefix the moment this deploys, and the
+# reroute would never see a request to WARN about — which is the inventory the cutover is measured
+# with. It goes in the commit that deletes the reroute.
+routes: /deployments,/platform-deployments
 
 # WHERE THE EDGE APPEARS THIS APPLICATION IN THE SIDEBAR. One entry per `<slot>.<Label>` pair — an
 # application may hang several rows under one heading, and this one hangs two rows in two different
@@ -133,4 +148,4 @@ update_order: stop-first
 # Where the browsable API document lives: swagger-ui under this service's non-application
 # root, which sits under the primary route above. The shell's Api Docs viewer reads it off
 # /main-navigation and frames it for this repository.
-api-docs: /platform-deployments/q/swagger-ui
+api-docs: /deployments/q/swagger-ui

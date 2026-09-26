@@ -2001,8 +2001,16 @@ public class DeployService implements ReleaseAnnouncements {
   /**
    * The platform's path convention: a service serves everything under its own name without the
    * {@code qits-} prefix, so qits-observability answers on {@code /observability/q/health/ready}
-   * and this component on {@code /platform-deployments/q/health/ready}. A name that does not carry
-   * the prefix keeps the whole name.
+   * and this component — the application {@code qits-deployments} — on {@code
+   * /deployments/q/health/ready}. A name that does not carry the prefix keeps the whole name.
+   *
+   * <p>This component was the last exception to its own convention and is no longer one: it served
+   * {@code /platform-deployments} while the plane that word named was already deleted. Both are the
+   * same string now, which makes the {@code health_path:} line in its own {@code
+   * .config/qits/deployments.yml} redundant with the convention and <b>still load-bearing</b> — see
+   * {@link #resolveHealthPath}: the stored {@code pd_service.health_path} row holds the old path and
+   * beats the convention, so the file's override is the only thing standing between a self-deploy
+   * and a gate against a path the image 404s.
    */
   static String conventionHealthPath(String applicationName) {
     String segment =

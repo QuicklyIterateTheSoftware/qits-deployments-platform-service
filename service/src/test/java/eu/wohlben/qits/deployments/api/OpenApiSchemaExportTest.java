@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
  * something a caller discovers at runtime.
  *
  * <p>This is a test only because {@code @QuarkusTest} is the cheapest way to stand the application
- * up and read its own {@code /platform-deployments/q/openapi}. It asserts nothing — the assertion is the diff.
+ * up and read its own {@code /deployments/q/openapi}. It asserts nothing — the assertion is the diff.
  *
  * <p>The test classpath is indexed too, so any {@code @Path} resource under {@code src/test} lands
  * in the committed document unless it is {@code @Operation(hidden = true)}.
@@ -24,7 +24,7 @@ public class OpenApiSchemaExportTest {
 
   @Test
   public void exportOpenApiSchema() throws Exception {
-    String schema = given().when().get("/platform-deployments/q/openapi").then().statusCode(200).extract().asString();
+    String schema = given().when().get("/deployments/q/openapi").then().statusCode(200).extract().asString();
 
     // The module is `service/`, so this resolves to the repo root's docs/.
     Path docsDir = Paths.get("../docs");

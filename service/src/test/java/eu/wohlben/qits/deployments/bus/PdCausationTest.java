@@ -108,7 +108,7 @@ public class PdCausationTest {
                 "repoId", "repo-cause-http",
                 "version", VERSION))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
     awaitApplied(1);
@@ -129,7 +129,7 @@ public class PdCausationTest {
                 "repoId", "repo-cause-none",
                 "version", VERSION))
         .when()
-        .post("/platform-deployments/api/events/software-released")
+        .post("/deployments/api/events/software-released")
         .then()
         .statusCode(202);
     awaitApplied(1);
@@ -209,7 +209,7 @@ public class PdCausationTest {
     }
     request
         .when()
-        .post("/platform-deployments/api/environments")
+        .post("/deployments/api/environments")
         .then()
         .statusCode(201);
   }

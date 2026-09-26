@@ -17,10 +17,10 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 
 /**
  * The release intake — the <b>manual and bootstrap</b> door. {@code POST
- * /platform-deployments/api/events/software-released} announces one released version of one
+ * /deployments/api/events/software-released} announces one released version of one
  * application, exactly as {@code bus/PdSoftwareReleaseSubscriber} does off qits-ci's {@code
  * SoftwareRelease}. The path carries no segment of its own because {@code
- * quarkus.rest.path=/platform-deployments/api} already says it.
+ * quarkus.rest.path=/deployments/api} already says it.
  *
  * <p><b>It replaces {@code /events/build-succeeded}, which is gone.</b> A green build is no longer a
  * reason to deploy anything, so a door that took {@code (branch, commitSha)} would be a second

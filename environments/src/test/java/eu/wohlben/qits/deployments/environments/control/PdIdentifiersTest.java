@@ -78,8 +78,8 @@ class PdIdentifiersTest {
   @Test
   void anAbsoluteMetacharacterFreePathIsAcceptedAsAHealthPath() {
     assertEquals(
-        "/platform-deployments/q/health/ready",
-        PdIdentifiers.requireHealthPath("/platform-deployments/q/health/ready"));
+        "/deployments/q/health/ready",
+        PdIdentifiers.requireHealthPath("/deployments/q/health/ready"));
     assertEquals("/q/health/ready", PdIdentifiers.requireHealthPath("/q/health/ready"));
     assertEquals("/healthz", PdIdentifiers.requireHealthPath("/healthz"));
   }
